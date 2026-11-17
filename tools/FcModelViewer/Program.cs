@@ -14,6 +14,7 @@
 //   FC_VIEW_ASSEMBLY=1     show the assembled player actor
 //   FC_VIEW_STATIC=1       force the rigid single-list path
 //   FC_VIEW_FRAME=<n>      animation frame of the scripted/bone path (default 0)
+//   FC_VIEW_TEXTURED=1     render textured polygons (or pass 'textured' / '--textured' on CLI)
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
@@ -22,15 +23,19 @@ using FutureCop.View;
 const int W = 320, H = 240, Scale = 2;
 const double DefaultDegPerSec = 20.0;
 
-string mis = args.Length > 0 ? args[0] : "build/disc/files/CW/M1A1.MIS";
-int modelId = args.Length > 1 ? int.Parse(args[1]) : 30;
-string bmpPath = args.Length > 2 ? args[2] : "wireframe.bmp";
+bool texturedFlag = args.Any(a => a is "textured" or "--textured");
+var posArgs = args.Where(a => a is not ("textured" or "--textured")).ToArray();
+
+string mis = posArgs.Length > 0 ? posArgs[0] : "build/disc/files/CW/M1A1.MIS";
+int modelId = posArgs.Length > 1 ? int.Parse(posArgs[1]) : 30;
+string bmpPath = posArgs.Length > 2 ? posArgs[2] : "wireframe.bmp";
 
 var options = new ViewerOptions(
     ModelId: modelId,
     Assembly: Environment.GetEnvironmentVariable("FC_VIEW_ASSEMBLY") == "1",
     BoneFrame: EnvInt("FC_VIEW_FRAME", 0),
-    ForceStatic: Environment.GetEnvironmentVariable("FC_VIEW_STATIC") == "1");
+    ForceStatic: Environment.GetEnvironmentVariable("FC_VIEW_STATIC") == "1",
+    Textured: texturedFlag || Environment.GetEnvironmentVariable("FC_VIEW_TEXTURED") == "1");
 var scene = new WireframeScene(mis, options, W, H);
 Console.WriteLine(scene.Description);
 

@@ -196,3 +196,38 @@ Presentation note: `NativeImageSource`/`ImageView` stays black under the mapper 
 as a rotating ring of BMP files (`FC_VIEW_RING`, default 6) and there is no HUD yet.
 Measured on the device: ~30 fps timer ticks, 0-1 ms software render per frame at
 480x360.
+
+## Texture pipeline
+
+Each `.MIS` mission archive carries 10 streamed `Cbmp` texture resources (`id` 1..10)
+reassembled from `SHOC`/`SDAT` packet chains (`MisFile.ReassembleStreamedPayload`).
+`CbmpContainer` walks each payload (`func_8001996C`: `CCB ` and `PLUT` skip the 4-byte
+index word; `PDAT`/`PIX4` start at `+8`), and `TextureBank` uploads the 128×252 halfword
+image and 256×1 ABGR1555 palette into a 1024×512 `Vram` (`func_80063C5C`).
+
+| Slot `id` (`s0 = id-1`) | Image rect `(x, y, w×h)` | CLUT rect `(x, y, w×h)` | `tpage` | `clut` |
+| --- | --- | --- | --- | --- |
+| 1..2 (`s0=0..1`) | `(384, 0/256, 128×252)` | `(384, 252..253, 256×1)` | `0x0086`/`0x0096` | `0x3F18`/`0x3F58` |
+| 3..4 (`s0=2..3`) | `(512, 0/256, 128×252)` | `(384, 254..255, 256×1)` | `0x0088`/`0x0098` | `0x3F98`/`0x3FD8` |
+| 5..6 (`s0=4..5`) | `(640, 0/256, 128×252)` | `(640, 252..253, 256×1)` | `0x008A`/`0x009A` | `0x3F28`/`0x3F68` |
+| 7..8 (`s0=6..7`) | `(768, 0/256, 128×252)` | `(640, 254..255, 256×1)` | `0x008C`/`0x009C` | `0x3FA8`/`0x3FE8` |
+| 9..10 (`s0=8..9`) | `(896, 0/256, 128×252)` | `(384, 508..509, 256×1)` | `0x008E`/`0x009E` | `0x7F18`/`0x7F58` |
+
+`WireframeScene` (`FC_VIEW_TEXTURED=1` or `textured` flag in `FcModelViewer`) sorts
+accepted faces back-to-front by `Work.Z` and rasterizes affine-mapped triangles into
+the 320×240 RGB888 buffer (nearest-neighbour sampling, `0x0000` colour-key transparency,
+`(255, 0, 255)` marker for missing pages). Deviations from PS1 hardware: 24-bit RGB888
+output without 4×4 dithering, `(c5 << 3) | (c5 >> 2)` 5-to-8-bit expansion, and no
+Gouraud/lighting modulation or semi-transparency blending yet.
+
+Verified against `M1A1.MIS` and `tests/golden/cbmp.vectors`: all 10 `Cbmp` resources
+reassemble and upload, mech model 11's `tpage=0x008E`/`clut=0x7F18` resolves to `(896, 0)`
+/ `(384, 508)` with non-zero texels, and UV byte pairs `(u0,v0,u1,v1)` + `(u2,v2,u3,v3)`
+in `3DTL` follow polygon vertex order `V0..V3`. Hypothesis / unverified in this build:
+`PIX4` 4-bit containers (none present in `M1A1.MIS`), Gouraud vertex-colour modulation,
+and `type 3` semi-transparent blending.
+
+```bash
+dotnet run --project tools/FcAssetTool -- textures build/disc/files/CW/M1A1.MIS /tmp/fc_pages
+FC_VIEW_TEXTURED=1 dotnet run --project tools/FcModelViewer -- build/disc/files/CW/M1A1.MIS 11 /tmp/mech_textured.bmp
+```

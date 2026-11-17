@@ -1,10 +1,33 @@
 using FutureCop.Assets;
 
-// CLI: list models in a .MIS archive, or dump one model's polygons/vertices.
+// CLI: list models in a .MIS archive, dump one model's polygons/vertices, or list/export Cbmp textures.
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("usage: FcAssetTool list <file.MIS> | dump <file.MIS> <modelId>");
+    Console.Error.WriteLine("usage: FcAssetTool list <file.MIS> | dump <file.MIS> <modelId> | textures <file.MIS> [outdir]");
     return 2;
+}
+
+if (args[0] == "textures")
+{
+    var bank = TextureBank.FromMisFile(args[1]);
+    string? outDir = args.Length >= 3 ? args[2] : null;
+    if (outDir != null) Directory.CreateDirectory(outDir);
+    Console.WriteLine($"{args[1]}: {bank.Resources.Count} Cbmp texture resources");
+    foreach (var r in bank.Resources)
+    {
+        var c = r.Container;
+        string pixTag = c.IsPix4 ? "PIX4" : "PDAT";
+        Console.WriteLine($"  id {r.Id,2} @0x{r.RecordOffset:X6}: payload {r.PayloadSize}B, " +
+                          $"CCB {c.CcbLength}B, {pixTag} {c.PdatLength}B, PLUT {c.PlutLength}B, " +
+                          $"vram ({r.PageX},{r.PageY} {r.PageW}x{r.PageH}), clut ({r.ClutX},{r.ClutY} {r.ClutW}x{r.ClutH}), " +
+                          $"tpage 0x{r.Tpage:X4}, clut 0x{r.Clut:X4}");
+        if (outDir != null)
+        {
+            string bmpPath = Path.Combine(outDir, $"page_{r.Id:D2}.bmp");
+            TextureBank.WriteBmp24(bmpPath, 256, 256, bank.ExportPageRgb(r.Id));
+        }
+    }
+    return 0;
 }
 
 var mis = new MisFile(args[1]);

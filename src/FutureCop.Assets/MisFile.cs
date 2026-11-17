@@ -84,40 +84,52 @@ public sealed class MisFile
         return models;
     }
 
+    /// <summary>
+    /// Reassembles a streamed SHOC/SDAT payload (with FILL read-block skips) starting at
+    /// <paramref name="headerStart"/> (24 bytes before the Cobj/Cbmp record tag).
+    /// </summary>
+    public static byte[]? ReassembleStreamedPayload(byte[] data, int headerStart, int payloadSize)
+    {
+        if (headerStart < 0 || headerStart + 8 > data.Length) return null;
+        int headerLength = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(headerStart + 4));
+        if (headerLength < 60 || headerLength > data.Length - headerStart) return null;
+        int packet = headerStart + headerLength;
+        if (payloadSize < 0 || payloadSize > data.Length) return null;
+        var payload = new byte[payloadSize];
+        int copied = 0;
+        uint fillTag = ChunkReader.TagValue("FILL");
+        uint shocTag = ChunkReader.TagValue("SHOC");
+        uint sdatTag = ChunkReader.TagValue("SDAT");
+        while (copied < payload.Length && packet + 20 <= data.Length)
+        {
+            uint tag = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(packet));
+            int length = (int)BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(packet + 4));
+            if (length < 12 || length > data.Length - packet) return null;
+            if (tag == fillTag)
+            {
+                // func_8002902C skips the remainder of the read block.
+                packet = (int)(((long)packet / 0x6000 + 1) * 0x6000);
+                continue;
+            }
+            uint subtype = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(packet + 16));
+            if (tag != shocTag || subtype != sdatTag ||
+                length < 20 || length - 20 > payload.Length - copied)
+                return null;
+            Buffer.BlockCopy(data, packet + 20, payload, copied, length - 20);
+            copied += length - 20;
+            packet += length;
+        }
+        return copied == payload.Length ? payload : null;
+    }
+
     private Model? ParseModel(int recordOffset, int chunkStart, bool streamed)
     {
         int id = (int)BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(recordOffset + 4));
         int payloadSize = (int)BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(recordOffset + 8));
-        int packet = chunkStart;
         if (streamed)
         {
-            int headerStart = recordOffset - 24;
-            int headerLength = BinaryPrimitives.ReadInt32LittleEndian(_data.AsSpan(headerStart + 4));
-            if (headerLength < 60 || headerLength > _data.Length - headerStart) return null;
-            packet = headerStart + headerLength;
-            if (payloadSize < 0 || payloadSize > _data.Length) return null;
-            var payload = new byte[payloadSize];
-            int copied = 0;
-            while (copied < payload.Length && packet + 20 <= _data.Length)
-            {
-                uint tag = BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(packet));
-                int length = (int)BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(packet + 4));
-                if (length < 12 || length > _data.Length - packet) return null;
-                if (tag == ChunkReader.TagValue("FILL"))
-                {
-                    // func_8002902C skips the remainder of the read block.
-                    packet = (int)(((long)packet / 0x6000 + 1) * 0x6000);
-                    continue;
-                }
-                uint subtype = BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(packet + 16));
-                if (tag != ChunkReader.TagValue("SHOC") || subtype != ChunkReader.TagValue("SDAT") ||
-                    length < 20 || length - 20 > payload.Length - copied)
-                    return null;
-                Buffer.BlockCopy(_data, packet + 20, payload, copied, length - 20);
-                copied += length - 20;
-                packet += length;
-            }
-            if (copied != payload.Length) return null;
+            var payload = ReassembleStreamedPayload(_data, recordOffset - 24, payloadSize);
+            if (payload == null) return null;
             return ParsePayload(id, recordOffset, payload, 0, payload.Length);
         }
         int limit = _data.Length;

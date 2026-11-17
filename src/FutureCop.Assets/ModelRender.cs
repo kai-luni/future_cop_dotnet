@@ -9,6 +9,9 @@ public readonly record struct Work(int Xy0, int Xy1, int Xy2, int Xy3, int Z);
 /// <summary>One accepted face of the polygon walk, ready for wireframe edges.</summary>
 public readonly record struct WireFace(int Type, int Group, Work Work);
 
+/// <summary>One accepted face of the polygon walk with its 3DTL byte offset for textured drawing.</summary>
+public readonly record struct TexturedFace(int Type, int Group, Work Work, ushort TextureOffset);
+
 /// <summary>
 /// Derived render path, ported from the decomp C:
 /// flag rewrite func_800131A0:136-155, winding func_80015AF4, part prep func_80015B68
@@ -103,16 +106,22 @@ public static class ModelRender
 
     /// <summary>func_80016A64:124-137: masked part walk over the loaded 3DQL list.</summary>
     public static List<WireFace> Walk(IReadOnlyList<Polygon> parts, ScreenVertex[] vtx,
+        short[] widths, int mask, int bias) =>
+        WalkTextured(parts, vtx, widths, mask, bias)
+            .ConvertAll(f => new WireFace(f.Type, f.Group, f.Work));
+
+    /// <summary>Masked part walk returning each accepted face together with its 3DTL texture offset.</summary>
+    public static List<TexturedFace> WalkTextured(IReadOnlyList<Polygon> parts, ScreenVertex[] vtx,
         short[] widths, int mask, int bias)
     {
-        var faces = new List<WireFace>();
+        var faces = new List<TexturedFace>();
         foreach (var p in parts)
         {
             int flags = LoadedFlags(p);
             int bit = 1 << ((flags >> 12) & 7);
             if ((mask & bit) == 0) continue;
             if (PartPrep(flags, p.V0, p.V1, p.V2, p.V3, vtx, widths, bias, out var work))
-                faces.Add(new WireFace((flags >> 8) & 0xF, (flags >> 12) & 7, work));
+                faces.Add(new TexturedFace((flags >> 8) & 0xF, (flags >> 12) & 7, work, p.TextureOffset));
         }
         return faces;
     }

@@ -1,0 +1,52 @@
+# fcop-cbmp-golden/v1 (line form): shared by the .NET xUnit suite and the C host harness.
+# Models the Cbmp container walk of decomp func_8001996C:
+#   CCB  -> ccb  = chunk + 12 (the 4-byte index word belongs to the block)
+#   PLUT -> plut = chunk + 12
+#   PDAT -> pdat = chunk + 8  (pixel data starts right after tag+length)
+#   PIX4 -> pdat = chunk + 8  (same layout, 4-bit indexed)
+# The C original walks to the buffer end and never validates a length, so OUT covers only
+# the containers where both sides are well defined; degenerate inputs are c_skip cases
+# with .NET-only NET lines. CCB bodies below are 64 bytes so the C original's
+# ccb[10]/ccb[11] stores stay inside the block. Tags are stored byte-reversed in the file.
+#
+# CASE <id> <ok|c_skip>
+# IN <hex of the container payload>
+# OUT <ccb_off> <ccb_len> <pdat_off> <pdat_len> <plut_off> <plut_len> <is_pix4>
+# NET <same fields>                      (.NET only, c_skip cases)
+# END
+CASE pdat_then_plut_ok ok
+IN 204243434c00000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f5441445048000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a554554c5014000000000000003c3c3c3c3c3c3c3c
+OUT 12 64 84 64 160 8 0
+END
+CASE pix4_then_plut_ok ok
+IN 204243434c00000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f34584950480000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a54554c5014000000000000003c3c3c3c3c3c3c3c
+OUT 12 64 84 64 160 8 1
+END
+CASE plut_before_ccb_ok ok
+IN 54554c5014000000000000003c3c3c3c3c3c3c3c204243434c00000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f5441445048000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5
+OUT 32 64 104 64 12 8 0
+END
+CASE unknown_chunk_skipped_ok ok
+IN 204243434c00000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4b4e57550c000000000000005441445048000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a554554c5014000000000000003c3c3c3c3c3c3c3c
+OUT 12 64 96 64 172 8 0
+END
+#
+# No CCB chunk: the C original stores through a null ccb pointer (undefined).
+CASE no_ccb_chunk c_skip
+IN 5441445048000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a554554c5014000000000000003c3c3c3c3c3c3c3c
+NET -1 0 8 64 84 8 0
+END
+#
+# Truncated PDAT: measured C behaviour is ccb=12 pdat=84 (it stores the pointer, then jumps
+# past the buffer end); the .NET parser rejects the declared length instead and reports -1.
+CASE truncated_pdat c_skip
+IN 204243434c00000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f5441445048000000000000000000000000000000
+NET 12 64 -1 0 -1 0 0
+END
+#
+# Empty payload: the C original still executes one walk iteration and reads whatever memory
+# follows the (empty) buffer - measured ccb=12 from stale bytes, i.e. genuinely undefined.
+CASE empty c_skip
+IN 
+NET -1 0 -1 0 -1 0 0
+END

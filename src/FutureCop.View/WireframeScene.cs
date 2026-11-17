@@ -7,7 +7,8 @@ namespace FutureCop.View;
 /// <param name="Assembly">Show the assembled player actor instead of one model.</param>
 /// <param name="BoneFrame">Animation frame fed to the 3DMI sampling of the bone path.</param>
 /// <param name="ForceStatic">Ignore the bone path and draw the rigid single list.</param>
-public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0, bool ForceStatic = false);
+/// <param name="Textured">Render affine-textured and flat-shaded polygons instead of wireframe.</param>
+public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0, bool ForceStatic = false, bool Textured = false);
 
 /// <summary>
 /// Platform-independent wireframe renderer: turns one .MIS model (or the assembled player
@@ -35,6 +36,8 @@ public sealed class WireframeScene
     private readonly int _focal;
     private readonly int _offsetX;
     private readonly int _offsetY;
+    private readonly TextureBank? _textures;
+    private readonly Dictionary<int, Dictionary<int, TextureRecord>> _texByModel = new();
 
     private int _modelIndex;
     private Model _model;
@@ -62,6 +65,8 @@ public sealed class WireframeScene
         Rgb = new byte[width * height * 3];
 
         _file = new MisFile(misPath);
+        if (options.Textured)
+            _textures = TextureBank.FromMisFile(misPath);
         _models = _file.Models
             .Where(m => m.Vertices.TryGetValue(1, out var v) && v.Count > 0 && m.Polygons.Count > 0)
             .ToList();
@@ -156,6 +161,12 @@ public sealed class WireframeScene
         Array.Clear(Rgb);
         var view = ViewTransform.Turn(degrees, _cx, _cy, _cz, _dist);
 
+        if (_textures is not null)
+        {
+            RenderTextured(view);
+            return;
+        }
+
         if (_parts is not null)
         {
             int total = 0;
@@ -185,6 +196,142 @@ public sealed class WireframeScene
             foreach (var (x0, y0, x1, y1) in ModelRender.Edges(face))
                 Line(x0, y0, x1, y1, Palette[face.Group & 7]);
         FaceCount = wire.Count;
+    }
+
+    private void RenderTextured(Gte.Mat view)
+    {
+        var allFaces = new List<(TexturedFace Face, Model Model)>();
+        if (_parts is not null)
+        {
+            foreach (var part in _parts)
+            {
+                var partVerts = part.Model.Vertices[part.Model.IsScripted ? 1 : part.Frame + 1];
+                var composed = ScriptRender.Compose(part.Matrix, view);
+                var projected = part.Model.IsScripted
+                    ? ScriptRender.Project(part.Model, partVerts, part.Frame, composed, _focal, _offsetX, _offsetY, 1)
+                    : ModelRender.Project(Gte.Load(composed), partVerts, _focal, _offsetX, _offsetY, 1);
+                var partWidths = part.Model.Widths.TryGetValue(1, out var pw) ? pw.ToArray() : Array.Empty<short>();
+                foreach (var face in ModelRender.WalkTextured(part.Model.Polygons, projected, partWidths, part.Mask, 0))
+                    allFaces.Add((face, part.Model));
+            }
+        }
+        else
+        {
+            var sv = _scripted
+                ? ScriptRender.Project(_model, _verts, _boneFrame, view, _focal, _offsetX, _offsetY, 1)
+                : ModelRender.Project(Gte.Load(view), _verts, _focal, _offsetX, _offsetY, 1);
+            foreach (var face in ModelRender.WalkTextured(_model.Polygons, sv, _widths, 0xFF, 0))
+                allFaces.Add((face, _model));
+        }
+
+        // Painter's order (largest Z first), matching the PS1 ordering table.
+        allFaces.Sort((a, b) => b.Face.Work.Z.CompareTo(a.Face.Work.Z));
+        foreach (var (face, model) in allFaces)
+            DrawTexturedFace(face, model);
+        FaceCount = allFaces.Count;
+    }
+
+    private Dictionary<int, TextureRecord> TextureLookup(Model model)
+    {
+        if (!_texByModel.TryGetValue(model.Id, out var map))
+        {
+            map = new Dictionary<int, TextureRecord>(model.Textures.Count);
+            foreach (var t in model.Textures)
+                map[t.Offset] = t;
+            _texByModel[model.Id] = map;
+        }
+        return map;
+    }
+
+    private void DrawTexturedFace(TexturedFace face, Model model)
+    {
+        var map = TextureLookup(model);
+        bool hasRec = map.TryGetValue(face.TextureOffset, out var rec);
+
+        int x0 = (short)face.Work.Xy0, y0 = (short)(face.Work.Xy0 >> 16);
+        int x1 = (short)face.Work.Xy1, y1 = (short)(face.Work.Xy1 >> 16);
+        int x2 = (short)face.Work.Xy2, y2 = (short)(face.Work.Xy2 >> 16);
+        int x3 = (short)face.Work.Xy3, y3 = (short)(face.Work.Xy3 >> 16);
+
+        // UVs are packed in polygon vertex order (v0, v1, v2, v3); for type 4 quads Work stores (v0, v1, v3, v2).
+        int u0 = (byte)(rec.Uv0 & 0xFF), v0 = (byte)((rec.Uv0 >> 8) & 0xFF);
+        int u1 = (byte)((rec.Uv0 >> 16) & 0xFF), v1 = (byte)((rec.Uv0 >> 24) & 0xFF);
+        int u2 = (byte)(rec.Uv1 & 0xFF), v2 = (byte)((rec.Uv1 >> 8) & 0xFF);
+        int u3 = (byte)((rec.Uv1 >> 16) & 0xFF), v3 = (byte)((rec.Uv1 >> 24) & 0xFF);
+
+        if (face.Type == 3)
+        {
+            RasterizeTriangle(x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u2, v2, hasRec, rec);
+        }
+        else if (face.Type == 4)
+        {
+            // Work holds (v0, v1, v3, v2) in (Xy0, Xy1, Xy2, Xy3).
+            RasterizeTriangle(x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u3, v3, hasRec, rec);
+            RasterizeTriangle(x1, y1, u1, v1, x3, y3, u2, v2, x2, y2, u3, v3, hasRec, rec);
+        }
+        else
+        {
+            // Billboards (type 5/6) store (top-left, top-right, bottom-left, bottom-right).
+            RasterizeTriangle(x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u2, v2, hasRec, rec);
+            RasterizeTriangle(x1, y1, u1, v1, x3, y3, u3, v3, x2, y2, u2, v2, hasRec, rec);
+        }
+    }
+
+    private void RasterizeTriangle(
+        int x0, int y0, int u0, int v0,
+        int x1, int y1, int u1, int v1,
+        int x2, int y2, int u2, int v2,
+        bool hasRec, TextureRecord rec)
+    {
+        int area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+        if (area == 0) return;
+
+        int minX = Math.Max(0, Math.Min(x0, Math.Min(x1, x2)));
+        int maxX = Math.Min(Width - 1, Math.Max(x0, Math.Max(x1, x2)));
+        int minY = Math.Max(0, Math.Min(y0, Math.Min(y1, y2)));
+        int maxY = Math.Min(Height - 1, Math.Max(y0, Math.Max(y1, y2)));
+        if (minX > maxX || minY > maxY) return;
+
+        bool flat = hasRec && rec.TypeLoaded is 0 or 1;
+        bool missing = !hasRec || (!flat && !_textures!.IsPageLoaded(rec.Tpage));
+        byte flatR = missing ? (byte)255 : (byte)(rec.Rgb >> 16);
+        byte flatG = missing ? (byte)0 : (byte)(rec.Rgb >> 8);
+        byte flatB = missing ? (byte)255 : (byte)rec.Rgb;
+
+        double invArea = 1.0 / area;
+        for (int y = minY; y <= maxY; y++)
+        {
+            for (int x = minX; x <= maxX; x++)
+            {
+                int w0 = (x1 - x) * (y2 - y) - (y1 - y) * (x2 - x);
+                int w1 = (x2 - x) * (y0 - y) - (y2 - y) * (x0 - x);
+                int w2 = (x0 - x) * (y1 - y) - (y0 - y) * (x1 - x);
+                if (area > 0 ? (w0 < 0 || w1 < 0 || w2 < 0) : (w0 > 0 || w1 > 0 || w2 > 0))
+                    continue;
+
+                if (flat || missing)
+                {
+                    int o = (y * Width + x) * 3;
+                    Rgb[o] = flatR;
+                    Rgb[o + 1] = flatG;
+                    Rgb[o + 2] = flatB;
+                    continue;
+                }
+
+                double b0 = w0 * invArea;
+                double b1 = w1 * invArea;
+                double b2 = w2 * invArea;
+                int u = (int)Math.Round(b0 * u0 + b1 * u1 + b2 * u2);
+                int v = (int)Math.Round(b0 * v0 + b1 * v1 + b2 * v2);
+                var (r, g, b, transparent) = _textures!.Vram.SampleRgb(rec.Tpage, rec.Clut, u, v);
+                if (transparent) continue;
+
+                int dst = (y * Width + x) * 3;
+                Rgb[dst] = r;
+                Rgb[dst + 1] = g;
+                Rgb[dst + 2] = b;
+            }
+        }
     }
 
     /// <summary>Copies the RGB frame into a top-down 32-bit BGRX buffer, upscaled by an integer factor.</summary>
