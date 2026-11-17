@@ -2,8 +2,8 @@
 // GTE math (decomp func_80013F08 single-list path) and draws the masked polygon walk
 // (func_80016A64 / func_80015B68) as a wireframe that turns slowly about its own Y axis.
 // Shows the result in an X11 window (320x240 framebuffer, 2x scale; q/Esc closes) and writes
-// a 24-bit BMP of the current frame. Left/right mouse buttons browse individual Cobj models;
-// this does not assemble the player mech. No textures, no shading.
+// a 24-bit BMP of the current frame. Left/right mouse buttons browse models or player actors.
+// The assembly mode is experimental. No textures, no shading.
 //
 //   FC_VIEW_NOWINDOW=1     skip the X11 window (BMP only)
 //   FC_VIEW_FRAMES=<n>     render one full turn as n numbered BMPs instead of a window
@@ -53,6 +53,16 @@ var (cx, cy, cz, radius) = scripted
 // rejects any vertex with sz3 < 0x400, so a small model needs at least ~0x480 distance.
 int dist = (int)Math.Max(0x480, Math.Round(radius * 0x200 / (0.70 * (W / 2.0))));
 
+bool assemblyMode = Environment.GetEnvironmentVariable("FC_VIEW_ASSEMBLY") == "1";
+var actors = file.PlayerActors.GroupBy(a => string.Join(",", a.Resources.Select(r => $"{r.Type}:{r.Id}"))).Select(g => g.First()).ToList();
+int actorIndex = 0;
+IReadOnlyList<PlayerPart>? playerParts = null;
+if (assemblyMode)
+{
+    if (actors.Count == 0) throw new InvalidDataException("No player actors found in mission");
+    playerParts = PlayerAssembly.InitialWalker(actors[0], file.Models);
+    Console.WriteLine($"actor {actors[0].Id}: models {string.Join(",", playerParts.Select(p => p.Model.Id))}");
+}
 var fb = new byte[W * H * 3];
 var palette = new byte[][] {
     new byte[] { 255, 255, 255 }, new byte[] { 120, 200, 255 }, new byte[] { 255, 180, 80 },
@@ -65,8 +75,38 @@ int sw = W * Scale, sh = H * Scale;
 var pixels = new byte[sw * sh * 4];
 int drawn = 0;
 
+void FitAssembly()
+{
+    if (playerParts is null) return;
+    var points = new List<(double X, double Y, double Z)>();
+    foreach (var part in playerParts)
+    {
+        if (!part.Model.Vertices.TryGetValue(part.Model.IsScripted ? 1 : part.Frame + 1, out var pv))
+            throw new InvalidDataException($"Missing model {part.Model.Id} vertices");
+        if (part.Model.IsScripted)
+            points.AddRange(ScriptRender.PoseVertices(part.Model, pv, part.Frame, part.Matrix));
+        else
+            foreach (var v in pv)
+                points.Add(((part.Matrix.W[0] * (double)v.X + part.Matrix.W[3] * (double)v.Y + part.Matrix.W[6] * (double)v.Z) / 65536 + part.Matrix.Tx / 16.0,
+                    (part.Matrix.W[1] * (double)v.X + part.Matrix.W[4] * (double)v.Y + part.Matrix.W[7] * (double)v.Z) / 65536 + part.Matrix.Ty / 16.0,
+                    (part.Matrix.W[2] * (double)v.X + part.Matrix.W[5] * (double)v.Y + part.Matrix.W[8] * (double)v.Z) / 65536 + part.Matrix.Tz / 16.0));
+    }
+    (cx, cy, cz, radius) = BoundsOf(points.ToArray());
+    dist = (int)Math.Max(0x480, Math.Round(radius * 0x200 / (0.70 * (W / 2.0))));
+}
+if (assemblyMode) FitAssembly();
+
 void SelectModel(int step, X11Window window)
 {
+    if (assemblyMode)
+    {
+        actorIndex = (actorIndex + step + actors.Count) % actors.Count;
+        playerParts = PlayerAssembly.InitialWalker(actors[actorIndex], file.Models);
+        FitAssembly();
+        window.SetTitle($"Future Cop wireframe - player actor {actors[actorIndex].Id} (experimental)");
+        Console.WriteLine($"actor {actors[actorIndex].Id}: models {string.Join(",", playerParts.Select(p => p.Model.Id))}");
+        return;
+    }
     modelIndex = (modelIndex + step + models.Count) % models.Count;
     model = models[modelIndex];
     modelId = model.Id;
@@ -87,21 +127,40 @@ void RenderFrame(double degrees)
     Array.Clear(fb);
     // Static instance turned about its own Y axis, centred on the bounding-box middle and
     // pushed dist vertex units in front of the camera.
-    var mat = Turn(degrees, cx, cy, cz, dist);
+    var mat = ViewTransform.Turn(degrees, cx, cy, cz, dist);
     // The scripted path of func_80013F08 poses the vertex ranges through the 3DHY bone stack
     // (func_80013CB8) before the walk. It needs the hierarchy chunk: a model that carries bit 25
     // without 3DHY/3DMI has no bone data on the disc, so it falls back to the static list.
-    var sv = scripted
-        ? ScriptRender.Project(model, verts, boneFrame, mat, 0x200, 160 << 16, 120 << 16, 1)
-        : ModelRender.Project(Gte.Load(mat), verts, 0x200, 160 << 16, 120 << 16, 1);
-    var faces = ModelRender.Walk(model.Polygons, sv, widths, 0xFF, 0);
-    foreach (var f in faces)
+    if (playerParts is not null)
     {
-        var col = palette[f.Group & 7];
-        foreach (var (x0, y0, x1, y1) in ModelRender.Edges(f))
-            Line(fb, x0, y0, x1, y1, col);
+        int total = 0;
+        foreach (var part in playerParts)
+        {
+            var partVerts = part.Model.Vertices[part.Model.IsScripted ? 1 : part.Frame + 1];
+            var view = ScriptRender.Compose(part.Matrix, mat);
+            var projected = part.Model.IsScripted
+                ? ScriptRender.Project(part.Model, partVerts, part.Frame, view, 0x200, 160 << 16, 120 << 16, 1)
+                : ModelRender.Project(Gte.Load(view), partVerts, 0x200, 160 << 16, 120 << 16, 1);
+            var partWidths = part.Model.Widths.TryGetValue(1, out var pw) ? pw.ToArray() : Array.Empty<short>();
+            var partFaces = ModelRender.Walk(part.Model.Polygons, projected, partWidths, part.Mask, 0);
+            foreach (var face in partFaces)
+                foreach (var (x0, y0, x1, y1) in ModelRender.Edges(face))
+                    Line(fb, x0, y0, x1, y1, palette[face.Group & 7]);
+            total += partFaces.Count;
+        }
+        drawn = total;
     }
-    drawn = faces.Count;
+    else
+    {
+        var sv = scripted
+            ? ScriptRender.Project(model, verts, boneFrame, mat, 0x200, 160 << 16, 120 << 16, 1)
+            : ModelRender.Project(Gte.Load(mat), verts, 0x200, 160 << 16, 120 << 16, 1);
+        var faces = ModelRender.Walk(model.Polygons, sv, widths, 0xFF, 0);
+        foreach (var f in faces)
+            foreach (var (x0, y0, x1, y1) in ModelRender.Edges(f))
+                Line(fb, x0, y0, x1, y1, palette[f.Group & 7]);
+        drawn = faces.Count;
+    }
 
     Array.Clear(pixels);
     for (int y = 0; y < sh; y++)
@@ -136,13 +195,17 @@ if (Environment.GetEnvironmentVariable("FC_VIEW_NOWINDOW") == "1")
     return;
 
 double degPerSec = EnvDouble("FC_VIEW_DEG_SEC", DefaultDegPerSec);
-var win = X11Window.TryOpen(sw, sh, pixels, $"Future Cop wireframe - model {modelId}");
+var win = X11Window.TryOpen(sw, sh, pixels, assemblyMode
+    ? $"Future Cop wireframe - player actor {actors[actorIndex].Id} (experimental)"
+    : $"Future Cop wireframe - model {modelId}");
 if (win is null)
 {
     Console.WriteLine("no X display; BMP only");
     return;
 }
-Console.WriteLine($"turning at {degPerSec:0.#} deg/s - left/right click changes model; q/Esc closes");
+Console.WriteLine(assemblyMode
+    ? $"turning at {degPerSec} deg/s - left/right click changes player actor; q/Esc closes"
+    : $"turning at {degPerSec} deg/s - left/right click changes model; q/Esc closes");
 try
 {
     var clock = Stopwatch.StartNew();
@@ -208,21 +271,6 @@ static (int Cx, int Cy, int Cz, int Radius) BoundsFrom(int x0, int x1, int y0, i
     // The turn sweeps X/Z, so the horizontal footprint is the XZ radius, not just X.
     int radius = (int)Math.Ceiling(Math.Max(Math.Sqrt(rx * rx + rz * rz), ry));
     return (cx, cy, cz, Math.Max(radius, 1));
-}
-
-static Gte.Mat Turn(double degrees, int cx, int cy, int cz, int dist)
-{
-    double a = degrees * Math.PI / 180.0;
-    int c = (int)Math.Round(Math.Cos(a) * 65536.0);
-    int s = (int)Math.Round(Math.Sin(a) * 65536.0);
-    // Row-vector turn about Y in 16.16: x' = c*dx + s*dz, z' = -s*dx + c*dz, with the
-    // bounding-box middle put on the optical axis and the model dist units ahead of it.
-    // Gte.Mat translation is 16x the s16 vertex unit (Gte.Load shifts >>4).
-    long tx = cx - (((long)c * cx + (long)s * cz) >> 16);
-    long tz = cz - (((long)c * cz - (long)s * cx) >> 16) + dist;
-    long ty = -cy;
-    return new Gte.Mat(new[] { c, 0, -s, 0, 0x10000, 0, s, 0, c },
-        (int)(tx << 4), (int)(ty << 4), (int)(tz << 4));
 }
 
 static string FramePath(string path, int i) =>

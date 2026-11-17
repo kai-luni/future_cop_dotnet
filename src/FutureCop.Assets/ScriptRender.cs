@@ -44,23 +44,40 @@ public static class ScriptRender
     /// </summary>
     public static Gte.Mat Rotation(int rx, int ry, int rz)
     {
-        (int sx, int cx) = SinCos(rx);
-        (int sy, int cy) = SinCos(ry);
-        (int sz, int cz) = SinCos(rz);
+        int x = rx & 0xfff, y = ry & 0xfff, z = rz & 0xfff;
+        (int sx, int cx) = SinCos(x);
+        (int sy, int cy) = SinCos(y);
+        (int sz, int cz) = SinCos(z);
+        if (z == 0 && y == 0)
+            return new Gte.Mat(new[] { cx, 0, -sx, 0, 65536, 0, sx, 0, cx }, 0, 0, 0);
+        if (z == 0 && x == 0)
+            return new Gte.Mat(new[] { 65536, 0, 0, 0, cy, sy, 0, -sy, cy }, 0, 0, 0);
+        if (y == 0 && x == 0)
+            return new Gte.Mat(new[] { cz, sz, 0, -sz, cz, 0, 0, 0, 65536 }, 0, 0, 0);
+        if (z == 0)
+            return new Gte.Mat(new[] { cx, 0, -sx, ((sy >> 2) * (sx >> 2)) >> 12, cy,
+                ((sy >> 2) * (cx >> 2)) >> 12, ((cy >> 2) * (sx >> 2)) >> 12, -sy,
+                ((cy >> 2) * (cx >> 2)) >> 12 }, 0, 0, 0);
+        if (y == 0)
+            return new Gte.Mat(new[] { ((cz >> 2) * (cx >> 2)) >> 12, ((cx >> 2) * (sz >> 2)) >> 12,
+                -sx, -sz, cz, 0, ((cz >> 2) * (sx >> 2)) >> 12, ((sz >> 2) * (sx >> 2)) >> 12, cx }, 0, 0, 0);
+        if (x == 0)
+            return new Gte.Mat(new[] { cz, sz, 0, (-((cy >> 2) * (sz >> 2))) >> 12,
+                ((cy >> 2) * (cz >> 2)) >> 12, sy, ((sy >> 2) * (sz >> 2)) >> 12,
+                (-((cz >> 2) * (sy >> 2))) >> 12, cy }, 0, 0, 0);
 
         long qcx = cx >> 2, qcy = cy >> 2, qcz = cz >> 2;
-        long qsx = sx >> 2, qsy = sy >> 2;
-        int m2 = -sx; // taken before the >>2 shift in the retail body
-
+        long qsx = sx >> 2, qsy = sy >> 2, qsz = sz >> 2;
+        int m2 = -sx;
         long m0 = (qcz * qcx) >> 12;
-        long m1 = (qcx * sz) >> 12;
+        long m1 = (qcx * qsz) >> 12;
         long t = (qsy * qsx) >> 14;
-        long m3 = ((qcz * t) - (qcy * sz)) >> 12;
-        long m4 = ((qcy * qcz) + (sz * t)) >> 12;
+        long m3 = ((qcz * t) - (qcy * qsz)) >> 12;
+        long m4 = ((qcy * qcz) + (qsz * t)) >> 12;
         long m5 = (qcx * qsy) >> 12;
         long u = (qcy * qsx) >> 14;
-        long m6 = ((qsy * sz) + (u * qcz)) >> 12;
-        long m7 = ((u * sz) - (qcz * qsy)) >> 12;
+        long m6 = ((qsy * qsz) + (u * qcz)) >> 12;
+        long m7 = ((u * qsz) - (qcz * qsy)) >> 12;
         long m8 = (qcy * qcx) >> 12;
 
         return new Gte.Mat(
@@ -71,9 +88,11 @@ public static class ScriptRender
     /// <summary>func_8001846C: sine and cosine in 16.16 from the 4096-step angle table.</summary>
     public static (int Sin, int Cos) SinCos(int angle)
     {
-        double turns = (angle & 0xFFF) / (double)AngleUnitsPerTurn;
-        return ((int)Math.Round(Math.Sin(turns * 2 * Math.PI) * 65536.0),
-                (int)Math.Round(Math.Cos(turns * 2 * Math.PI) * 65536.0));
+        int a = angle & 0xfff;
+        int i = a & 0x3ff;
+        int s = (int)Math.Round(Math.Sin(i * Math.PI / 2048) * 32768) << 1;
+        int c = (int)Math.Round(Math.Sin((1024 - i) * Math.PI / 2048) * 32768) << 1;
+        return (a >> 10) switch { 0 => (s, c), 1 => (c, -s), 2 => (-s, -c), _ => (-c, s) };
     }
 
     /// <summary>
@@ -83,23 +102,22 @@ public static class ScriptRender
     /// </summary>
     public static Gte.Mat Compose(Gte.Mat local, Gte.Mat parent)
     {
-        var w = new int[9];
-        for (int i = 0; i < 3; i++)
+        var loaded = Gte.Load(parent);
+        var input = new[] { local.W[0], local.W[1], local.W[2], local.W[3], local.W[4], local.W[5],
+            local.W[6], local.W[7], local.W[8], local.Tx, local.Ty, local.Tz };
+        var output = new int[12];
+        for (int i = 0; i < 4; i++)
+        {
+            short x = (short)(input[i * 3] >> 4), y = (short)(input[i * 3 + 1] >> 4), z = (short)(input[i * 3 + 2] >> 4);
             for (int j = 0; j < 3; j++)
             {
-                long acc = 0;
-                for (int k = 0; k < 3; k++)
-                    acc += (long)local.W[i * 3 + k] * parent.W[k * 3 + j];
-                w[i * 3 + j] = (int)(acc >> 16);
+                long sum = (long)loaded.R[j * 3] * x + (long)loaded.R[j * 3 + 1] * y + (long)loaded.R[j * 3 + 2] * z;
+                int value = (int)Math.Clamp(sum >> 12, -32768, 32767);
+                output[i * 3 + j] = (j == 1 ? -value : value) << 4;
             }
-
-        int tx = (int)((((long)local.Tx * parent.W[0] + (long)local.Ty * parent.W[3] +
-                         (long)local.Tz * parent.W[6]) >> 16) + parent.Tx);
-        int ty = (int)((((long)local.Tx * parent.W[1] + (long)local.Ty * parent.W[4] +
-                         (long)local.Tz * parent.W[7]) >> 16) + parent.Ty);
-        int tz = (int)((((long)local.Tx * parent.W[2] + (long)local.Ty * parent.W[5] +
-                         (long)local.Tz * parent.W[8]) >> 16) + parent.Tz);
-        return new Gte.Mat(w, tx, ty, tz);
+        }
+        return new Gte.Mat(output[..9], output[9] + parent.Tx, output[10] + parent.Ty,
+            output[11] + parent.Tz);
     }
 
     /// <summary>
@@ -107,23 +125,25 @@ public static class ScriptRender
     /// <see cref="ScriptEntry.Flags"/> are taken directly (translation &lt;&lt; 4, the engine's
     /// 16x vertex unit), the rest are sampled from the 3DMI table at frame + field.
     /// </summary>
-    public static Gte.Mat LocalMatrix(ScriptEntry e, short[] table, int frame)
+    public static Gte.Mat LocalMatrix(ScriptEntry e, short[] table, int frame, bool signedIndices = false)
     {
-        int rx = (e.Flags & 4) != 0 ? e.Rx : TableAt(table, frame, e.Rx);
-        int ry = (e.Flags & 2) != 0 ? e.Ry : TableAt(table, frame, e.Ry);
-        int rz = (e.Flags & 1) != 0 ? e.Rz : TableAt(table, frame, e.Rz);
+        int rx = (e.Flags & 4) != 0 ? e.Rx : TableAt(table, frame, e.Rx, signedIndices);
+        int ry = (e.Flags & 2) != 0 ? e.Ry : TableAt(table, frame, e.Ry, signedIndices);
+        int rz = (e.Flags & 1) != 0 ? e.Rz : TableAt(table, frame, e.Rz, signedIndices);
 
         var rot = Rotation(rx, ry, rz);
-        int x = (e.Flags & 0x20) != 0 ? e.X : TableAt(table, frame, e.X);
-        int y = (e.Flags & 0x10) != 0 ? e.Y : TableAt(table, frame, e.Y);
-        int z = (e.Flags & 0x08) != 0 ? e.Z : TableAt(table, frame, e.Z);
+        int x = (e.Flags & 0x20) != 0 ? e.X : TableAt(table, frame, e.X, signedIndices);
+        int y = (e.Flags & 0x10) != 0 ? e.Y : TableAt(table, frame, e.Y, signedIndices);
+        int z = (e.Flags & 0x08) != 0 ? e.Z : TableAt(table, frame, e.Z, signedIndices);
         return rot with { Tx = x << 4, Ty = y << 4, Tz = z << 4 };
     }
 
-    private static short TableAt(short[] table, int frame, short field)
+    private static short TableAt(short[] table, int frame, short field, bool signedIndices)
     {
-        int index = frame + (ushort)field;
-        return index >= 0 && index < table.Length ? table[index] : (short)0;
+        int index = frame + (signedIndices ? field : (ushort)field);
+        if (index < 0 || index >= table.Length)
+            throw new InvalidDataException($"Animation table index {index} is outside 0..{table.Length - 1}");
+        return table[index];
     }
 
     /// <summary>

@@ -7,12 +7,16 @@ namespace FutureCop.Assets;
 /// Cobj tag at 4-byte alignment and validating that a 4DGI chunk follows the 56-byte
 /// record header; this avoids depending on the not-fully-documented record stride.
 /// </summary>
+public readonly record struct ResourceReference(string Type, int Id);
+public sealed record PlayerActor(int Id, IReadOnlyList<ResourceReference> Resources);
+
 public sealed class MisFile
 {
     private readonly byte[] _data;
     public string Path { get; }
     public IReadOnlyList<int> SectionOffsets { get; }
     public IReadOnlyList<Model> Models { get; }
+    public IReadOnlyList<PlayerActor> PlayerActors { get; }
 
     private static readonly uint CobjTag = ChunkReader.TagValue("Cobj");
     private static readonly uint CtrlTag = ChunkReader.TagValue("CTRL");
@@ -24,6 +28,31 @@ public sealed class MisFile
         _data = File.ReadAllBytes(path);
         SectionOffsets = ReadSections();
         Models = ReadModels();
+        PlayerActors = ReadPlayerActors();
+    }
+
+    private IReadOnlyList<PlayerActor> ReadPlayerActors()
+    {
+        var actors = new List<PlayerActor>();
+        uint tact = ChunkReader.TagValue("tACT"), lsra = ChunkReader.TagValue("aRSL");
+        for (int p = 0; p + 12 <= _data.Length; p += 4)
+        {
+            if (BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(p)) != tact) continue;
+            int length = BinaryPrimitives.ReadInt32LittleEndian(_data.AsSpan(p + 4));
+            int id = BinaryPrimitives.ReadInt32LittleEndian(_data.AsSpan(p + 8));
+            if (length < 16 || length > _data.Length - p || _data[p + 12] != 1) continue;
+            int q = p + length;
+            if (q + 12 > _data.Length || BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(q)) != lsra) continue;
+            int size = BinaryPrimitives.ReadInt32LittleEndian(_data.AsSpan(q + 4));
+            if (size < 52 || size > _data.Length - q || (size - 12) % 8 != 0 ||
+                BinaryPrimitives.ReadInt32LittleEndian(_data.AsSpan(q + 8)) != id) continue;
+            var resources = new List<ResourceReference>();
+            for (int i = q + 12; i < q + size; i += 8)
+                resources.Add(new ResourceReference(ChunkReader.TagName(BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(i))),
+                    BinaryPrimitives.ReadInt32LittleEndian(_data.AsSpan(i + 4))));
+            actors.Add(new PlayerActor(id, resources));
+        }
+        return actors;
     }
 
     private IReadOnlyList<int> ReadSections()
@@ -45,31 +74,72 @@ public sealed class MisFile
         {
             if (BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(p)) != CobjTag) continue;
             int chunkStart = p + 56;
-            if (BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(chunkStart)) != GiTag) continue;
-            var model = ParseModel(p, chunkStart);
+            bool streamed = p >= 24 &&
+                BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(p - 24)) == ChunkReader.TagValue("SHOC") &&
+                BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(p - 8)) == ChunkReader.TagValue("SHDR");
+            if (!streamed && BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(chunkStart)) != GiTag) continue;
+            var model = ParseModel(p, chunkStart, streamed);
             if (model != null) models.Add(model);
         }
         return models;
     }
 
-    private Model? ParseModel(int recordOffset, int chunkStart)
+    private Model? ParseModel(int recordOffset, int chunkStart, bool streamed)
     {
-        var model = new Model
+        int id = (int)BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(recordOffset + 4));
+        int payloadSize = (int)BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(recordOffset + 8));
+        int packet = chunkStart;
+        if (streamed)
         {
-            Id = (int)BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(recordOffset + 4)),
-            RecordOffset = recordOffset,
-        };
-        // Bound the chunk group by the next Cobj record (or EOF); zero padding ends the walk.
+            int headerStart = recordOffset - 24;
+            int headerLength = BinaryPrimitives.ReadInt32LittleEndian(_data.AsSpan(headerStart + 4));
+            if (headerLength < 60 || headerLength > _data.Length - headerStart) return null;
+            packet = headerStart + headerLength;
+            if (payloadSize < 0 || payloadSize > _data.Length) return null;
+            var payload = new byte[payloadSize];
+            int copied = 0;
+            while (copied < payload.Length && packet + 20 <= _data.Length)
+            {
+                uint tag = BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(packet));
+                int length = (int)BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(packet + 4));
+                if (length < 12 || length > _data.Length - packet) return null;
+                if (tag == ChunkReader.TagValue("FILL"))
+                {
+                    // func_8002902C skips the remainder of the read block.
+                    packet = (int)(((long)packet / 0x6000 + 1) * 0x6000);
+                    continue;
+                }
+                uint subtype = BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(packet + 16));
+                if (tag != ChunkReader.TagValue("SHOC") || subtype != ChunkReader.TagValue("SDAT") ||
+                    length < 20 || length - 20 > payload.Length - copied)
+                    return null;
+                Buffer.BlockCopy(_data, packet + 20, payload, copied, length - 20);
+                copied += length - 20;
+                packet += length;
+            }
+            if (copied != payload.Length) return null;
+            return ParsePayload(id, recordOffset, payload, 0, payload.Length);
+        }
         int limit = _data.Length;
         for (int q = chunkStart + 4; q + 4 <= _data.Length; q += 4)
         {
             if (BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(q)) == CobjTag) { limit = q; break; }
         }
-        foreach (var chunk in ChunkReader.Walk(_data, chunkStart, limit))
+        return ParsePayload(id, recordOffset, _data, chunkStart, limit);
+    }
+
+    private static Model? ParsePayload(int id, int recordOffset, byte[] data, int chunkStart, int limit)
+    {
+        var model = new Model
+        {
+            Id = id,
+            RecordOffset = recordOffset,
+        };
+        foreach (var chunk in ChunkReader.Walk(data, chunkStart, limit))
         {
             string name = ChunkReader.TagName(chunk.Tag);
             model.ChunkTags.Add(name);
-            var span = _data.AsSpan(chunk.DataOffset, chunk.DataLength);
+            var span = data.AsSpan(chunk.DataOffset, chunk.DataLength);
             switch (name)
             {
                 case "4DGI":
@@ -118,6 +188,17 @@ public sealed class MisFile
                             BinaryPrimitives.ReadInt16LittleEndian(r.Slice(0x10)),
                             BinaryPrimitives.ReadInt16LittleEndian(r.Slice(0x12))));
                     }
+                    break;
+                case "3DHS":
+                    model.AttachmentPointCount = chunk.Index;
+                    for (int i = 0; i + 8 <= span.Length; i += 8)
+                        model.AttachmentPoints.Add(new Vertex(BinaryPrimitives.ReadInt16LittleEndian(span.Slice(i)),
+                            BinaryPrimitives.ReadInt16LittleEndian(span.Slice(i + 2)),
+                            BinaryPrimitives.ReadInt16LittleEndian(span.Slice(i + 4))));
+                    break;
+                case "AnmD":
+                    for (int i = 0; i + 16 <= span.Length; i += 16)
+                        model.AnimationStarts.Add(BinaryPrimitives.ReadInt16LittleEndian(span.Slice(i + 4)));
                     break;
                 case "3DMI":
                     model.MeshTable = new short[span.Length / 2];

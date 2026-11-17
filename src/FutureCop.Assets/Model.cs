@@ -60,6 +60,9 @@ public sealed class Model
     public byte[] TextureBody { get; set; } = Array.Empty<byte>();
     /// <summary>Decoded texture records using the default Cbmp remap (ids 1..10).</summary>
     public List<TextureRecord> Textures { get; } = new();
+    public int AttachmentPointCount { get; set; }
+    public List<Vertex> AttachmentPoints { get; } = new();
+    public List<short> AnimationStarts { get; } = new();
     public int HierarchyEntries { get; set; }
     public List<string> ChunkTags { get; } = new();
 }

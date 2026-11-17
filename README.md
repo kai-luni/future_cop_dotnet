@@ -83,7 +83,8 @@ dotnet run --project tools/FcModelViewer -- build/disc/files/CW/M1A1.MIS 30 out.
 ```
 
 Reads one `Cobj` model and draws the masked polygon walk as a turning wireframe in
-an X11 window (320x240 framebuffer, 2x scale; q/Esc closes). The model turns about
+an X11 window (320x240 framebuffer, 2x scale; q/Esc closes). Left-click selects
+the previous model and right-click the next model. The model turns about
 its own Y axis, pivoting on the bounding-box centre and fitted to the frame, so it
 stays centred instead of swinging out of view.
 
@@ -100,7 +101,17 @@ Two draw paths, selected by the model itself:
   on the disc and fall back to the static list.
 
 The current frame is also written as a 24-bit BMP for headless capture. No
-textures, no shading. Environment knobs:
+textures, no shading. To preview the experimental player assembly:
+
+```bash
+FC_VIEW_ASSEMBLY=1 dotnet run --project tools/FcModelViewer -- build/disc/files/CW/M1A1.MIS 11 out.bmp
+```
+
+This is a work-in-progress pose, not a verified reproduction: the original C/.NET
+parity tests are incomplete. The mouse buttons switch player actors in the loaded
+mission, not the five parts of one actor; a mission with one actor does not switch.
+
+Environment knobs:
 
 - `FC_VIEW_DEG_SEC=<d>` - turn rate in degrees per second (default 20).
 - `FC_VIEW_NOWINDOW=1` - no window, BMP only.
