@@ -19,9 +19,10 @@ namespace FutureCop.Viewer.Tv
     //   FC_VIEW_MODEL=<id>        start model in single-model mode (default 30)
     //   FC_VIEW_ASSEMBLY=1        show the assembled player actor (the mech)
     //   FC_VIEW_STATIC=1          force the rigid single-list path
+    //   FC_VIEW_TEXTURED=1        draw affine-textured polygons instead of wireframe
     //   FC_VIEW_FRAME=<n>         animation frame of the scripted/bone path
     //   FC_VIEW_DEG_SEC=<d>       turn rate in degrees per second (default 20)
-    //   FC_VIEW_FB=<w>x<h>        render resolution (default 480x360)
+    //   FC_VIEW_FB=<w>x<h>        render resolution (default 320x240, the retail screen)
     //   FC_VIEW_RING=<n>          frame files kept in rotation (default 6)
     //   FC_VIEW_FRAMEDIR=<path>   where those files live (default <appdir>/frames)
     //   FC_VIEW_PROBE=label|scene|full
@@ -56,7 +57,8 @@ namespace FutureCop.Viewer.Tv
                 ViewerApp.WriteLog($"MisFile {watch.ElapsedMilliseconds} ms, models={file.Models.Count}, " +
                                    $"actors={file.PlayerActors.Count}");
                 watch.Restart();
-                var scene = new WireframeScene(mis, new ViewerOptions(30, false, 0, false), 480, 360);
+                var scene = new WireframeScene(mis, new ViewerOptions(
+                    30, false, 0, false, Environment.GetEnvironmentVariable("FC_VIEW_TEXTURED") == "1"), 480, 360);
                 ViewerApp.WriteLog($"scene {watch.ElapsedMilliseconds} ms: {scene.Description}");
                 for (int i = 0; i < 4; i++)
                 {
@@ -78,8 +80,10 @@ namespace FutureCop.Viewer.Tv
 
     internal sealed class ViewerApp : NUIApplication
     {
-        private const int DefaultWidth = 480;
-        private const int DefaultHeight = 360;
+        // The retail clip byte inside Gte.Rtps tests against a 320x240 screen, so the
+        // raster stays at the original resolution and the ImageView scales it up.
+        private const int DefaultWidth = 320;
+        private const int DefaultHeight = 240;
         private static readonly string LogPath =
             Environment.GetEnvironmentVariable("FC_VIEW_LOGFILE") ?? "/tmp/fcview-app.log";
 
@@ -143,7 +147,8 @@ namespace FutureCop.Viewer.Tv
                     ModelId: EnvInt("FC_VIEW_MODEL", 30),
                     Assembly: Environment.GetEnvironmentVariable("FC_VIEW_ASSEMBLY") == "1",
                     BoneFrame: EnvInt("FC_VIEW_FRAME", 0),
-                    ForceStatic: Environment.GetEnvironmentVariable("FC_VIEW_STATIC") == "1");
+                    ForceStatic: Environment.GetEnvironmentVariable("FC_VIEW_STATIC") == "1",
+                    Textured: Environment.GetEnvironmentVariable("FC_VIEW_TEXTURED") == "1");
                 var watch = Stopwatch.StartNew();
                 _scene = new WireframeScene(mis, options, _bufferWidth, _bufferHeight);
                 WriteLog($"scene {watch.ElapsedMilliseconds} ms: {_scene.Description}");

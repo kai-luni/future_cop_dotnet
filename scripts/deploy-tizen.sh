@@ -17,7 +17,7 @@ B=/opt/usr/home/owner/share/tmp
 APPDIR="$B/fcview/app"
 ASSETS="$APPDIR/assets"
 MIS="${MIS:-$ROOT/build/disc/files/CW/M1A1.MIS}"
-ENV_VARS="${FC_VIEW_ENV:-FC_VIEW_ASSEMBLY=1}"
+ENV_VARS="${FC_VIEW_ENV:-FC_VIEW_ASSEMBLY=1 FC_VIEW_TEXTURED=1}"
 
 tv() { python3 "$AGENT" cmd "$1"; }
 

@@ -180,7 +180,7 @@ The TV runs .NET 6 natively, so the app is hosted by the local `Arm32ManualMappe
 
 ```bash
 TVAGENT=... ./scripts/deploy-tizen.sh deploy   # push dlls + M1A1.MIS, copy Tizen deps
-TVAGENT=... FC_VIEW_ENV="FC_VIEW_ASSEMBLY=1" ./scripts/deploy-tizen.sh start
+TVAGENT=... ./scripts/deploy-tizen.sh start    # default: FC_VIEW_ASSEMBLY=1 FC_VIEW_TEXTURED=1
 ./scripts/deploy-tizen.sh log                  # /tmp/fcview.log + /tmp/fcview-app.log
 ./scripts/deploy-tizen.sh shot out.png         # DRM plane readback
 ./scripts/deploy-tizen.sh stop
@@ -188,14 +188,20 @@ TVAGENT=... FC_VIEW_ENV="FC_VIEW_ASSEMBLY=1" ./scripts/deploy-tizen.sh start
 
 Remote control (window keeps focus): left/right browse the subject (player actor or
 model), up/down step through the mission's models, OK pauses/resumes the turn, back
-closes. `FC_VIEW_PROBE=label|scene|full` and `FC_VIEW_SELFTEST=1` are bring-up
-diagnostics.
+closes. `FC_VIEW_TEXTURED=0` falls back to the wireframe, `FC_VIEW_PROBE=label|scene|full`
+and `FC_VIEW_SELFTEST=1` are bring-up diagnostics.
 
 Presentation note: `NativeImageSource`/`ImageView` stays black under the mapper and a
 `TextLabel` deadlocks in its constructor, so the TV frontend hands each frame to DALi
 as a rotating ring of BMP files (`FC_VIEW_RING`, default 6) and there is no HUD yet.
-Measured on the device: ~30 fps timer ticks, 0-1 ms software render per frame at
-480x360.
+Measured on the device: ~30 fps timer ticks with textured polygons, 320x240 raster
+scaled up by the ImageView.
+
+The raster stays at the retail 320x240 on every profile: the clip byte built inside
+`Gte.Rtps` compares against the fixed PS1 screen constants (`0x140`/`0x80` width mode
+and `0xF0` height), so a taller framebuffer silently drops the bottom-most polygons
+(at 480x360 the mech's feet disappeared while the face count fell from 79 to 68).
+Scaling up is the presenter's job, not the rasterizer's.
 
 ## Texture pipeline
 
