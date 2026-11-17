@@ -4,34 +4,58 @@ using Xunit;
 
 namespace FutureCop.Assets.Tests;
 
+/// <summary>
+/// Runs tests/golden/joints.vectors (fcop-joints-golden/v2) against the ported chain.
+/// Every row carries the whole input, so the .NET suite and the C host harness execute
+/// exactly the same cases; the C side runs original func_80052960.
+/// </summary>
 public class JointsProbeTests
 {
     [Fact]
     public void JointMatricesMatchOriginalC()
     {
         string path = Path.Combine(AppContext.BaseDirectory, "golden", "joints.vectors");
-        foreach (string line in File.ReadLines(path))
+        short[] table = Array.Empty<short>();
+        int count = 0;
+        foreach (string raw in File.ReadLines(path))
         {
-            int[] v = line.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .Select(x => unchecked((int)uint.Parse(x, NumberStyles.HexNumber))).ToArray();
-            int c = v[0];
-            var model = new Model { MeshTable = Enumerable.Range(0,32).Select(i => (short)(i*41-500)).ToArray() };
-            for (int i=0;i<5;i++)
+            string text = raw.Trim();
+            if (text.Length == 0 || text.StartsWith('#')) continue;
+            string[] tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (tokens[0] == "TABLE")
             {
-                byte flags = (byte)((c%2 != 0 ? 0x3f : 0) | (i==c-1 && c>=1 && c<=5 ? 0x80 : 0));
-                short x=(short)(c%2!=0?10+i*11:i), y=(short)(c%2!=0?-20+i*7:i+1), z=(short)(c%2!=0?30-i*3:i+2);
-                short rx=(short)(c%2!=0?33+i*91:i+3), ry=(short)(c%2!=0?87-i*21:i+4), rz=(short)(c%2!=0?-70+i*13:i+5);
-                model.Hierarchy.Add(new ScriptEntry((byte)(i%3+1),0,0,0,0,0,0,flags,x,y,z,rx,ry,rz));
+                table = tokens.Skip(1)
+                    .Select(t => (short)unchecked((int)uint.Parse(t, NumberStyles.HexNumber))).ToArray();
+                continue;
             }
-            var (third,fifth)=PlayerAssembly.FindJoints(model,3,Gte.Mat.Identity(160,320,480));
-            AssertMatrix(v[1..13], fifth);
-            AssertMatrix(v[13..25], third);
+            int[] v = tokens.Select(t => unchecked((int)uint.Parse(t, NumberStyles.HexNumber))).ToArray();
+            Assert.True(table.Length > 0, "TABLE directive missing before the first case");
+            int offset = v[1];
+            int nrec = v[14];
+            Assert.InRange(nrec, 1, 5);
+            Assert.Equal(39 + 8 * nrec, v.Length);
+            var model = new Model { MeshTable = table };
+            for (int i = 0; i < nrec; i++)
+            {
+                int o = 15 + 8 * i;
+                model.Hierarchy.Add(new ScriptEntry((byte)v[o], 0, 0, 0, 0, 0, 0, (byte)v[o + 1],
+                    (short)v[o + 2], (short)v[o + 3], (short)v[o + 4],
+                    (short)v[o + 5], (short)v[o + 6], (short)v[o + 7]));
+            }
+            var root = new Gte.Mat(v[2..11], v[11], v[12], v[13]);
+            var (third, fifth) = PlayerAssembly.FindJoints(model, offset, root);
+            int exp = 15 + 8 * nrec;
+            AssertMatrix(v[exp..(exp + 12)], fifth);
+            AssertMatrix(v[(exp + 12)..(exp + 24)], third);
+            count++;
         }
+        Assert.Equal(7, count);
     }
+
     private static void AssertMatrix(int[] expected, Gte.Mat? actual)
     {
         if (expected.All(x => x == 0x12345678)) { Assert.Null(actual); return; }
         Assert.NotNull(actual);
-        Assert.Equal(expected, actual.Value.W.Concat(new[]{ actual.Value.Tx, actual.Value.Ty, actual.Value.Tz }));
+        Assert.Equal(expected, actual.Value.W.Concat(new[] { actual.Value.Tx, actual.Value.Ty, actual.Value.Tz }));
     }
 }
