@@ -49,15 +49,19 @@ schema documented in the file header). Both suites assert the same cases:
 
 ```bash
 dotnet test tests/FutureCop.Assets.Tests          # .NET xUnit, 12 tests
-bash tests_host/build.sh                          # C harness vs ORIGINAL decomp C
+bash ../future-cop-lapd-ps1/tests/host/build.sh   # C harness vs ORIGINAL decomp C
 ```
 
-The C harness (`tests_host/`) compiles the unmodified decomp functions
-`800131A0`, `80012E48`, `8001306C`, `80012E1C`, `80063C5C` from the decomp repo
-(`FCOP_DECOMP`, default `~/git/future-cop-lapd-ps1`) with its PS1 cross-gcc
-(`.toolchain/gcc-2.7.2-cdk` + maspsx + mipsel-binutils) and runs the freestanding
-MIPS binary under a user-local qemu-mipsel (`~/.local/share/qemu-user/`, extracted
-from Ubuntu `qemu-user` deb; no root needed). It feeds synthetic `Cobj` wrappers
-around each vector body through the real loader and compares output hex plus every
-decoded record field; `unknown_type` cases assert the retail infinite loop via
-fork+alarm; `index_out_of_range` is skipped in C (retail reads past the table).
+The C harness lives in the decomp repo (`tests/host/`): it compiles the unmodified
+decomp functions `800131A0`, `80012E48`, `8001306C`, `80012E1C`, `80063C5C` with
+that repo's PS1 cross-gcc (`.toolchain/gcc-2.7.2-cdk` + maspsx + mipsel-binutils)
+and runs the freestanding MIPS binary under a user-local qemu-mipsel
+(`~/.local/share/qemu-user/`, extracted from Ubuntu `qemu-user` deb; no root
+needed). The golden vectors stay in this repo as the shared fixture; the harness
+reads them via `VECTORS` (default: sibling checkout of this repo). It feeds
+synthetic `Cobj` wrappers around each vector body through the real loader and
+compares output hex plus every decoded record field; `unknown_type` cases assert
+the retail infinite loop via fork+alarm; `index_out_of_range` is skipped in C
+(retail reads past the table). The harness build is test-only (own flags, own
+output dir `tests/host/build/`): the production matching build is untouched and
+still reproduces retail bytecode byte-exactly (subset verify 7/7 PASS).
