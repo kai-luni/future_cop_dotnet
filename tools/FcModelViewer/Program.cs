@@ -2,7 +2,8 @@
 // GTE math (decomp func_80013F08 single-list path) and draws the masked polygon walk
 // (func_80016A64 / func_80015B68) as a wireframe that turns slowly about its own Y axis.
 // Shows the result in an X11 window (320x240 framebuffer, 2x scale; q/Esc closes) and writes
-// a 24-bit BMP of the current frame. No textures, no shading.
+// a 24-bit BMP of the current frame. Left/right mouse buttons browse individual Cobj models;
+// this does not assemble the player mech. No textures, no shading.
 //
 //   FC_VIEW_NOWINDOW=1     skip the X11 window (BMP only)
 //   FC_VIEW_FRAMES=<n>     render one full turn as n numbered BMPs instead of a window
@@ -19,8 +20,10 @@ string mis = args.Length > 0 ? args[0] : "build/disc/files/CW/M1A1.MIS";
 int modelId = args.Length > 1 ? int.Parse(args[1]) : 30;
 string bmpPath = args.Length > 2 ? args[2] : "wireframe.bmp";
 var file = new MisFile(mis);
-var model = file.Models.FirstOrDefault(m => m.Id == modelId)
-    ?? throw new Exception($"model {modelId} not in {mis}");
+var models = file.Models.Where(m => m.Vertices.TryGetValue(1, out var v) && v.Count > 0 && m.Polygons.Count > 0).ToList();
+int modelIndex = models.FindIndex(m => m.Id == modelId);
+if (modelIndex < 0) throw new Exception($"model {modelId} not drawable in {mis}");
+var model = models[modelIndex];
 // The 4DGI chunk itself is the model header (decomp func_800131A0: h = chunk start, flags at
 // +0x0C = first data word, 80012E48.c:58). Bit 25 of that word selects the scripted/bone path
 // (func_80013F08), which is drawn through ScriptRender instead of the static single list.
@@ -61,6 +64,23 @@ var palette = new byte[][] {
 int sw = W * Scale, sh = H * Scale;
 var pixels = new byte[sw * sh * 4];
 int drawn = 0;
+
+void SelectModel(int step, X11Window window)
+{
+    modelIndex = (modelIndex + step + models.Count) % models.Count;
+    model = models[modelIndex];
+    modelId = model.Id;
+    verts = model.Vertices[1];
+    widths = model.Widths.TryGetValue(1, out var nextWidths) ? nextWidths.ToArray() : Array.Empty<short>();
+    scripted = model.IsScripted && model.Hierarchy.Count > 0 &&
+        Environment.GetEnvironmentVariable("FC_VIEW_STATIC") != "1";
+    (cx, cy, cz, radius) = scripted
+        ? BoundsOf(ScriptRender.PoseVertices(model, verts, boneFrame, Gte.Mat.Identity(0, 0, 0)))
+        : Bounds(verts);
+    dist = (int)Math.Max(0x480, Math.Round(radius * 0x200 / (0.70 * (W / 2.0))));
+    window.SetTitle($"Future Cop wireframe - model {modelId}");
+    Console.WriteLine($"model {modelId}: {verts.Count} verts, {model.Polygons.Count} parts");
+}
 
 void RenderFrame(double degrees)
 {
@@ -122,12 +142,12 @@ if (win is null)
     Console.WriteLine("no X display; BMP only");
     return;
 }
-Console.WriteLine($"turning at {degPerSec:0.#} deg/s - q/Esc closes");
+Console.WriteLine($"turning at {degPerSec:0.#} deg/s - left/right click changes model; q/Esc closes");
 try
 {
     var clock = Stopwatch.StartNew();
     double last = 0, angle = 0;
-    while (win.Pump())
+    while (win.Pump(step => SelectModel(step, win)))
     {
         double now = clock.Elapsed.TotalSeconds;
         angle = (angle + degPerSec * (now - last)) % 360.0;
@@ -288,7 +308,7 @@ sealed class X11Window
         int s = XDefaultScreen(d);
         IntPtr win = XCreateSimpleWindow(d, XRootWindow(d, s), 0, 0, (uint)w, (uint)h, 1, 0, 0);
         XStoreName(d, win, title);
-        XSelectInput(d, win, (1 << 15) | (1 << 1) | (1 << 17)); // Exposure | KeyPress | StructureNotify
+        XSelectInput(d, win, (1 << 15) | (1 << 1) | (1 << 2) | (1 << 17)); // Exposure | KeyPress | ButtonPress | StructureNotify
         XMapWindow(d, win);
         // XImage keeps the data pointer: pin the buffer for the window's lifetime,
         // otherwise the GC relocates it and XPutImage reads moved memory.
@@ -304,8 +324,10 @@ sealed class X11Window
         XFlush(_d);
     }
 
+    public void SetTitle(string title) => XStoreName(_d, _win, title);
+
     /// <summary>Drains pending X events; false = window closed or q/Esc pressed.</summary>
-    public bool Pump()
+    public bool Pump(Action<int> navigate)
     {
         var ev = new byte[192];
         while (XPending(_d) > 0)
@@ -315,6 +337,11 @@ sealed class X11Window
             {
                 case 2: // KeyPress: q / Escape quit
                     if (ev[32] == 24 || ev[32] == 9) return false;
+                    break;
+                case 4: // ButtonPress: button field in the native XButtonEvent
+                    uint button = BitConverter.ToUInt32(ev, IntPtr.Size == 8 ? 84 : 48);
+                    if (button == 1) navigate(-1);
+                    else if (button == 3) navigate(1);
                     break;
                 case 17: // DestroyNotify
                 case 33: // ClientMessage (window manager close)
