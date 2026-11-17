@@ -44,11 +44,11 @@ dotnet run --project tools/FcAssetTool -- dump build/disc/files/CW/M1A1.MIS 11
 
 ## Tests (identical cases in .NET and C)
 
-Shared golden vectors: `tests/golden/3dtl.vectors` (line form `fcop-3dtl-golden/v1`,
+Shared golden vectors: `tests/golden/3dtl.vectors` (line form `fcop-3dtl-golden/v2`,
 schema documented in the file header). Both suites assert the same cases:
 
 ```bash
-dotnet test tests/FutureCop.Assets.Tests          # .NET xUnit, 47 tests
+dotnet test tests/FutureCop.Assets.Tests          # .NET xUnit, 61 tests
 bash ../future-cop-lapd-ps1/tests/host/build.sh   # C harness vs ORIGINAL decomp C
 ```
 
@@ -60,11 +60,28 @@ and runs the freestanding MIPS binary under a user-local qemu-mipsel
 needed). The golden vectors stay in this repo as the shared fixture; the harness
 reads them via `VECTORS` (default: sibling checkout of this repo). It feeds
 synthetic `Cobj` wrappers around each vector body through the real loader and
-compares output hex plus every decoded record field; `unknown_type` cases assert
-the retail infinite loop via fork+alarm; `index_out_of_range` is skipped in C
-(retail reads past the table). The harness build is test-only (own flags, own
+compares output hex plus every decoded record field.
+
+A case claims parity only where both sides can measure it: `CASE <id> ok` means
+C and .NET assert the same `OUT`/`REC` lines, `c_skip` marks retail behaviour that
+is undefined (the C harness skips it), and `c_hang` marks the retail infinite loop
+proven by fork+alarm in C. In the two non-parity modes the .NET expectations live
+in `NET`/`NET_REC` lines, and the C harness rejects `OUT`/`REC` there, so no
+unmeasured parity can slip through. The harness build is test-only (own flags, own
 output dir `tests/host/build/`): the production matching build is untouched and
 still reproduces retail bytecode byte-exactly (subset verify 7/7 PASS).
+
+`tests/golden/compose.vectors` (`fcop-compose-golden/v2`) and
+`tests/golden/joints.vectors` (`fcop-joints-golden/v2`) drive the bone compose
+(`func_80013CB8`, `func_8001006C`) and the joint chain (`func_80052960`). Each row
+carries the complete input - `TABLE` directive, parent/root matrix, entry or record
+fields, offset - next to the expected matrices, so the .NET suite and the C
+harnesses (`compose_test.sh`, `joints_test.sh`) execute identical cases instead of
+re-deriving inputs in code. Their GTE leaf primitives are software models
+(`gte_ref.c` on the C side, `Gte.cs` in .NET), so those two files prove
+model-against-model parity, not hardware-GTE parity. The joints fixture contains a
+chain whose fields are all negative, which only stays inside the table with a
+sign-extended `s16` index (`LocalMatrix(..., signedIndices: true)`).
 
 `tests/golden/render.vectors` (`fcop-render-golden/v1`) adds the derived render
 path: GTE matrix load / mvmva / rtps+clip (asm units `80010750`, `8001010C`,
