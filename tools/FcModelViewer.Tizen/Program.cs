@@ -107,6 +107,7 @@ namespace FutureCop.Viewer.Tv
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private double _lastSeconds;
         private int _frames;
+        private int _tickFailures;
         private long _fpsStamp;
         private double _fps;
 
@@ -245,8 +246,11 @@ namespace FutureCop.Viewer.Tv
             }
             catch (Exception ex)
             {
-                WriteLog("tick failed: " + ex);
-                _timer.Stop();
+                // Keep the loop alive: a single bad frame must not freeze the picture and look
+                // like a crash. The first failures carry the stack, then only the counter.
+                _tickFailures++;
+                if (_tickFailures <= 5) WriteLog($"tick failed ({_tickFailures}): " + ex);
+                else if (_tickFailures % 100 == 0) WriteLog($"tick failed {_tickFailures}x, still running");
             }
         }
 
@@ -302,7 +306,19 @@ namespace FutureCop.Viewer.Tv
             string name = e.Key.KeyPressedName;
             int code = e.Key.KeyCode;
             WriteLog($"key {name} ({code})");
+            try
+            {
+                HandleKey(name);
+            }
+            catch (Exception ex)
+            {
+                // An exception must not unwind through the native NUI callback.
+                WriteLog("key failed: " + ex);
+            }
+        }
 
+        private void HandleKey(string name)
+        {
             switch (name)
             {
                 case "Left":
@@ -332,8 +348,11 @@ namespace FutureCop.Viewer.Tv
         private void Select(int step)
         {
             if (_scene == null) return;
-            WriteLog(_scene.Select(step));
-            _angle = 0;
+            // The mech keeps its current angle: resetting it made every form change look like a
+            // jump back to the front view.
+            string before = _scene.Description;
+            string after = _scene.Select(step);
+            WriteLog($"select {step}: {before} -> {after} (progress {_scene.Form?.Progress ?? -1}, angle {_angle:0.0})");
             if (_hud != null) _hud.Text = HudText();
         }
 

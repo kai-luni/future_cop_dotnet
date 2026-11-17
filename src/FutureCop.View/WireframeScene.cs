@@ -92,7 +92,7 @@ public sealed class WireframeScene
             _verts = Array.Empty<Vertex>();
             _widths = Array.Empty<short>();
             _form = new PlayerForm();
-            RebuildAssembly();
+            RebuildAssembly(refit: true);
         }
         else
         {
@@ -128,11 +128,14 @@ public sealed class WireframeScene
     /// <summary>Form of the assembled player mech, null outside the assembly mode.</summary>
     public PlayerForm? Form => _form;
 
+    /// <summary>Camera framing (pivot and distance) - lets a test prove it stays put.</summary>
+    public (int Cx, int Cy, int Cz, int Dist) Framing => (_cx, _cy, _cz, _dist);
+
     /// <summary>
     /// Rebuilds the five instances for the current form progress. The camera is only refitted
     /// when the subject changes, so an ongoing transition does not make the view jump.
     /// </summary>
-    private void RebuildAssembly(bool refit = true)
+    private void RebuildAssembly(bool refit = false)
     {
         _parts = _form!.Build(_actors[_actorIndex], _file.Models);
         if (refit) FitAssembly();
@@ -424,10 +427,31 @@ public sealed class WireframeScene
         SetFraming(cx, cy, cz, radius);
     }
 
+    /// <summary>
+    /// Frames the camera on the union of the poses a form change passes through. Fitting only the
+    /// current pose would move the camera on every tick, and fitting only the walker would push the
+    /// lifted hover body out of the frame.
+    /// </summary>
     private void FitAssembly()
     {
         var points = new List<(double X, double Y, double Z)>();
-        foreach (var part in _parts!)
+        if (_form is not null)
+        {
+            foreach (int progress in new[] { 0, 0x4000, 0x8000, 0xC000, PlayerForm.FullProgress })
+                CollectAssemblyPoints(PlayerForm.Build(_actors[_actorIndex], _file.Models, progress), points);
+        }
+        else
+        {
+            CollectAssemblyPoints(_parts!, points);
+        }
+        (var cx, var cy, var cz, var radius) = BoundsOf(points.ToArray());
+        SetFraming(cx, cy, cz, radius);
+    }
+
+    private static void CollectAssemblyPoints(IReadOnlyList<PlayerPart> parts,
+        List<(double X, double Y, double Z)> points)
+    {
+        foreach (var part in parts)
         {
             if (!part.Model.Vertices.TryGetValue(part.Model.IsScripted ? 1 : part.Frame + 1, out var pv))
                 throw new InvalidDataException($"Missing model {part.Model.Id} vertices");
@@ -442,8 +466,6 @@ public sealed class WireframeScene
                     (part.Matrix.W[1] * (double)v.X + part.Matrix.W[4] * (double)v.Y + part.Matrix.W[7] * (double)v.Z) / 65536 + part.Matrix.Ty / 16.0,
                     (part.Matrix.W[2] * (double)v.X + part.Matrix.W[5] * (double)v.Y + part.Matrix.W[8] * (double)v.Z) / 65536 + part.Matrix.Tz / 16.0));
         }
-        (var cx, var cy, var cz, var radius) = BoundsOf(points.ToArray());
-        SetFraming(cx, cy, cz, radius);
     }
 
     private void SetFraming(int cx, int cy, int cz, int radius)

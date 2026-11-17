@@ -128,15 +128,22 @@ public sealed class PlayerForm
         : (MainScrubClip, CompanionScrubClip);
 
     /// <summary>Builds the five instances for the current progress.</summary>
-    public IReadOnlyList<PlayerPart> Build(PlayerActor actor, IReadOnlyList<Model> models)
+    public IReadOnlyList<PlayerPart> Build(PlayerActor actor, IReadOnlyList<Model> models) =>
+        Build(actor, models, Progress);
+
+    /// <summary>
+    /// Builds the five instances for an explicit progress value, so a caller can sample the poses
+    /// of a whole transition (the viewer frames the camera on their union).
+    /// </summary>
+    public static IReadOnlyList<PlayerPart> Build(PlayerActor actor, IReadOnlyList<Model> models, int progress)
     {
         Model Main() => ModelOf(actor, models, 0);
         Model Companion() => ModelOf(actor, models, 2);
-        var (mainMask, companionMask) = Masks(Progress);
-        int mainFrame = Frame(Main(), MainRestClip, MainScrubClip, MainHoverClip, Progress);
-        int companionFrame = Frame(Companion(), CompanionRestClip, CompanionScrubClip, CompanionHoverClip, Progress);
+        var (mainMask, companionMask) = Masks(progress);
+        int mainFrame = Frame(Main(), MainRestClip, MainScrubClip, MainHoverClip, progress);
+        int companionFrame = Frame(Companion(), CompanionRestClip, CompanionScrubClip, CompanionHoverClip, progress);
         return PlayerAssembly.Build(actor, models, mainFrame, companionFrame, mainMask, companionMask,
-            Height(Progress));
+            Height(progress));
     }
 
     /// <summary>Model of one LSRa resource slot of the actor.</summary>
