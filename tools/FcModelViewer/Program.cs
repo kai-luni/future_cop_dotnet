@@ -21,16 +21,30 @@ string bmpPath = args.Length > 2 ? args[2] : "wireframe.bmp";
 var file = new MisFile(mis);
 var model = file.Models.FirstOrDefault(m => m.Id == modelId)
     ?? throw new Exception($"model {modelId} not in {mis}");
-if (((model.Header[3] >> 25) & 1) != 0)
-    throw new Exception($"model {modelId} is scripted (bit 25); static path only for now");
+// The 4DGI chunk itself is the model header (decomp func_800131A0: h = chunk start, flags at
+// +0x0C = first data word, 80012E48.c:58). Bit 25 of that word selects the scripted/bone path
+// (func_80013F08), which is drawn through ScriptRender instead of the static single list.
 var verts = model.Vertices[1]; // frame 0 -> list index 1
 var widths = model.Widths.TryGetValue(1, out var w) ? w.ToArray() : Array.Empty<short>();
-Console.WriteLine($"model {modelId}: {verts.Count} verts, {model.Polygons.Count} parts");
+Console.WriteLine($"model {modelId}: {verts.Count} verts, {model.Polygons.Count} parts, " +
+    (model.IsScripted
+        ? $"scripted path (4DGI flags 0x{model.Flags:X8}, {model.Hierarchy.Count} bones, " +
+          $"table {model.MeshTable.Length} s16)" +
+          (model.Hierarchy.Count == 0 ? " - no 3DHY on disc, drawing the static list" : "")
+        : $"static path (4DGI flags 0x{model.Flags:X8})"));
 
 // The models sit off their local origin (a car body is not centred on (0,0)), so the turn
 // uses the frame-0 bounding-box centre as pivot; otherwise the model swings out of frame.
 // The camera distance is fitted so the model fills a fixed share of the 320x240 frame.
-var (cx, cy, cz, radius) = Bounds(verts);
+// Scripted models are measured after posing, because their bones move ranges apart.
+// FC_VIEW_FRAME selects the animation frame of the scripted path (3DMI sampling offset).
+int boneFrame = Math.Max(0, int.Parse(Environment.GetEnvironmentVariable("FC_VIEW_FRAME") ?? "0"));
+// FC_VIEW_STATIC=1 forces the rigid single-list path for comparison with a posed model.
+bool scripted = model.IsScripted && model.Hierarchy.Count > 0 &&
+    Environment.GetEnvironmentVariable("FC_VIEW_STATIC") != "1";
+var (cx, cy, cz, radius) = scripted
+    ? BoundsOf(ScriptRender.PoseVertices(model, verts, boneFrame, Gte.Mat.Identity(0, 0, 0)))
+    : Bounds(verts);
 // Frame fill: the turn sweeps the XZ radius across the horizontal axis, so size the
 // distance on that (0.70 of half the width). The floor matters: the retail clip byte
 // rejects any vertex with sz3 < 0x400, so a small model needs at least ~0x480 distance.
@@ -53,8 +67,13 @@ void RenderFrame(double degrees)
     Array.Clear(fb);
     // Static instance turned about its own Y axis, centred on the bounding-box middle and
     // pushed dist vertex units in front of the camera.
-    var loaded = Gte.Load(Turn(degrees, cx, cy, cz, dist));
-    var sv = ModelRender.Project(loaded, verts, 0x200, 160 << 16, 120 << 16, 1);
+    var mat = Turn(degrees, cx, cy, cz, dist);
+    // The scripted path of func_80013F08 poses the vertex ranges through the 3DHY bone stack
+    // (func_80013CB8) before the walk. It needs the hierarchy chunk: a model that carries bit 25
+    // without 3DHY/3DMI has no bone data on the disc, so it falls back to the static list.
+    var sv = scripted
+        ? ScriptRender.Project(model, verts, boneFrame, mat, 0x200, 160 << 16, 120 << 16, 1)
+        : ModelRender.Project(Gte.Load(mat), verts, 0x200, 160 << 16, 120 << 16, 1);
     var faces = ModelRender.Walk(model.Polygons, sv, widths, 0xFF, 0);
     foreach (var f in faces)
     {
@@ -151,6 +170,19 @@ static (int Cx, int Cy, int Cz, int Radius) Bounds(IReadOnlyList<Vertex> verts)
         y0 = Math.Min(y0, v.Y); y1 = Math.Max(y1, v.Y);
         z0 = Math.Min(z0, v.Z); z1 = Math.Max(z1, v.Z);
     }
+    return BoundsFrom(x0, x1, y0, y1, z0, z1);
+}
+
+static (int Cx, int Cy, int Cz, int Radius) BoundsOf((double X, double Y, double Z)[] pts)
+{
+    return BoundsFrom(
+        (int)Math.Floor(pts.Min(p => p.X)), (int)Math.Ceiling(pts.Max(p => p.X)),
+        (int)Math.Floor(pts.Min(p => p.Y)), (int)Math.Ceiling(pts.Max(p => p.Y)),
+        (int)Math.Floor(pts.Min(p => p.Z)), (int)Math.Ceiling(pts.Max(p => p.Z)));
+}
+
+static (int Cx, int Cy, int Cz, int Radius) BoundsFrom(int x0, int x1, int y0, int y1, int z0, int z1)
+{
     int cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, cz = (z0 + z1) / 2;
     double rx = (x1 - x0) / 2.0, ry = (y1 - y0) / 2.0, rz = (z1 - z0) / 2.0;
     // The turn sweeps X/Z, so the horizontal footprint is the XZ radius, not just X.

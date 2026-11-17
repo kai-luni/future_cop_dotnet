@@ -82,12 +82,22 @@ for triangles: retail leaves the walk's stack work block stale there.
 dotnet run --project tools/FcModelViewer -- build/disc/files/CW/M1A1.MIS 30 out.bmp
 ```
 
-Reads one static `Cobj` model (bit 25 clear; scripted/bone models are rejected
-for now), projects frame 0 through the derived single-list path of
-`func_80013F08` and draws the masked polygon walk as a turning wireframe in an
-X11 window (320x240 framebuffer, 2x scale; q/Esc closes). The model turns about
-its own Y axis, pivoting on the frame-0 bounding-box centre and fitted to the
-frame, so it stays centred instead of swinging out of view.
+Reads one `Cobj` model and draws the masked polygon walk as a turning wireframe in
+an X11 window (320x240 framebuffer, 2x scale; q/Esc closes). The model turns about
+its own Y axis, pivoting on the bounding-box centre and fitted to the frame, so it
+stays centred instead of swinging out of view.
+
+Two draw paths, selected by the model itself:
+
+- **Static** (bit 25 of the 4DGI flag word clear): one vertex list, projected
+  through the single-list path of `func_80013F08`
+  (`ModelRender.Project`).
+- **Scripted / bones** (bit 25 set): the 3DHY entries are posed by
+  `func_80013CB8` - per entry a local rotation (`func_80018DC0`), translation
+  either inline or sampled from the 3DMI table, composed onto the parent slot of
+  the matrix stack - and each entry projects its own vertex range
+  (`ScriptRender`). Models that carry bit 25 but no 3DHY chunk have no bone data
+  on the disc and fall back to the static list.
 
 The current frame is also written as a 24-bit BMP for headless capture. No
 textures, no shading. Environment knobs:
@@ -96,6 +106,10 @@ textures, no shading. Environment knobs:
 - `FC_VIEW_NOWINDOW=1` - no window, BMP only.
 - `FC_VIEW_FRAMES=<n>` - render one full turn as `out-000.bmp` .. `out-(n-1).bmp`
   instead of opening a window (for GIFs or frame diffs).
+- `FC_VIEW_FRAME=<n>` - animation frame fed to the 3DMI sampling of the bone path
+  (default 0). Parts driven by the animation curve move with it.
+- `FC_VIEW_STATIC=1` - force the rigid single-list path, to compare a posed model
+  against its rest geometry.
 
 ## .NET version
 

@@ -106,6 +106,23 @@ public sealed class MisFile
                     break;
                 case "3DHY":
                     model.HierarchyEntries = chunk.DataLength / 0x14;
+                    for (int i = 0; i * 0x14 + 0x14 <= span.Length; i++)
+                    {
+                        var r = span.Slice(i * 0x14, 0x14);
+                        model.Hierarchy.Add(new ScriptEntry(
+                            r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7],
+                            BinaryPrimitives.ReadInt16LittleEndian(r.Slice(0x08)),
+                            BinaryPrimitives.ReadInt16LittleEndian(r.Slice(0x0A)),
+                            BinaryPrimitives.ReadInt16LittleEndian(r.Slice(0x0C)),
+                            BinaryPrimitives.ReadInt16LittleEndian(r.Slice(0x0E)),
+                            BinaryPrimitives.ReadInt16LittleEndian(r.Slice(0x10)),
+                            BinaryPrimitives.ReadInt16LittleEndian(r.Slice(0x12))));
+                    }
+                    break;
+                case "3DMI":
+                    model.MeshTable = new short[span.Length / 2];
+                    for (int i = 0; i < model.MeshTable.Length; i++)
+                        model.MeshTable[i] = BinaryPrimitives.ReadInt16LittleEndian(span.Slice(i * 2));
                     break;
             }
         }

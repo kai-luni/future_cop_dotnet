@@ -33,6 +33,22 @@ public sealed class Model
     public int Id { get; init; }
     public int RecordOffset { get; init; }
     public uint[] Header { get; set; } = Array.Empty<uint>();
+
+    /// <summary>
+    /// The model flag word: the first 4DGI data word (decomp func_800131A0 keeps the chunk
+    /// start as the header, so its +0x0C flags field is data word 0). Bit 25 selects the
+    /// scripted/bone draw path, bit 24 is cleared or set by the texture-animation loader.
+    /// </summary>
+    public uint Flags => Header.Length > 0 ? Header[0] : 0u;
+
+    /// <summary>True when the model uses the scripted (bone) draw path of func_80013F08.</summary>
+    public bool IsScripted => ((Flags >> 25) & 1) != 0;
+
+    /// <summary>3DHY entries: one bone transform plus its vertex/normal ranges (0x14 bytes each).</summary>
+    public List<ScriptEntry> Hierarchy { get; } = new();
+
+    /// <summary>3DMI sample table (s16), indexed as table[frame + field] by func_80013CB8.</summary>
+    public short[] MeshTable { get; set; } = Array.Empty<short>();
     public List<Polygon> Polygons { get; } = new();
     /// <summary>Vertex lists keyed by chunk index (frame + 1).</summary>
     public Dictionary<int, List<Vertex>> Vertices { get; } = new();
