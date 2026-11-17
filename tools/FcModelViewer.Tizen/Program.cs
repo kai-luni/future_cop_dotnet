@@ -12,14 +12,16 @@ namespace FutureCop.Viewer.Tv
     // Rotating wireframe viewer for a Samsung Tizen TV. Same renderer as the desktop
     // viewer (src/FutureCop.View); the frame is handed to DALi as a small ring of BMP
     // files because NativeImageSource does not present under the .NET 10 mapper.
-    // Remote-control keys replace the mouse: left/right (and up/down) browse models or
-    // player actors, OK toggles the turn, back closes.
+    // Remote-control keys replace the mouse: in the assembly mode left/right transform the mech
+    // into the hover form and back into the walker, up/down browse the mission's models; in the
+    // model mode left/right browse the models too. OK toggles the turn, back closes.
     //
     //   FC_VIEW_MIS=<path>        mission archive (default: <appdir>/assets/M1A1.MIS)
     //   FC_VIEW_MODEL=<id>        start model in single-model mode (default 30)
     //   FC_VIEW_ASSEMBLY=1        show the assembled player actor (the mech)
     //   FC_VIEW_STATIC=1          force the rigid single-list path
     //   FC_VIEW_TEXTURED=1        draw affine-textured polygons instead of wireframe
+    //   FC_VIEW_TRANSFORM=<x>     walker/hover cadence, 1 = retail (~6.8 s), default 4 (~1.7 s)
     //   FC_VIEW_FRAME=<n>         animation frame of the scripted/bone path
     //   FC_VIEW_DEG_SEC=<d>       turn rate in degrees per second (default 20)
     //   FC_VIEW_FB=<w>x<h>        render resolution (default 320x240, the retail screen)
@@ -148,7 +150,8 @@ namespace FutureCop.Viewer.Tv
                     Assembly: Environment.GetEnvironmentVariable("FC_VIEW_ASSEMBLY") == "1",
                     BoneFrame: EnvInt("FC_VIEW_FRAME", 0),
                     ForceStatic: Environment.GetEnvironmentVariable("FC_VIEW_STATIC") == "1",
-                    Textured: Environment.GetEnvironmentVariable("FC_VIEW_TEXTURED") == "1");
+                    Textured: Environment.GetEnvironmentVariable("FC_VIEW_TEXTURED") == "1",
+                    TransformSpeed: EnvDouble("FC_VIEW_TRANSFORM", 4.0));
                 var watch = Stopwatch.StartNew();
                 _scene = new WireframeScene(mis, options, _bufferWidth, _bufferHeight);
                 WriteLog($"scene {watch.ElapsedMilliseconds} ms: {_scene.Description}");
@@ -345,7 +348,7 @@ namespace FutureCop.Viewer.Tv
         private string HudText()
         {
             if (_scene == null) return $"Future Cop viewer ({_probe} probe)\nno scene loaded";
-            string mode = _scene.Assembly ? "player actor" : "model";
+            string mode = _scene.Assembly ? "Form (links Hover, rechts Walker)" : "Modell";
             string state = _turning ? "turning" : "paused";
             return $"{_scene.Title}\n{_scene.Description}\nlinks/rechts: {mode} | hoch/runter: Modell | OK: {state} | zurueck: Ende" +
                    (_fps > 0 ? $" | {_fps:0} fps" : "");

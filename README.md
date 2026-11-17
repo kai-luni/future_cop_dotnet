@@ -196,8 +196,9 @@ TVAGENT=... ./scripts/deploy-tizen.sh start    # default: FC_VIEW_ASSEMBLY=1 FC_
 ./scripts/deploy-tizen.sh stop
 ```
 
-Remote control (window keeps focus): left/right browse the subject (player actor or
-model), up/down step through the mission's models, OK pauses/resumes the turn, back
+Remote control (window keeps focus): in the assembly mode left/right transform the mech
+into the hover form and back into the walker (`FC_VIEW_TRANSFORM`, 1 = retail ~6.8 s,
+default 4), up/down step through the mission's models, OK pauses/resumes the turn, back
 closes. `FC_VIEW_TEXTURED=0` falls back to the wireframe, `FC_VIEW_PROBE=label|scene|full`
 and `FC_VIEW_SELFTEST=1` are bring-up diagnostics.
 
