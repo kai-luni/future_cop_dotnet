@@ -8,7 +8,12 @@ namespace FutureCop.View;
 /// <param name="BoneFrame">Animation frame fed to the 3DMI sampling of the bone path.</param>
 /// <param name="ForceStatic">Ignore the bone path and draw the rigid single list.</param>
 /// <param name="Textured">Render affine-textured and flat-shaded polygons instead of wireframe.</param>
-public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0, bool ForceStatic = false, bool Textured = false);
+/// <param name="TransformSpeed">
+/// Multiplier for the mech transformation cadence: 1 = retail (0xA0 progress per 1/60 s tick,
+/// about 6.8 s for the whole transform), 4 = about 1.7 s.
+/// </param>
+public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0,
+    bool ForceStatic = false, bool Textured = false, double TransformSpeed = 4.0);
 
 /// <summary>
 /// Platform-independent wireframe renderer: turns one .MIS model (or the assembled player
@@ -47,6 +52,10 @@ public sealed class WireframeScene
     private int _cx, _cy, _cz, _dist;
     private int _actorIndex;
     private IReadOnlyList<PlayerPart>? _parts;
+    private PlayerForm? _form;
+    private readonly double _transformSpeed;
+    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+    private TimeSpan _lastAdvance;
 
     public WireframeScene(string misPath, ViewerOptions options, int width = 320, int height = 240)
     {
@@ -60,6 +69,7 @@ public sealed class WireframeScene
         _offsetY = (height / 2) << 16;
 
         _assemblyMode = options.Assembly;
+        _transformSpeed = options.TransformSpeed > 0 ? options.TransformSpeed : 4.0;
         _forceStatic = options.ForceStatic;
         _boneFrame = Math.Max(0, options.BoneFrame);
         Rgb = new byte[width * height * 3];
@@ -81,9 +91,8 @@ public sealed class WireframeScene
             _model = _models.FirstOrDefault() ?? throw new InvalidDataException("No drawable models in mission");
             _verts = Array.Empty<Vertex>();
             _widths = Array.Empty<short>();
-            _parts = PlayerAssembly.InitialWalker(_actors[0], _file.Models);
-            FitAssembly();
-            Description = $"actor {_actors[0].Id}: models {string.Join(",", _parts.Select(p => p.Model.Id))}";
+            _form = new PlayerForm();
+            RebuildAssembly();
         }
         else
         {
@@ -113,8 +122,45 @@ public sealed class WireframeScene
 
     /// <summary>Window/HUD title for the current subject.</summary>
     public string Title => _assemblyMode
-        ? $"Future Cop wireframe - player actor {_actors[_actorIndex].Id} (experimental)"
+        ? $"Future Cop wireframe - player mech {_form!.Name} (left = hover, right = walker)"
         : $"Future Cop wireframe - model {_model.Id}";
+
+    /// <summary>Form of the assembled player mech, null outside the assembly mode.</summary>
+    public PlayerForm? Form => _form;
+
+    /// <summary>
+    /// Rebuilds the five instances for the current form progress. The camera is only refitted
+    /// when the subject changes, so an ongoing transition does not make the view jump.
+    /// </summary>
+    private void RebuildAssembly(bool refit = true)
+    {
+        _parts = _form!.Build(_actors[_actorIndex], _file.Models);
+        if (refit) FitAssembly();
+        Description = _form.IsWalker || _form.IsHover
+            ? $"actor {_actors[_actorIndex].Id} [{_form.Name}]: models {string.Join(",", _parts.Select(p => p.Model.Id))}"
+            : $"actor {_actors[_actorIndex].Id} [{_form.Name}]: masks " +
+              $"{PlayerForm.Masks(_form.Progress).Main:X2}/{PlayerForm.Masks(_form.Progress).Companion:X2}";
+    }
+
+    /// <summary>
+    /// Advances a running transformation by retail ticks (deterministic, one tick = step * 0xA0
+    /// of progress). Used by captures and tests; the wall-clock path is <see cref="Advance"/>.
+    /// </summary>
+    public void AdvanceForm(int ticks)
+    {
+        if (_form is null || !_form.Advance(ticks)) return;
+        RebuildAssembly();
+    }
+
+    /// <summary>
+    /// Advances a running transformation by <paramref name="seconds"/> of wall clock. One retail
+    /// tick is 1/60 s scaled by <see cref="ViewerOptions.TransformSpeed"/>.
+    /// </summary>
+    public void Advance(double seconds)
+    {
+        if (_form is null || !_form.AdvanceSeconds(seconds, _transformSpeed)) return;
+        RebuildAssembly();
+    }
 
     /// <summary>Switches to the previous (-1) or next (+1) model or player actor.</summary>
     public string Select(int step)
@@ -122,10 +168,10 @@ public sealed class WireframeScene
         if (step == 0) return Description;
         if (_assemblyMode)
         {
-            _actorIndex = (_actorIndex + step + _actors.Count) % _actors.Count;
-            _parts = PlayerAssembly.InitialWalker(_actors[_actorIndex], _file.Models);
-            FitAssembly();
-            Description = $"actor {_actors[_actorIndex].Id}: models {string.Join(",", _parts!.Select(p => p.Model.Id))}";
+            // Left steps to the floating (hover) mech, right back to the standing (walker) one;
+            // func_80055988 turns the request into a transition on the following ticks.
+            _form!.Request(step < 0 ? PlayerForm.Hover : PlayerForm.Walker);
+            RebuildAssembly();
             return Description;
         }
 
@@ -143,6 +189,7 @@ public sealed class WireframeScene
         {
             _assemblyMode = false;
             _parts = null;
+            _form = null;
             _verts = _model.Vertices[1];
             _widths = Array.Empty<short>();
             _scripted = false;
@@ -158,6 +205,12 @@ public sealed class WireframeScene
     /// <summary>Renders the current subject turned <paramref name="degrees"/> about its Y axis.</summary>
     public void Render(double degrees)
     {
+        // A running transformation advances itself, so every frontend (desktop, TV) animates the
+        // form change without extra input plumbing.
+        var now = _clock.Elapsed;
+        Advance((now - _lastAdvance).TotalSeconds);
+        _lastAdvance = now;
+
         Array.Clear(Rgb);
         var view = ViewTransform.Turn(degrees, _cx, _cy, _cz, _dist);
 

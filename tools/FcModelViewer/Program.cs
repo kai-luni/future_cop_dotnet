@@ -2,8 +2,10 @@
 // with the derived GTE math (decomp func_80013F08 single-list path) and draws the masked
 // polygon walk (func_80016A64 / func_80015B68) as a wireframe that turns slowly about its own
 // Y axis. Shows the result in an X11 window (320x240 framebuffer, 2x scale; q/Esc closes) and
-// writes a 24-bit BMP of the current frame. Left/right mouse buttons browse models or player
-// actors. The assembly mode is experimental. No textures, no shading.
+// writes a 24-bit BMP of the current frame. In model mode the left/right mouse buttons browse the
+// drawable models; in the assembly mode the left button transforms the mech into the hover form
+// and the right button back into the walker (func_80055988 transition). The assembly mode is
+// experimental. No shading.
 //
 // The same renderer runs on the TV (tools/FcModelViewer.Tizen); this file only adds the
 // desktop frontend: X11 window, mouse keys, BMP capture.
@@ -76,7 +78,7 @@ if (win is null)
     return;
 }
 Console.WriteLine($"turning at {degPerSec} deg/s - left/right click changes " +
-    $"{(scene.Assembly ? "player actor" : "model")}; q/Esc closes");
+    $"{(scene.Assembly ? "mech form (left = hover, right = walker)" : "model")}; q/Esc closes");
 try
 {
     var clock = Stopwatch.StartNew();

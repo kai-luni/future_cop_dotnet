@@ -210,7 +210,15 @@ public sealed class MisFile
                     break;
                 case "AnmD":
                     for (int i = 0; i + 16 <= span.Length; i += 16)
-                        model.AnimationStarts.Add(BinaryPrimitives.ReadInt16LittleEndian(span.Slice(i + 4)));
+                    {
+                        var r = span.Slice(i, 16);
+                        model.AnimationStarts.Add(BinaryPrimitives.ReadInt16LittleEndian(r.Slice(4)));
+                        model.AnimationClips.Add(new AnimationClip(r[0], r[1], r[2], r[3],
+                            BinaryPrimitives.ReadInt16LittleEndian(r.Slice(4)),
+                            BinaryPrimitives.ReadInt16LittleEndian(r.Slice(6)),
+                            r[8], r[9], BinaryPrimitives.ReadUInt16LittleEndian(r.Slice(10)),
+                            BinaryPrimitives.ReadInt32LittleEndian(r.Slice(12))));
+                    }
                     break;
                 case "3DMI":
                     model.MeshTable = new short[span.Length / 2];

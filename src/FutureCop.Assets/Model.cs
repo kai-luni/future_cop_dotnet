@@ -27,6 +27,15 @@ public readonly record struct Polygon(
     public bool ExtraPass => (Flags1 & 0x80) != 0;
 }
 
+/// <summary>
+/// One 16-byte AnmD record, laid out like the decomp's <c>struct AnimClip</c>
+/// (80044B34.c): the clip table the retail animation tracks index. Type 3 is the scrub clip
+/// whose frame is <c>start + ((end - start) * speed &gt;&gt; 16)</c>.
+/// </summary>
+public readonly record struct AnimationClip(
+    byte Next0, byte Type, byte Mode, byte Flags, short Start, short End,
+    byte Next1, byte Next2, ushort Code, int Duration);
+
 /// <summary>A parsed Cobj model: header words plus per-frame geometry lists.</summary>
 public sealed class Model
 {
@@ -63,6 +72,8 @@ public sealed class Model
     public int AttachmentPointCount { get; set; }
     public List<Vertex> AttachmentPoints { get; } = new();
     public List<short> AnimationStarts { get; } = new();
+    /// <summary>Full AnmD clip records, indexed like <see cref="AnimationStarts"/>.</summary>
+    public List<AnimationClip> AnimationClips { get; } = new();
     public int HierarchyEntries { get; set; }
     public List<string> ChunkTags { get; } = new();
 }

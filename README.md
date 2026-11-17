@@ -125,8 +125,18 @@ FC_VIEW_ASSEMBLY=1 dotnet run --project tools/FcModelViewer -- build/disc/files/
 ```
 
 This is a work-in-progress pose, not a verified reproduction: the original C/.NET
-parity tests are incomplete. The mouse buttons switch player actors in the loaded
-mission, not the five parts of one actor; a mission with one actor does not switch.
+parity tests are incomplete. In the assembly mode the left mouse button transforms
+the mech into the floating (**hover**) form and the right button back into the
+standing (**walker**) one. The animation is the retail transformation:
+`func_80055988` moves the progress `state+0xBC` by `step * 0xA0` per tick, both
+animated instances scrub their type-3 clip (`func_80044B34`:
+`frame = start + ((end - start) * speed >> 16)` - clip `0xC` on the main model and
+clip `2` on the companion), `func_800597C0` selects the group masks
+(`0x03/0x05` walker, `0x07/0x0F` mid-transition, `0x05/0x0B` hover) and lifts the
+body by `(progress << 12) >> 16`. `PlayerForm` holds that state; the shared scene
+advances it from its own clock, so the TV frontend animates it without extra input
+code. Progress and masks are read from the decomp, not yet covered by the C
+harness (only the clip scrub is: `tests/golden/mech-form.vectors`).
 
 Environment knobs:
 

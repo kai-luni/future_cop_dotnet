@@ -60,7 +60,16 @@ public static class PlayerAssembly
     }
 
     /// <summary>Builds the initial walker pose at zero heading; model IDs come from LSRa.</summary>
-    public static IReadOnlyList<PlayerPart> InitialWalker(PlayerActor actor, IReadOnlyList<Model> models)
+    public static IReadOnlyList<PlayerPart> InitialWalker(PlayerActor actor, IReadOnlyList<Model> models) =>
+        Build(actor, models);
+
+    /// <summary>
+    /// Builds the five instances func_800597C0 submits, at explicit frames, group masks and body
+    /// lift. Negative frames mean the first animation start of that model.
+    /// </summary>
+    public static IReadOnlyList<PlayerPart> Build(PlayerActor actor, IReadOnlyList<Model> models,
+        int mainFrame = -1, int companionFrame = -1, int mainMask = 0x03, int companionMask = 0x05,
+        int height = 0)
     {
         if (actor.Resources.Count < 5) throw new InvalidDataException($"Actor {actor.Id} lacks player resources");
         Model Get(int slot)
@@ -70,9 +79,11 @@ public static class PlayerAssembly
             return models.FirstOrDefault(m => m.Id == reference.Id) ?? throw new InvalidDataException($"Model {reference.Id} not found");
         }
         Model main = Get(0), companion = Get(2), twin = Get(3), extra = Get(4);
-        int mainFrame = main.AnimationStarts.Count > 0 ? main.AnimationStarts[0] : 0;
-        int companionFrame = companion.AnimationStarts.Count > 0 ? companion.AnimationStarts[0] : 0;
-        var mainMatrix = Gte.Mat.Identity(0, 0, 0);
+        if (mainFrame < 0) mainFrame = main.AnimationStarts.Count > 0 ? main.AnimationStarts[0] : 0;
+        if (companionFrame < 0) companionFrame = companion.AnimationStarts.Count > 0 ? companion.AnimationStarts[0] : 0;
+        // func_80055988 lifts the body by (progress << 12) >> 16 through obj+0x54; the engine
+        // stores the world y negated, so the lift subtracts from the root translation.
+        var mainMatrix = Gte.Mat.Identity(0, 0, 0) with { Ty = -height };
         var anchor = Point(main, mainFrame, 0, mainMatrix);
         var companionMatrix = Gte.Mat.Identity(anchor.X, anchor.Y, anchor.Z);
         var joints = FindJoints(companion, companionFrame, companionMatrix);
@@ -80,8 +91,8 @@ public static class PlayerAssembly
             throw new InvalidDataException($"Model {companion.Id} does not provide both attachment matrices");
         var point2 = Point(companion, companionFrame, 2, companionMatrix);
         var extraMatrix = Gte.Mat.Identity(point2.X, point2.Y, point2.Z);
-        return new[] { new PlayerPart(main, mainFrame, mainMatrix, 3),
-            new PlayerPart(companion, companionFrame, companionMatrix, 5),
+        return new[] { new PlayerPart(main, mainFrame, mainMatrix, mainMask),
+            new PlayerPart(companion, companionFrame, companionMatrix, companionMask),
             new PlayerPart(twin, 0, joints.Fifth.Value, 1),
             new PlayerPart(twin, 0, joints.Third.Value, 1),
             new PlayerPart(extra, 0, extraMatrix, 1) };

@@ -1,0 +1,16 @@
+# fcop-mech-form-golden/v1 (line form): shared by the .NET xUnit suite and the C host harness.
+# The mech transformation (func_80055988) scrubs two type-3 clips with its progress state+0xBC;
+# func_80044B34 computes their frame as start + ((end - start) * speed >> 16) and this file holds
+# the clip fields plus one row per progress value. The C side runs the ORIGINAL func_80044B34.
+# TABLE <mainStart> <mainEnd> <companionStart> <companionEnd>   (M1A1: clip 0xC, model 11 / clip 2, model 12)
+# <case> <progress> <expMainFrame> <expCompanionFrame>
+TABLE 0000014a 00000167 00000000 0000001d
+00000000 00000001 0000014a 00000000
+00000001 00000100 0000014a 00000000
+00000002 00001000 0000014b 00000001
+00000003 00004000 00000151 00000007
+00000004 00008000 00000158 0000000e
+00000005 0000c000 0000015f 00000015
+00000006 0000e000 00000163 00000019
+00000007 0000ffff 00000166 0000001c
+00000008 00010000 00000167 0000001d
