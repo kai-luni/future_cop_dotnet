@@ -199,7 +199,9 @@ TVAGENT=... ./scripts/deploy-tizen.sh start    # default: FC_VIEW_ASSEMBLY=1 FC_
 Remote control (window keeps focus): in the assembly mode left/right transform the mech
 into the hover form and back into the walker (`FC_VIEW_TRANSFORM`, 1 = retail ~6.8 s,
 default 4), up/down step through the mission's models, OK pauses/resumes the turn, back
-closes. `FC_VIEW_TEXTURED=0` falls back to the wireframe, `FC_VIEW_PROBE=label|scene|full`
+closes. A form change keeps the current turn angle and the camera, which is framed once on
+the union of the poses the transition passes through, so nothing jumps or rescales.
+`FC_VIEW_TEXTURED=0` falls back to the wireframe, `FC_VIEW_PROBE=label|scene|full`
 and `FC_VIEW_SELFTEST=1` are bring-up diagnostics.
 
 Presentation note: `NativeImageSource`/`ImageView` stays black under the mapper and a
