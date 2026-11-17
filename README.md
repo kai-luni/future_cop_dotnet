@@ -48,7 +48,7 @@ Shared golden vectors: `tests/golden/3dtl.vectors` (line form `fcop-3dtl-golden/
 schema documented in the file header). Both suites assert the same cases:
 
 ```bash
-dotnet test tests/FutureCop.Assets.Tests          # .NET xUnit, 12 tests
+dotnet test tests/FutureCop.Assets.Tests          # .NET xUnit, 47 tests
 bash ../future-cop-lapd-ps1/tests/host/build.sh   # C harness vs ORIGINAL decomp C
 ```
 
@@ -65,3 +65,26 @@ the retail infinite loop via fork+alarm; `index_out_of_range` is skipped in C
 (retail reads past the table). The harness build is test-only (own flags, own
 output dir `tests/host/build/`): the production matching build is untouched and
 still reproduces retail bytecode byte-exactly (subset verify 7/7 PASS).
+
+`tests/golden/render.vectors` (`fcop-render-golden/v1`) adds the derived render
+path: GTE matrix load / mvmva / rtps+clip (asm units `80010750`, `8001010C`,
+`8001047C`, mirrored in `src/FutureCop.Assets/Gte.cs` and the harness'
+`gte_ref.c`), winding `80015AF4`, part prep `80015B68`, masked walk `80016A64`
+and the loader flag rewrite `800131A0:136-155`. The pure-C originals run
+unmodified in the harness; the GTE asm is mirrored identically in both
+languages (rounded UNR-equivalent quotient, GTE saturation/FLAG bits, clip
+byte semantics incl. "clip 1 = point not written"). `work.xy3` is don't-care
+for triangles: retail leaves the walk's stack work block stale there.
+
+## Wireframe viewer
+
+```bash
+dotnet run --project tools/FcModelViewer -- build/disc/files/CW/M1A1.MIS 30 out.bmp
+```
+
+Reads one static `Cobj` model (bit 25 clear; scripted/bone models are rejected
+for now), projects frame 0 through the derived single-list path of
+`func_80013F08` and draws the masked polygon walk as a wireframe in an X11
+window (320x240 framebuffer, 2x scale; q/Esc closes). The same framebuffer is
+written as a 24-bit BMP for headless capture; `FC_VIEW_NOWINDOW=1` skips the
+window. No textures, no shading.

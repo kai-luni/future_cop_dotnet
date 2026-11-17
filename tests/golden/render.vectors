@@ -1,0 +1,130 @@
+# fcop-render-golden/v1
+# Shared golden vectors for the derived render path (wireframe).
+# Sources: decomp func_80010750 (matrix load), func_8001010C (mvmva batch),
+# func_8001047C (rtps + clip byte), func_80015AF4 (winding), func_80015B68 (part prep),
+# func_80016A64 (masked walk), func_800131A0:136-155 (flag rewrite).
+# GTE constants unless stated: H=0x200, OFX=0xA0<<16, OFY=0x78<<16, width mode 1 (0x140).
+# "identity load" = engine identity 16.16 with T=(0,0,0x10000) -> R=diag(1000,-1000,1000), TR=(0,0,1000).
+# Hex tokens lowercase unless a register word; decimal signed where noted.
+#
+# ML <id> <w0..w8 hex> <t0..t2 hex>          engine matrix -> GTE load
+# R <r0..r8 hex s16> <tr0..tr2 dec>
+ML ml_pack 1000 2000 3000 4000 5000 6000 7000 8000 9000 100 200 4000
+R 0100 0400 0700 fe00 fb00 f800 0300 0600 0900 16 -32 1024
+END
+# MV <id> <r0..r8 hex> <vx vy vz dec>        mvmva sf=1, no TR; stored (IR1,-IR2,IR3)
+# O <x y z dec> <flag hex>
+MV mv_ident 1000 0 0 0 1000 0 0 0 1000 4660 -1656 4096
+O 4660 1656 4096 0
+END
+MV mv_rot 0 0 1000 0 1000 0 f000 0 0 4096 8192 12288
+O 12288 -8192 -4096 0
+END
+MV mv_sat 7fff 0 0 0 1000 0 0 0 1000 32767 0 0
+O 32767 0 0 1000000
+END
+# Q <id> <h hex> <sz hex>                    GTE unsigned divide (UNR equivalent)
+# O <q hex> <overflow 0|1>
+Q q_1000 200 1000
+O 2000 0
+END
+Q q_1234 200 1234
+O 1c21 0
+END
+Q q_800 200 800
+O 4000 0
+END
+Q q_400 200 400
+O 8000 0
+END
+Q q_3000 200 3000
+O aab 0
+END
+Q q_ovf 200 c8
+O 1ffff 1
+END
+Q q_zero 200 0
+O 1ffff 1
+END
+# RP <id> <r0..r8 hex> <tr0..tr2 dec> <vx vy vz dec> <h hex> <ofx hex> <ofy hex> <wmode>
+# O <sxy hex> <sz hex> <clip hex> <flag hex> <written 0|1>
+RP rp_center 1000 0 0 0 f000 0 0 0 1000 0 0 4096 0 0 0 200 a00000 780000 1
+O 007800a0 1000 c0 0 1
+END
+RP rp_off 1000 0 0 0 f000 0 0 0 1000 0 0 4096 100 50 0 200 a00000 780000 1
+O 007100ac 1000 c0 0 1
+END
+RP rp_neg 1000 0 0 0 f000 0 0 0 1000 0 0 4096 -100 -50 0 200 a00000 780000 1
+O 007e0093 1000 c0 0 1
+END
+RP rp_rotz 0 0 f000 0 f000 0 1000 0 0 0 0 4096 0 0 800 200 a00000 780000 1
+O 0078003c 1000 c0 0 1
+END
+RP rotx 0 0 f000 0 f000 0 1000 0 0 0 0 4096 800 0 0 200 a00000 780000 1
+O 007800a0 1320 c0 0 1
+END
+RP rp_far 1000 0 0 0 f000 0 0 0 1000 0 0 4096 3000 0 0 200 a00000 780000 1
+O 00780217 1000 80 0 1
+END
+RP rp_narrow 1000 0 0 0 f000 0 0 0 1000 0 0 4096 100 50 0 200 a00000 780000 0
+O 007100ac 1000 80 0 1
+END
+RP rp_near 1000 0 0 0 f000 0 0 0 1000 0 0 768 100 50 0 200 a00000 780000 1
+O 005600e2 300 c1 0 1
+END
+RP rp_divovf 1000 0 0 0 f000 0 0 0 1000 0 0 200 100 50 0 200 a00000 780000 1
+O 00140167 c8 1 20000 0
+END
+RP rp_behind 1000 0 0 0 f000 0 0 0 1000 0 0 -256 100 50 0 200 a00000 780000 1
+O 00140167 0 1 60000 0
+END
+RP rp_sxsat 1000 0 0 0 f000 0 0 0 1000 0 0 1024 28672 0 0 200 a00000 780000 1
+O 007803ff 400 1 4000 0
+END
+# W <id> <origin hex> <first hex> <second hex>   winding; O <culled 0|1> [out triple hex]
+W w_keep 0 0000000a 000a0000
+O 0 0 0000000a 000a0000
+END
+W w_cull 0 000a0000 0000000a
+O 1
+END
+W w_flat 0 0000000a 00000014
+O 0 0 0000000a 00000014
+END
+# P <id> <type> <i0 i1 i2 i3> <bias> <nv> <xy hex z dec clip hex>*nv <w0..w3 hex>
+# O <accepted 0|1> <xy0..xy3 hex> <z dec>
+P p_tri 3 0 1 2 0 0 3 00000000 100 c0 0000000a 200 c0 000a0000 300 c0 0 0 0 0
+O 1 00000000 0000000a 000a0000 0 193
+END
+P p_tri_bias 3 0 1 2 0 256 3 00000000 100 c0 0000000a 200 c0 000a0000 300 c0 0 0 0 0
+O 1 00000000 0000000a 000a0000 0 -63
+END
+P p_tri_clip1 3 0 1 2 0 0 3 00000000 100 c0 0000000a 200 40 000a0000 300 80 0 0 0 0
+O 1 00000000 0000000a 000a0000 0 193
+END
+P p_tri_clip2 3 0 1 2 0 0 3 00000000 100 c0 0000000a 200 c0 000a0000 300 c1 0 0 0 0
+O 0 0 0 0 0 0
+END
+P p_tri_clip3 3 0 1 2 0 0 3 00000000 100 40 0000000a 200 40 000a0000 300 40 0 0 0 0
+O 0 0 0 0 0 0
+END
+P p_quad 4 0 1 2 3 0 4 00000000 100 c0 0000000a 200 c0 000a000a 300 c0 000a0000 400 c0 0 0 0 0
+O 1 00000000 0000000a 000a0000 000a000a 250
+END
+P p_bill 5 0 0 2 0 0 1 007800a0 100 c0 0 0 4 0
+O 1 0064008c 006400b4 008c008c 008c00b4 100
+END
+# K <id> <mask hex> <bias> <np> <flags0 hex flags1 hex i0 i1 i2 i3>*np <nv> <verts...> <w0..w3>
+# O <count> then F <type> <xy0..xy3 hex> <z dec> per accepted face
+# xy3 = "-" means don't care: retail leaves the walk's stack work.xy3 stale for tris.
+K k_mask8 08 0 2 03 33 0 1 2 0 03 44 0 1 2 3 4 00000000 100 c0 0000000a 200 c0 000a000a 300 c0 000a0000 400 c0 0 0 0 0
+O 1
+F 3 00000000 0000000a 000a000a - 193
+END
+K k_maskf7 f7 0 2 03 34 0 1 2 0 03 44 0 1 2 3 4 00000000 100 c0 0000000a 200 c0 000a000a 300 c0 000a0000 400 c0 0 0 0 0
+O 1
+F 4 00000000 0000000a 000a0000 000a000a 250
+END
+# FR <id> <in:out hex pairs>                 on-disc byte0 -> loaded byte0 (func_800131A0)
+FR fr_rw 03:00 0b:02 83:10 23:01 ab:13 4b:23 cb:33 63:10 04:40 8c:52 4c:63 cc:73
+END

@@ -17,5 +17,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="../golden/3dtl.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/3dtl.vectors" />
+    <None Include="../golden/render.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/render.vectors" />
   </ItemGroup>
 </Project>
