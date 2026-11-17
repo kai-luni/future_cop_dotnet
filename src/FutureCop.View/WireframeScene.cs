@@ -398,9 +398,15 @@ public sealed class WireframeScene
         _cx = cx;
         _cy = cy;
         _cz = cz;
-        // The turn sweeps the XZ radius across the horizontal axis, so size the camera
-        // distance on that. The floor matters: the retail clip byte rejects sz3 < 0x400.
-        _dist = (int)Math.Max(MinDistance, Math.Round(radius * _focal / (FillFactor * (Width / 2.0))));
+        // Two constraints decide the camera distance:
+        //  - the turn sweeps the XZ radius across the horizontal axis, so size it on that;
+        //  - the retail clip byte sets bit 0 for sz3 < 0x400 and func_80015B68 then drops the
+        //    whole face. radius bounds the depth extent too, so the nearest vertex needs that
+        //    much room behind the near guard, otherwise faces of the near side vanish (holes
+        //    that move with the turn).
+        int sizeDriven = (int)Math.Round(radius * _focal / (FillFactor * (Width / 2.0)));
+        int depthDriven = 0x400 + radius + 0x20;
+        _dist = Math.Max(Math.Max(MinDistance, depthDriven), sizeDriven);
     }
 
     private static string Describe(Model model, IReadOnlyList<Vertex> verts, bool scripted)
