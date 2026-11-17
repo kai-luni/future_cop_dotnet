@@ -1,0 +1,7 @@
+# Extracted retail disc assets - never commit (local working copy only)
+build/
+# .NET build output
+bin/
+obj/
+*.user
+.vs/
