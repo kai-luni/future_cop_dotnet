@@ -84,7 +84,21 @@ dotnet run --project tools/FcModelViewer -- build/disc/files/CW/M1A1.MIS 30 out.
 
 Reads one static `Cobj` model (bit 25 clear; scripted/bone models are rejected
 for now), projects frame 0 through the derived single-list path of
-`func_80013F08` and draws the masked polygon walk as a wireframe in an X11
-window (320x240 framebuffer, 2x scale; q/Esc closes). The same framebuffer is
-written as a 24-bit BMP for headless capture; `FC_VIEW_NOWINDOW=1` skips the
-window. No textures, no shading.
+`func_80013F08` and draws the masked polygon walk as a turning wireframe in an
+X11 window (320x240 framebuffer, 2x scale; q/Esc closes). The model turns about
+its own Y axis, pivoting on the frame-0 bounding-box centre and fitted to the
+frame, so it stays centred instead of swinging out of view.
+
+The current frame is also written as a 24-bit BMP for headless capture. No
+textures, no shading. Environment knobs:
+
+- `FC_VIEW_DEG_SEC=<d>` - turn rate in degrees per second (default 20).
+- `FC_VIEW_NOWINDOW=1` - no window, BMP only.
+- `FC_VIEW_FRAMES=<n>` - render one full turn as `out-000.bmp` .. `out-(n-1).bmp`
+  instead of opening a window (for GIFs or frame diffs).
+
+## .NET version
+
+All projects target `net10.0` (`dotnet --list-sdks` needs a 10.x SDK; the
+`~/.dotnet` install works via `~/.dotnet/dotnet`). `LangVersion` stays pinned to
+10 so the source keeps its existing style.
