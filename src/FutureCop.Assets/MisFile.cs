@@ -100,7 +100,9 @@ public sealed class MisFile
                     model.Widths[chunk.Index] = widths;
                     break;
                 case "3DTL":
-                    model.TextureRecordCount = chunk.DataLength; // byte size; record parsing later
+                    model.TextureBody = span.ToArray();
+                    model.TextureRecordCount = chunk.DataLength; // byte size kept for CLI output
+                    model.Textures.AddRange(TextureList.Parse(model.TextureBody).Records);
                     break;
                 case "3DHY":
                     model.HierarchyEntries = chunk.DataLength / 0x14;

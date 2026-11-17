@@ -40,6 +40,10 @@ public sealed class Model
     /// <summary>Width lists (s16) keyed by chunk index; used by billboards/tapered lines.</summary>
     public Dictionary<int, List<short>> Widths { get; } = new();
     public int TextureRecordCount { get; set; }
+    /// <summary>Raw 3DTL body bytes (on-disc form).</summary>
+    public byte[] TextureBody { get; set; } = Array.Empty<byte>();
+    /// <summary>Decoded texture records using the default Cbmp remap (ids 1..10).</summary>
+    public List<TextureRecord> Textures { get; } = new();
     public int HierarchyEntries { get; set; }
     public List<string> ChunkTags { get; } = new();
 }

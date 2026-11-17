@@ -3,5 +3,6 @@ build/
 # .NET build output
 bin/
 obj/
+tests_host/build/
 *.user
 .vs/

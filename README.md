@@ -41,3 +41,23 @@ header), index u32, data[length-12]}` (decomp ref: `func_80012E48`).
 dotnet run --project tools/FcAssetTool -- list build/disc/files/CW/M1A1.MIS
 dotnet run --project tools/FcAssetTool -- dump build/disc/files/CW/M1A1.MIS 11
 ```
+
+## Tests (identical cases in .NET and C)
+
+Shared golden vectors: `tests/golden/3dtl.vectors` (line form `fcop-3dtl-golden/v1`,
+schema documented in the file header). Both suites assert the same cases:
+
+```bash
+dotnet test tests/FutureCop.Assets.Tests          # .NET xUnit, 12 tests
+bash tests_host/build.sh                          # C harness vs ORIGINAL decomp C
+```
+
+The C harness (`tests_host/`) compiles the unmodified decomp functions
+`800131A0`, `80012E48`, `8001306C`, `80012E1C`, `80063C5C` from the decomp repo
+(`FCOP_DECOMP`, default `~/git/future-cop-lapd-ps1`) with its PS1 cross-gcc
+(`.toolchain/gcc-2.7.2-cdk` + maspsx + mipsel-binutils) and runs the freestanding
+MIPS binary under a user-local qemu-mipsel (`~/.local/share/qemu-user/`, extracted
+from Ubuntu `qemu-user` deb; no root needed). It feeds synthetic `Cobj` wrappers
+around each vector body through the real loader and compares output hex plus every
+decoded record field; `unknown_type` cases assert the retail infinite loop via
+fork+alarm; `index_out_of_range` is skipped in C (retail reads past the table).
