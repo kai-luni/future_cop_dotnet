@@ -5,3 +5,6 @@ bin/
 obj/
 *.user
 .vs/
+# Build profiles output and TV reference assemblies (fetched from the device)
+dist/
+tizen/framework/

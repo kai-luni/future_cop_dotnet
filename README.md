@@ -144,3 +144,55 @@ Environment knobs:
 All projects target `net10.0` (`dotnet --list-sdks` needs a 10.x SDK; the
 `~/.dotnet` install works via `~/.dotnet/dotnet`). `LangVersion` stays pinned to
 10 so the source keeps its existing style.
+
+## Build profiles (Linux desktop / Samsung Tizen TV)
+
+The renderer lives in `src/FutureCop.View` and is shared by both frontends, so the
+projection, walk and framing are identical everywhere:
+
+```
+src/FutureCop.View/        WireframeScene: MIS -> RGB framebuffer, subject selection
+tools/FcModelViewer/       Linux profile: X11 window, mouse buttons, BMP capture
+tools/FcModelViewer.Tizen/ TV profile: Tizen NUI window, remote-control keys
+```
+
+```bash
+scripts/build-profiles.sh linux    # -> dist/linux
+scripts/build-profiles.sh tizen    # -> dist/tizen  (needs tizen/framework)
+scripts/build-profiles.sh all
+```
+
+The Tizen profile compiles against the TV's own signed Tizen assemblies; they are
+fetched once from the device and stay out of git:
+
+```bash
+scripts/fetch-tizen-refs.sh        # fills tizen/framework/ from $B/sdk_tools
+```
+
+Refactoring the viewer must stay pixel-identical. Check it against a build of the
+previous commit with `FC_VIEW_NOWINDOW=1 FC_VIEW_FRAMES=8` and `md5sum` on the
+numbered BMPs (static and `FC_VIEW_ASSEMBLY=1` paths).
+
+### On the TV (GU43U7099F, Tizen 9, armv7l)
+
+The TV runs .NET 6 natively, so the app is hosted by the local `Arm32ManualMapper`
+(.NET 10 in anonymous memory) and started through the persistent root agent:
+
+```bash
+TVAGENT=... ./scripts/deploy-tizen.sh deploy   # push dlls + M1A1.MIS, copy Tizen deps
+TVAGENT=... FC_VIEW_ENV="FC_VIEW_ASSEMBLY=1" ./scripts/deploy-tizen.sh start
+./scripts/deploy-tizen.sh log                  # /tmp/fcview.log + /tmp/fcview-app.log
+./scripts/deploy-tizen.sh shot out.png         # DRM plane readback
+./scripts/deploy-tizen.sh stop
+```
+
+Remote control (window keeps focus): left/right browse the subject (player actor or
+model), up/down step through the mission's models, OK pauses/resumes the turn, back
+closes. `FC_VIEW_PROBE=label|scene|full` and `FC_VIEW_SELFTEST=1` are bring-up
+diagnostics.
+
+Presentation note: `NativeImageSource`/`ImageView` stays black under the mapper and a
+`TextLabel` deadlocks in its constructor, so the TV frontend hands each frame to DALi
+as a rotating ring of BMP files (`FC_VIEW_RING`, default 6) and there is no HUD yet.
+Measured on the device: ~30 fps timer ticks, 0-1 ms software render per frame at
+480x360.

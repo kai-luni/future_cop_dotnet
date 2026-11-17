@@ -8,6 +8,6 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
+    <ProjectReference Include="../../src/FutureCop.View/FutureCop.View.csproj" />
   </ItemGroup>
 </Project>
