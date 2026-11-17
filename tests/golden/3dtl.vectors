@@ -1,8 +1,15 @@
 REMAP 3F180086 3F580096 3F980088 3FD80098 3F28008A 3F68009A 3FA8008C 3FE8009C 7F18008E 7F58009E
-# fcop-3dtl-golden/v1 (line form): shared by the .NET xUnit suite and the C host harness.
-# CASE <id> <ok|unknown_type|index_out_of_range|timeout> [error_offset]
+# fcop-3dtl-golden/v2 (line form): shared by the .NET xUnit suite and the C host harness.
+# CASE <id> <ok|c_skip|c_hang>
+#   ok     = C and .NET assert identical behaviour (IN/OUT/REC apply to both).
+#   c_skip = retail behaviour undefined (reads past the table), the C harness skips it.
+#   c_hang = the C harness proves the retail infinite loop via SIGALRM.
+# In the two non-parity modes the .NET expectations live in their own directives and the
+# C harness rejects OUT/REC, so no unmeasured parity can slip through.
 # IN/OUT lowercase hex of the raw 3DTL body before/after the loader rewrite.
+# NET <ok|unknown_type|index_out_of_range> [error_offset]      (.NET only)
 # REC <offset> <size> <type_raw> <type_loaded> <rgb> <uv0> <uv1> <tex_index> <clut> <tpage> <semi|- >
+# NET_REC <same fields>                                        (.NET only)
 CASE remap_table ok
 END
 CASE retail_type2 ok
@@ -49,10 +56,12 @@ IN 03808080e447fd47fd36e43609000000
 OUT 02808080e447fd47fd36e43620000000
 REC 0 16 3 2 808080 47FD47E4 36E436FD 9 0 0020 1
 END
-CASE index_out_of_range index_out_of_range 0
+CASE index_out_of_range c_skip
 IN 02808080533b7242733e22820a000000
+NET index_out_of_range 0
 END
-CASE unknown_type4 unknown_type 4
+CASE unknown_type4 c_hang
 IN 01aabbcc04808080533b7242733e228208000000
-REC 0 4 1 1 aabbcc 0 0 -1 0 0 -
+NET unknown_type 4
+NET_REC 0 4 1 1 aabbcc 0 0 -1 0 0 -
 END
