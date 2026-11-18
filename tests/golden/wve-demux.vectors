@@ -1,0 +1,32 @@
+# name mode pressLoop port pressBits initial0 initial1 streamHex cResult cAbort cMask0 cMask1 cTrace netResult netAbort netMask0 netMask1 netTrace reserveFault
+# Stream hex includes full chunk header in each reservation. '-' means empty/no events. reserveFault: 0=none, 1=initial-null, 2=header-null, 3=payload-null, 4=payload-zero.
+empty 0 -1 0 0 0 0 - 1 0 0 0 - Complete 0 0 0 - 0
+vlc 0 -1 0 0 0 0 564c43300000000c01020304 1 0 0 0 V8,X12, Complete 0 0 0 V8,X12, 0
+ad10_upper 0 -1 0 0 0 0 4164313000000008 1 0 0 0 A0,X8, Complete 0 0 0 A0,X8, 0
+ad11_upper 0 -1 0 0 0 0 4164313100000008 1 0 0 0 A0,X8, Complete 0 0 0 A0,X8, 0
+ad10 0 -1 0 0 0 0 6164313000000008 1 0 0 0 A0,X8, Complete 0 0 0 A0,X8, 0
+ad11 0 -1 0 0 0 0 6164313100000008 1 0 0 0 A0,X8, Complete 0 0 0 A0,X8, 0
+ad20 0 -1 0 0 0 0 6164323000000008 1 0 0 0 A0,X8, Complete 0 0 0 A0,X8, 0
+ad21 0 -1 0 0 0 0 6164323100000008 1 0 0 0 A0,X8, Complete 0 0 0 A0,X8, 0
+au00 0 -1 0 0 0 0 6175303000000008 1 0 0 0 B0,X8, Complete 0 0 0 B0,X8, 0
+au01 0 -1 0 0 0 0 6175303100000008 1 0 0 0 B0,X8, Complete 0 0 0 B0,X8, 0
+unknown_resync 0 -1 0 0 0 0 3f3f3f3f6164313000000008 1 0 0 0 X4,A4,X8, Complete 0 0 0 X4,A4,X8, 0
+zero_size 0 -1 0 0 0 0 6164313000000000 1 0 0 0 - Complete 0 0 0 - 0
+too_large_normal 0 -1 0 0 0 0 3f3f3f3f0000440000000000 1 0 0 0 X4, Complete 0 0 0 X4, 0
+too_large_mode 1 -1 0 0 0 0 3f3f3f3f0000424c00000000 1 0 0 0 X4, Complete 0 0 0 X4, 0
+video_pair 0 -1 0 0 0 0 4d444543000000084d44433200000008 1 0 0 0 E,T0,D0,W,P,X8,S,E,T1,D8,P,X8, Complete 0 0 0 E,T0,D0,W,P,X8,S,E,T1,D8,P,X8, 0
+press_early 0 0 0 80000 0 0 4d44454300000008 1 0 0 0 E,T0,D0,W,P,X8, Complete 0 0 0 E,T0,D0,W,P,X8, 0
+press_cross_4 0 4 0 80000 0 0 4d444543000000084d444543000000084d444543000000084d44454300000008 0 1 0 0 E,T0,D0,W,P,X8,S,E,T1,D8,P,X8,E,T2,D16,P,X8,E,T3,D24,P,X8, Aborted 1 0 0 E,T0,D0,W,P,X8,S,E,T1,D8,P,X8,E,T2,D16,P,X8,E,T3,D24,P,X8, 0
+press_start_port1 0 4 1 40000000 0 0 4d444543000000084d444543000000084d444543000000084d44454300000008 0 0 0 0 E,T0,D0,W,P,X8,S,E,T1,D8,P,X8,E,T2,D16,P,X8,E,T3,D24,P,X8, Aborted 0 0 0 E,T0,D0,W,P,X8,S,E,T1,D8,P,X8,E,T2,D16,P,X8,E,T3,D24,P,X8, 0
+short_header 0 -1 0 0 0 0 61643130 1 0 0 0 - Malformed 0 0 0 - 0
+short_payload 0 -1 0 0 0 0 616431300000000c 1 0 0 0 A0,X8, Malformed 0 0 0 - 0
+short_vlc 0 -1 0 0 0 0 564c433000000004 1 0 0 0 V8,X4, Malformed 0 0 0 - 0
+held_cross 0 -2 0 80000 0 0 4d444543000000084d444543000000084d444543000000084d44454300000008 1 0 80000 0 E,T0,D0,W,P,X8,S,E,T1,D8,P,X8,E,T2,D16,P,X8,E,T3,D24,P,X8, Complete 0 80000 0 E,T0,D0,W,P,X8,S,E,T1,D8,P,X8,E,T2,D16,P,X8,E,T3,D24,P,X8, 0
+masked_initial 0 -2 1 40080000 0 40080000 4d444543000000084d444543000000084d444543000000084d44454300000008 1 0 0 40080000 E,T0,D0,W,P,X8,S,E,T1,D8,P,X8,E,T2,D16,P,X8,E,T3,D24,P,X8, Complete 0 0 40080000 E,T0,D0,W,P,X8,S,E,T1,D8,P,X8,E,T2,D16,P,X8,E,T3,D24,P,X8, 0
+unrelated_pad 0 -2 0 10 0 0 6164313000000008 1 0 0 0 A0,X8, Complete 0 0 0 A0,X8, 0
+below_mode_limit 1 -1 0 0 0 0 616431300000424b 1 0 0 0 A0,X8, Malformed 0 0 0 - 0
+below_normal_limit 0 -1 0 0 0 0 61643130000043ff 1 0 0 0 A0,X8, Malformed 0 0 0 - 0
+initial_null_ignored 0 -1 0 0 0 0 6164313000000008 1 0 0 0 A0,X8, Complete 0 0 0 A0,X8, 1
+header_null 0 -1 0 0 0 0 6164313000000008 1 0 0 0 - Complete 0 0 0 - 2
+payload_null 0 -1 0 0 0 0 6164313000000008 1 0 0 0 - Complete 0 0 0 - 3
+payload_zero 0 -1 0 0 0 0 6164313000000008 1 0 0 0 - Complete 0 0 0 - 4
