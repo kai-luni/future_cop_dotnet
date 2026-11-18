@@ -5,15 +5,15 @@
 // writes a 24-bit BMP of the current frame.
 //
 // Input in the assembly mode:
-//   left arrow / left mouse button    walker -> hover (func_80055988 transition)
-//   right arrow / right mouse button  hover -> walker
-//   up / down, mouse wheel            cycle the mission's fire definitions
+//   left arrow                        walker -> hover (func_80055988 transition)
+//   right arrow                       hover -> walker
+//   up / down arrow, mouse wheel      cycle the mission's fire definitions
 //   space / return / middle button    fire one projectile from the alternating muzzle
-// In model mode the left/right buttons and the wheel browse the drawable models.
+// In model mode the left/right arrows and the wheel browse the drawable models.
 // The assembly mode is experimental. No shading.
 //
 // The same renderer runs on the TV (tools/FcModelViewer.Tizen); this file only adds the
-// desktop frontend: X11 window, mouse keys, BMP capture.
+// desktop frontend: X11 window, wheel and keys, BMP capture.
 //
 //   FC_VIEW_NOWINDOW=1     skip the X11 window (BMP only)
 //   FC_VIEW_FRAMES=<n>     render one full turn as n numbered BMPs instead of a window
@@ -246,7 +246,10 @@ sealed class X11Window
         int s = XDefaultScreen(d);
         IntPtr win = XCreateSimpleWindow(d, XRootWindow(d, s), 0, 0, (uint)w, (uint)h, 1, 0, 0);
         XStoreName(d, win, title);
-        XSelectInput(d, win, (1 << 15) | (1 << 1) | (1 << 2) | (1 << 17)); // Exposure | KeyPress | ButtonPress | StructureNotify
+        // X11 mask bits: KeyPressMask = 1 << 0, ButtonPressMask = 1 << 2, ExposureMask = 1 << 15,
+        // StructureNotifyMask = 1 << 17. Selecting 1 << 1 (KeyRelease) instead of 1 << 0 was why the
+        // arrow keys never reached the viewer while the mouse buttons did.
+        XSelectInput(d, win, (1 << 0) | (1 << 2) | (1 << 15) | (1 << 17));
         XMapWindow(d, win);
         // XImage keeps the data pointer: pin the buffer for the window's lifetime,
         // otherwise the GC relocates it and XPutImage reads moved memory.
@@ -273,8 +276,8 @@ sealed class X11Window
             XNextEvent(_d, ev);
             switch (ev[0])
             {
-                case 2: // KeyPress: keycode of the US layout in ev[32]
-                    switch (ev[32])
+                case 2: // KeyPress: keycode of the US layout, XKeyEvent layout of the native event
+                    switch (BitConverter.ToUInt32(ev, IntPtr.Size == 8 ? 84 : 48))
                     {
                         case 24: case 9: return false;                       // q, Escape
                         case 113: act(ViewerAction.FormLeft); break;         // Left arrow
@@ -286,11 +289,10 @@ sealed class X11Window
                     break;
                 case 4: // ButtonPress: button field in the native XButtonEvent
                     uint button = BitConverter.ToUInt32(ev, IntPtr.Size == 8 ? 84 : 48);
+                    // The form change stays on the arrow keys; the buttons only fire and cycle.
                     switch (button)
                     {
-                        case 1: act(ViewerAction.FormLeft); break;           // left button
                         case 2: act(ViewerAction.Fire); break;               // middle button
-                        case 3: act(ViewerAction.FormRight); break;          // right button
                         case 4: act(ViewerAction.WeaponPrevious); break;     // wheel up
                         case 5: act(ViewerAction.WeaponNext); break;         // wheel down
                     }
@@ -312,12 +314,12 @@ sealed class X11Window
     }
 }
 
-/// <summary>Input actions of the desktop frontend; the keys and mouse buttons map onto these.</summary>
+/// <summary>Input actions of the desktop frontend; the keys and wheel map onto these.</summary>
 enum ViewerAction
 {
-    /// <summary>Left arrow / left mouse button: hover form in the assembly, previous model otherwise.</summary>
+    /// <summary>Left arrow: hover form in the assembly, previous model otherwise.</summary>
     FormLeft,
-    /// <summary>Right arrow / right mouse button: walker form in the assembly, next model otherwise.</summary>
+    /// <summary>Right arrow: walker form in the assembly, next model otherwise.</summary>
     FormRight,
     /// <summary>Up arrow / wheel up: previous fire definition.</summary>
     WeaponPrevious,

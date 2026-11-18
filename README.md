@@ -125,7 +125,7 @@ FC_VIEW_ASSEMBLY=1 dotnet run --project tools/FcModelViewer -- build/disc/files/
 ```
 
 This is a work-in-progress pose, not a verified reproduction: the original C/.NET
-parity tests are incomplete. In the assembly mode the left mouse button transforms
+parity tests are incomplete. In the assembly mode the left arrow key transforms
 the mech into the floating (**hover**) form and the right button back into the
 standing (**walker**) one. The animation is the retail transformation:
 `func_80055988` moves the progress `state+0xBC` by `step * 0xA0` per tick, both
@@ -155,7 +155,7 @@ The assembly mode can fire the weapon definitions the mission ships, and the
 projectiles are drawn as flying models:
 
 ```
-left / right arrow, left / right mouse button   walker <-> hover form
+left / right arrow                              walker <-> hover form
 up / down arrow, mouse wheel                    cycle the fire definitions
 space / return / middle mouse button            fire one projectile
 ```
@@ -200,7 +200,7 @@ projection, walk and framing are identical everywhere:
 
 ```
 src/FutureCop.View/        WireframeScene: MIS -> RGB framebuffer, subject selection
-tools/FcModelViewer/       Linux profile: X11 window, mouse buttons, BMP capture
+tools/FcModelViewer/       Linux profile: X11 window, wheel and keys, BMP capture
 tools/FcModelViewer.Tizen/ TV profile: Tizen NUI window, remote-control keys
 ```
 
