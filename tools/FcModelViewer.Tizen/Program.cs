@@ -328,15 +328,23 @@ namespace FutureCop.Viewer.Tv
                     Select(1);
                     break;
                 case "Up":
-                    SelectModel(-1);
+                    CycleWeaponOrModel(-1);
                     break;
                 case "Down":
-                    SelectModel(1);
+                    CycleWeaponOrModel(1);
                     break;
                 case "Return":
                 case "XF86Select":
-                    _turning = !_turning;
-                    if (_hud != null) _hud.Text = HudText();
+                    // In the assembly the OK button fires the selected weapon; the plain model view
+                    // has no fire path, so there it keeps toggling the turn.
+                    if (_scene != null && _scene.Assembly)
+                        Fire();
+                    else
+                        ToggleTurning();
+                    break;
+                case "Play":
+                case "Pause":
+                    ToggleTurning();
                     break;
                 case "XF86Back":
                 case "Escape":
@@ -356,6 +364,32 @@ namespace FutureCop.Viewer.Tv
             if (_hud != null) _hud.Text = HudText();
         }
 
+        /// <summary>Up/down cycles the mission's fire definitions in the assembly, models otherwise.</summary>
+        private void CycleWeaponOrModel(int step)
+        {
+            if (_scene == null) return;
+            if (_scene.Assembly)
+            {
+                WriteLog(_scene.CycleWeapon(step));
+                if (_hud != null) _hud.Text = HudText();
+                return;
+            }
+            SelectModel(step);
+        }
+
+        private void Fire()
+        {
+            if (_scene == null) return;
+            WriteLog(_scene.Fire());
+            if (_hud != null) _hud.Text = HudText();
+        }
+
+        private void ToggleTurning()
+        {
+            _turning = !_turning;
+            if (_hud != null) _hud.Text = HudText();
+        }
+
         private void SelectModel(int step)
         {
             if (_scene == null) return;
@@ -369,7 +403,9 @@ namespace FutureCop.Viewer.Tv
             if (_scene == null) return $"Future Cop viewer ({_probe} probe)\nno scene loaded";
             string mode = _scene.Assembly ? "Form (links Hover, rechts Walker)" : "Modell";
             string state = _turning ? "turning" : "paused";
-            return $"{_scene.Title}\n{_scene.Description}\nlinks/rechts: {mode} | hoch/runter: Modell | OK: {state} | zurueck: Ende" +
+            string upDown = _scene.Assembly ? "Waffe" : "Modell";
+            return $"{_scene.Title}\n{_scene.Description}\nlinks/rechts: {mode} | hoch/runter: {upDown} | " +
+                   $"OK: {(_scene.Assembly ? "Feuer" : state)} | zurueck: Ende" +
                    (_fps > 0 ? $" | {_fps:0} fps" : "");
         }
 
