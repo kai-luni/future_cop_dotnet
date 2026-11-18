@@ -184,9 +184,18 @@ Knobs of the fire path:
   reading of the mover, where a 4Da shot crosses in eight ticks).
 - `FC_VIEW_SHOT_AIM=<deg>` - aim in model space (0 = at the viewer, 90 = outward;
   default 90, mirrored per arm - a viewer convention, retail shares one aim vector).
-- `FC_VIEW_SHOT_SCALE=<f>` - draw scale of the projectile model (default 5).
+- `FC_VIEW_SHOT_SCALE=<f>` - draw scale of the projectile model (default 1.6).
 - `FC_VIEW_SHOTS=<n>` - headless still: fire `n` projectiles one interval apart
   and write the frame with all of them in flight.
+
+Camera knobs (the viewer looks down on the mech at an angle so the flight path stays
+readable):
+
+- `FC_VIEW_CAM_ELEV=<deg>` - elevation above the horizon, 0 = level view (default 35).
+- `FC_VIEW_CAM_DIST=<m>` - camera distance in metres, 0 = automatic framing (default
+  30). The auto framing counts as twelve metres (`WireframeScene.MetresAtAutoFraming`);
+  the projection cannot carry a distance beyond `WireframeScene.MaxDistance`, because the
+  GTE emulation keeps the rotated vertex in a 16-bit register.
 
 ## .NET version
 

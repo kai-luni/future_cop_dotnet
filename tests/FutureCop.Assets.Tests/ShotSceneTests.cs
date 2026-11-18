@@ -131,12 +131,13 @@ public class ShotSceneTests
     {
         var mis = TextureGoldenTests.FindRetailMis();
         Assert.NotNull(mis);
-        var wire = new WireframeScene(mis!, new ViewerOptions(Assembly: true), 320, 240);
+        var wire = new WireframeScene(mis!, new ViewerOptions(Assembly: true, CameraDistanceMetres: 0), 320, 240);
         wire.Fire();
         wire.Render(0);
         Assert.True(wire.ShotFaceCount > 0, "the projectile contributed no wireframe faces");
 
-        var textured = new WireframeScene(mis!, new ViewerOptions(Assembly: true, Textured: true), 320, 240);
+        var textured = new WireframeScene(mis!,
+            new ViewerOptions(Assembly: true, Textured: true, CameraDistanceMetres: 0), 320, 240);
         textured.Fire();
         textured.Render(0);
         Assert.True(textured.ShotFaceCount > 0, "the projectile contributed no textured faces");

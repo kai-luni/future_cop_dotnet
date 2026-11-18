@@ -30,7 +30,8 @@ namespace FutureCop.View;
 /// </param>
 public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0,
     bool ForceStatic = false, bool Textured = false, double TransformSpeed = 4.0,
-    double ShotSpeed = 0.0625, double ShotAimDegrees = 90.0, double ShotScale = 5.0);
+    double ShotSpeed = 0.0625, double ShotAimDegrees = 90.0, double ShotScale = 1.6,
+    double CameraElevation = 35.0, double CameraDistanceMetres = 30.0);
 
 /// <summary>
 /// Platform-independent wireframe renderer: turns one .MIS model (or the assembled player
@@ -41,6 +42,21 @@ public sealed class WireframeScene
 {
     private const double FillFactor = 0.70;
     private const int MinDistance = 0x480;
+
+    /// <summary>
+    /// Distance in metres at which the automatic framing puts the camera. The projection's distance
+    /// parameter is not stated in model units anywhere, so the metre knob is anchored here: the auto
+    /// framing (the mech filling <see cref="FillFactor"/> of the frame) counts as twelve metres, and
+    /// <see cref="ViewerOptions.CameraDistanceMetres"/> scales that.
+    /// </summary>
+    public const double MetresAtAutoFraming = 12.0;
+
+    /// <summary>
+    /// Furthest camera distance the projection survives. The GTE emulation keeps the rotated vertex
+    /// in a 16-bit register (Gte.Rtps clamps to 0x7FFF and rejects faces that overflow), so a camera
+    /// further out than this drops every face of the model.
+    /// </summary>
+    public const int MaxDistance = 0x7800;
 
     private static readonly byte[][] Palette =
     {
@@ -55,6 +71,8 @@ public sealed class WireframeScene
     private bool _assemblyMode;
     private readonly bool _forceStatic;
     private readonly int _boneFrame;
+    private readonly double _cameraElevation;
+    private readonly double _cameraDistanceMetres;
     private readonly int _focal;
     private readonly int _offsetX;
     private readonly int _offsetY;
@@ -100,6 +118,8 @@ public sealed class WireframeScene
         _shotSpeed = options.ShotSpeed > 0 ? options.ShotSpeed : 4.0;
         _shotAim = options.ShotAimDegrees;
         _shotScale = options.ShotScale > 0 ? options.ShotScale : 1.0;
+        _cameraElevation = options.CameraElevation;
+        _cameraDistanceMetres = options.CameraDistanceMetres > 0 ? options.CameraDistanceMetres : 0;
         _forceStatic = options.ForceStatic;
         _boneFrame = Math.Max(0, options.BoneFrame);
         Rgb = new byte[width * height * 3];
@@ -358,7 +378,7 @@ public sealed class WireframeScene
         AdvanceShots(now);
 
         Array.Clear(Rgb);
-        var view = ViewTransform.Turn(degrees, _cx, _cy, _cz, _dist);
+        var view = ViewTransform.Turn(degrees, _cameraElevation, _cx, _cy, _cz, _dist);
 
         if (_textures is not null)
         {
@@ -679,7 +699,13 @@ public sealed class WireframeScene
         //    that move with the turn).
         int sizeDriven = (int)Math.Round(radius * _focal / (FillFactor * (Width / 2.0)));
         int depthDriven = 0x400 + radius + 0x20;
-        _dist = Math.Max(Math.Max(MinDistance, depthDriven), sizeDriven);
+        int auto = Math.Max(Math.Max(MinDistance, depthDriven), sizeDriven);
+        // An explicit distance in metres wins over the auto framing, but never moves the camera
+        // inside the near guard.
+        int wanted = _cameraDistanceMetres > 0
+            ? (int)Math.Round(auto * (_cameraDistanceMetres / MetresAtAutoFraming))
+            : 0;
+        _dist = Math.Clamp(wanted > 0 ? wanted : auto, depthDriven, Math.Max(depthDriven, MaxDistance));
     }
 
     private static string Describe(Model model, IReadOnlyList<Vertex> verts, bool scripted)

@@ -114,7 +114,7 @@ track (`func_80044B34`), collision and the secondary object of `func_800402DC`.
   (8192 model units) in its eight retail ticks, which is the scale the mission data reads at. Using
   different divisors for step and radius either killed the shot within a fraction of a tick or let it
   crawl a few pixels. `ShotSpeed` (default 1/16) slows the flight down to about two seconds and
-  `ShotScale` (default 5) sizes the rocket; both are viewer knobs, not retail numbers.
+  `ShotScale` (default 1.6) sizes the rocket; both are viewer knobs, not retail numbers.
 - **Aim.** Retail aims at a target entity and builds ONE direction vector `normalize(posB - posA)`
   (`func_8006ACB0:166-171`) that both alternating muzzles share. The viewer has no target, so it fires
   along `ViewerOptions.ShotAimDegrees` (default 90°) and integrates that unit direction through the
