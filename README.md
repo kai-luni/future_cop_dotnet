@@ -166,7 +166,8 @@ projectile `Cobj` (`func_8006A918`, looked up by `func_8006AAEC`), the spawn blo
 is `func_8005E47C`, the muzzle is vertex 0 of the two alternating instances
 (`func_80017668`, `state+0x178`), the range is `arc >> 4` (`func_80035904`) and the
 position step is the retail integrator `func_8001ACA4` with the mover's per-tick speed
-ramp (`func_80035B7C:435-448`). `M1A1.MIS` ships eight
+ramp (`func_80035B7C:435-448`), and the projectile is oriented with the retail flight basis
+`func_800193F8` rebuilt from its velocity every tick, so the nose points where it flies. `M1A1.MIS` ships eight
 definitions with two triggers each (models 59, 60, 62, 64, 65, 66, 68), so
 up/down steps through sixteen shots.
 
@@ -179,12 +180,13 @@ document.
 
 Knobs of the fire path:
 
-- `FC_VIEW_SHOT_SPEED=<f>` - multiplier on the retail step (default 0.0625, i.e.
-  1/16 speed, so a shot stays in frame for about two seconds; 1 is the plain
-  reading of the mover, where a 4Da shot crosses in eight ticks).
+- `FC_VIEW_SHOT_SPEED=<f>` - multiplier on the retail step (default 0.0625: at
+  retail speed a 4Da shot crosses its whole leash radius in eight ticks, and the
+  slower flight keeps it readable). 1 reproduces the mover exactly.
 - `FC_VIEW_SHOT_AIM=<deg>` - aim in model space (0 = at the viewer, 90 = outward;
   default 90, mirrored per arm - a viewer convention, retail shares one aim vector).
-- `FC_VIEW_SHOT_SCALE=<f>` - draw scale of the projectile model (default 1.6).
+- `FC_VIEW_SHOT_SCALE=<f>` - draw scale of the projectile model (default 1, the
+  retail basis, i.e. no scaling).
 - `FC_VIEW_SHOTS=<n>` - headless still: fire `n` projectiles one interval apart
   and write the frame with all of them in flight.
 
@@ -193,9 +195,10 @@ readable):
 
 - `FC_VIEW_CAM_ELEV=<deg>` - elevation above the horizon, 0 = level view (default 35).
 - `FC_VIEW_CAM_DIST=<m>` - camera distance in metres, 0 = automatic framing (default
-  30). The auto framing counts as twelve metres (`WireframeScene.MetresAtAutoFraming`);
-  the projection cannot carry a distance beyond `WireframeScene.MaxDistance`, because the
-  GTE emulation keeps the rotated vertex in a 16-bit register.
+  30). Metres are anchored on `WireframeScene.ModelUnitsPerMetre`; the projection cannot
+  carry a distance beyond `WireframeScene.MaxDistance`, because the GTE emulation keeps the
+  rotated vertex in a 16-bit register and drops every face of a model viewed from further
+  out.
 
 ## .NET version
 

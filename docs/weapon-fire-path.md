@@ -87,6 +87,7 @@ Ported and parity-tested against the unchanged C (`tests/host/shot_test.sh`):
 | muzzle point | `func_80017668` | `PlayerAssembly.Point` | ported earlier with the assembly work |
 | range and step scales | `func_80035904:232`, `func_8005E47C:87-93` | `ShotDefinition.Range`, `StepWord`, `ShotMotion.ModelUnitsPerPositionUnit` | unit tests |
 | per-tick speed ramp | `func_80035B7C:435-448` | `ShotMotion.AdvanceSpeed` | unit tests, values derived from the C text |
+| flight basis of the projectile | `func_800193F8`, `func_80010974` (cross product), rebuilt per tick by `func_80035B7C:554-568` | `WireframeScene.ShotMatrix` | not harness-tested (viewer-only matrix); documented below |
 
 The speed ramp is transcribed rather than harness-tested: the block is inline inside `func_80035B7C`,
 so no C harness can call it on its own, and its expectations are derived from the C text
@@ -114,7 +115,14 @@ track (`func_80044B34`), collision and the secondary object of `func_800402DC`.
   (8192 model units) in its eight retail ticks, which is the scale the mission data reads at. Using
   different divisors for step and radius either killed the shot within a fraction of a tick or let it
   crawl a few pixels. `ShotSpeed` (default 1/16) slows the flight down to about two seconds and
-  `ShotScale` (default 1.6) sizes the rocket; both are viewer knobs, not retail numbers.
+  `ShotScale` (default 1, retail) sizes the rocket; both are viewer knobs, not retail numbers.
+- **Flight basis of the projectile.** `func_800193F8` turns the flight vector `d` into a
+  right-handed basis: `rows[0] = normalize(dz, 0, -dx)`, `rows[1] = d x rows[0]`,
+  `rows[2] = d`, all unit vectors, so a horizontal flight is a pure yaw and any vertical
+  component adds pitch (`func_80035B7C:554-568` rebuilds the same basis from the same vector
+  every tick). The model's +Z is the nose, so the rocket points along its velocity. The
+  viewer builds that basis in `ShotMatrix`; the draw scale is applied on top (retail uses
+  none, hence the default of 1).
 - **Aim.** Retail aims at a target entity and builds ONE direction vector `normalize(posB - posA)`
   (`func_8006ACB0:166-171`) that both alternating muzzles share. The viewer has no target, so it fires
   along `ViewerOptions.ShotAimDegrees` (default 90°) and integrates that unit direction through the

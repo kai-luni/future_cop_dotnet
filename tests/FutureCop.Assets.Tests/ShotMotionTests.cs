@@ -1,4 +1,5 @@
 using FutureCop.Assets;
+using FutureCop.View;
 using Xunit;
 
 namespace FutureCop.Assets.Tests;
@@ -73,5 +74,40 @@ public class ShotMotionTests
         Assert.Equal(131072, ShotMotion.AdvanceSpeed(131072, 131072, 122));
         Assert.Equal(2110, ShotMotion.AdvanceSpeed(2048, 8192, 1000));
         Assert.Equal(16383, ShotMotion.AdvanceSpeed(16384, 131072, -16));
+    }
+
+    [Fact]
+    public void FlightBasisTurnsTheNoseOntoTheVelocity()
+    {
+        // func_800193F8: rows are the images of the model axes, model +Z is the nose.
+        foreach (var (degrees, expectX, expectZ) in new[] { (90.0, 1, 0), (0.0, 0, -1), (-90.0, -1, 0) })
+        {
+            var basis = ShotMotion.FlightBasis(Shot.Aim(degrees));
+            Assert.Equal(0, basis[1]);                     // row0 has no Y component
+            Assert.Equal(expectX, basis[6] / 65536);       // row2 = direction
+            Assert.Equal(expectZ, basis[8] / 65536);
+            // rows stay orthonormal: row0 . row2 == 0 and |row0| == |row1| == 0x10000
+            Assert.InRange(((long)basis[0] * basis[6] + (long)basis[2] * basis[8]) >> 16, -1, 1);
+            long length = (long)basis[0] * basis[0] + (long)basis[2] * basis[2];
+            Assert.InRange(Math.Abs(length - 0x10000L * 0x10000), 0L, 0x20000L);
+            // right-handed: row1 is +Y for a horizontal flight, so the nose cannot flip the roll
+            Assert.True(basis[4] > 0xFFFF * 0.9, $"row1.y = {basis[4]}");
+        }
+    }
+
+    [Fact]
+    public void FlightBasisAddsPitchWhenTheVelocityClimbs()
+    {
+        // A 45 degrees upward shot: func_800193F8 keeps the horizontal helper vector and the
+        // cross product then tilts row1 away from +Y.
+        int[] direction = { 0, 46341, -46341 };
+        var basis = ShotMotion.FlightBasis(direction);
+        Assert.Equal(0, basis[6]);
+        Assert.Equal(46341, basis[7]);
+        Assert.Equal(-46341, basis[8]);
+        Assert.InRange(basis[4], 0x8000, 0x10000);   // row1.y drops below 1 as the nose climbs
+        Assert.Equal(0, basis[1]);
+        Assert.Equal(0, basis[2]);
+        Assert.Equal(-0x10000, basis[0]);   // row0 stays the horizontal helper of func_800193F8
     }
 }

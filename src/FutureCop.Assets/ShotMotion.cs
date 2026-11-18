@@ -44,6 +44,33 @@ public static class ShotMotion
     public static int Range(ShotDefinition shot) => shot.Range / ModelUnitsPerPositionUnit;
 
     /// <summary>
+    /// Flight basis of a projectile, exactly as func_800193F8 builds it from the flight vector
+    /// <paramref name="direction"/> (16.16 units): <c>row0 = normalize(dz, 0, -dx)</c>,
+    /// <c>row1 = d x row0</c> (func_80010974 is the GTE cross product a x b), <c>row2 = d</c>. All
+    /// three rows are unit vectors, so the matrix carries no scale. Model +Z is the nose, which puts
+    /// the rocket along its velocity; a horizontal flight becomes a pure yaw, a vertical component
+    /// adds pitch. The mover rebuilds the same basis every tick (func_80035B7C:554-568).
+    /// </summary>
+    public static int[] FlightBasis(int[] direction)
+    {
+        ArgumentNullException.ThrowIfNull(direction);
+        if (direction.Length < 3) throw new ArgumentException("direction needs three words", nameof(direction));
+        long dx = direction[0], dy = direction[1], dz = direction[2];
+        double horizontal = Math.Sqrt((double)dx * dx + (double)dz * dz);
+        long r0x = horizontal == 0 ? 0x10000 : (long)Math.Round(dz / horizontal * 65536.0);
+        long r0z = horizontal == 0 ? 0 : (long)Math.Round(-dx / horizontal * 65536.0);
+        long r1x = (dy * r0z) >> 16;
+        long r1y = (dz * r0x - dx * r0z) >> 16;
+        long r1z = (-(dy * r0x)) >> 16;
+        return new[]
+        {
+            (int)r0x, 0, (int)r0z,
+            (int)r1x, (int)r1y, (int)r1z,
+            (int)dx, (int)dy, (int)dz,
+        };
+    }
+
+    /// <summary>
     /// The mover's acceleration block (func_80035B7C:435-448): the current 16.16 speed scale grows
     /// by <c>(accel * delta) / 16</c> - with <c>delta = 1</c> tick that is <c>accel / 16</c> - until it
     /// reaches the limit <c>unkD4 &lt;&lt; 4</c>, and never moves when the selector is cleared.

@@ -30,7 +30,7 @@ namespace FutureCop.View;
 /// </param>
 public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0,
     bool ForceStatic = false, bool Textured = false, double TransformSpeed = 4.0,
-    double ShotSpeed = 0.0625, double ShotAimDegrees = 90.0, double ShotScale = 1.6,
+    double ShotSpeed = 0.0625, double ShotAimDegrees = 90.0, double ShotScale = 1.0,
     double CameraElevation = 35.0, double CameraDistanceMetres = 30.0);
 
 /// <summary>
@@ -44,12 +44,12 @@ public sealed class WireframeScene
     private const int MinDistance = 0x480;
 
     /// <summary>
-    /// Distance in metres at which the automatic framing puts the camera. The projection's distance
-    /// parameter is not stated in model units anywhere, so the metre knob is anchored here: the auto
-    /// framing (the mech filling <see cref="FillFactor"/> of the frame) counts as twelve metres, and
-    /// <see cref="ViewerOptions.CameraDistanceMetres"/> scales that.
+    /// Viewer scale between metres and model units. Nothing in the retail data states it: the
+    /// assembled mech spans about 800 model units, so at 90 units per metre it is a nine metre
+    /// walker and the automatic framing sits roughly twenty metres away. Only used to translate
+    /// <see cref="ViewerOptions.CameraDistanceMetres"/> into the projection's distance parameter.
     /// </summary>
-    public const double MetresAtAutoFraming = 12.0;
+    public const double ModelUnitsPerMetre = 90.0;
 
     /// <summary>
     /// Furthest camera distance the projection survives. The GTE emulation keeps the rotated vertex
@@ -444,11 +444,23 @@ public sealed class WireframeScene
         return faces;
     }
 
+    /// <summary>
+    /// View matrix of a projectile: the retail basis of func_800193F8 built from the flight vector,
+    /// scaled by the viewer knob and placed at the shot position. Retail rebuilds the same basis
+    /// every tick (func_80035B7C:554-568), so the model nose (model +Z) always points along the
+    /// velocity; without it the rocket keeps pointing at model +Z and flies sideways.
+    /// </summary>
     private Gte.Mat ShotMatrix(Shot shot, Gte.Mat view)
     {
         int scale = (int)Math.Round(_shotScale * 0x10000);
-        var local = new Gte.Mat(new[] { scale, 0, 0, 0, scale, 0, 0, 0, scale },
-            shot.X, shot.Y, shot.Z);
+        var basis = ShotMotion.FlightBasis(shot.Direction);
+        static int Apply(int value, int factor) => (int)(((long)value * factor) >> 16);
+        var local = new Gte.Mat(new[]
+        {
+            Apply(basis[0], scale), Apply(basis[1], scale), Apply(basis[2], scale),
+            Apply(basis[3], scale), Apply(basis[4], scale), Apply(basis[5], scale),
+            Apply(basis[6], scale), Apply(basis[7], scale), Apply(basis[8], scale),
+        }, shot.X, shot.Y, shot.Z);
         return ScriptRender.Compose(local, view);
     }
 
@@ -703,7 +715,7 @@ public sealed class WireframeScene
         // An explicit distance in metres wins over the auto framing, but never moves the camera
         // inside the near guard.
         int wanted = _cameraDistanceMetres > 0
-            ? (int)Math.Round(auto * (_cameraDistanceMetres / MetresAtAutoFraming))
+            ? (int)Math.Round(_cameraDistanceMetres * ModelUnitsPerMetre)
             : 0;
         _dist = Math.Clamp(wanted > 0 ? wanted : auto, depthDriven, Math.Max(depthDriven, MaxDistance));
     }

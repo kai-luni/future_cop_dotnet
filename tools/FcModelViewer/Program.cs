@@ -50,7 +50,7 @@ var options = new ViewerOptions(
     Textured: texturedFlag || Environment.GetEnvironmentVariable("FC_VIEW_TEXTURED") == "1",
     ShotSpeed: EnvDouble("FC_VIEW_SHOT_SPEED", 0.0625),
     ShotAimDegrees: EnvDouble("FC_VIEW_SHOT_AIM", 90.0),
-    ShotScale: EnvDouble("FC_VIEW_SHOT_SCALE", 1.6),
+    ShotScale: EnvDouble("FC_VIEW_SHOT_SCALE", 1.0),
     CameraElevation: EnvDouble("FC_VIEW_CAM_ELEV", 35.0),
     CameraDistanceMetres: EnvDouble("FC_VIEW_CAM_DIST", 30.0));
 var scene = new WireframeScene(mis, options, W, H);
