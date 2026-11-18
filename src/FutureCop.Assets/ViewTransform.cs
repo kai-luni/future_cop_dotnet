@@ -22,7 +22,9 @@ public static class ViewTransform
         int distance)
     {
         double yaw = degrees * Math.PI / 180.0;
-        double elevation = elevationDegrees * Math.PI / 180.0;
+        // A positive elevation has to lift the camera above the model: the world is pitched the
+        // other way round for that, hence the sign flip.
+        double elevation = -elevationDegrees * Math.PI / 180.0;
         int c = (int)Math.Round(Math.Cos(yaw) * 65536.0);
         int s = (int)Math.Round(Math.Sin(yaw) * 65536.0);
         int ce = (int)Math.Round(Math.Cos(elevation) * 65536.0);

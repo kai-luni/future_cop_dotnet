@@ -49,10 +49,10 @@ var options = new ViewerOptions(
     ForceStatic: Environment.GetEnvironmentVariable("FC_VIEW_STATIC") == "1",
     Textured: texturedFlag || Environment.GetEnvironmentVariable("FC_VIEW_TEXTURED") == "1",
     ShotSpeed: EnvDouble("FC_VIEW_SHOT_SPEED", 0.0625),
-    ShotAimDegrees: EnvDouble("FC_VIEW_SHOT_AIM", 90.0),
+    ShotAimDegrees: EnvDouble("FC_VIEW_SHOT_AIM", 15.0),
     ShotScale: EnvDouble("FC_VIEW_SHOT_SCALE", 1.0),
-    CameraElevation: EnvDouble("FC_VIEW_CAM_ELEV", 35.0),
-    CameraDistanceMetres: EnvDouble("FC_VIEW_CAM_DIST", 30.0));
+    CameraElevation: EnvDouble("FC_VIEW_CAM_ELEV", 45.0),
+    CameraDistanceMetres: EnvDouble("FC_VIEW_CAM_DIST", 60.0));
 var scene = new WireframeScene(mis, options, W, H);
 Console.WriteLine(scene.Description);
 foreach (var weapon in scene.Weapons)

@@ -183,8 +183,9 @@ Knobs of the fire path:
 - `FC_VIEW_SHOT_SPEED=<f>` - multiplier on the retail step (default 0.0625: at
   retail speed a 4Da shot crosses its whole leash radius in eight ticks, and the
   slower flight keeps it readable). 1 reproduces the mover exactly.
-- `FC_VIEW_SHOT_AIM=<deg>` - aim in model space (0 = at the viewer, 90 = outward;
-  default 90, mirrored per arm - a viewer convention, retail shares one aim vector).
+- `FC_VIEW_SHOT_AIM=<deg>` - divergence of a shot from straight ahead (default 15):
+  both arms fire away from the camera, splayed by this angle - a viewer convention,
+  retail shares one aim vector between both muzzles.
 - `FC_VIEW_SHOT_SCALE=<f>` - draw scale of the projectile model (default 1, the
   retail basis, i.e. no scaling).
 - `FC_VIEW_SHOTS=<n>` - headless still: fire `n` projectiles one interval apart
@@ -193,9 +194,9 @@ Knobs of the fire path:
 Camera knobs (the viewer looks down on the mech at an angle so the flight path stays
 readable):
 
-- `FC_VIEW_CAM_ELEV=<deg>` - elevation above the horizon, 0 = level view (default 35).
+- `FC_VIEW_CAM_ELEV=<deg>` - camera elevation above the mech, 0 = level view (default 45).
 - `FC_VIEW_CAM_DIST=<m>` - camera distance in metres, 0 = automatic framing (default
-  30). Metres are anchored on `WireframeScene.ModelUnitsPerMetre`; the projection cannot
+  60). Metres are anchored on `WireframeScene.ModelUnitsPerMetre`; the projection cannot
   carry a distance beyond `WireframeScene.MaxDistance`, because the GTE emulation keeps the
   rotated vertex in a 16-bit register and drops every face of a model viewed from further
   out.

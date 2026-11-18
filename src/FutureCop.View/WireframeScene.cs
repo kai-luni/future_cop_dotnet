@@ -19,9 +19,10 @@ namespace FutureCop.View;
 /// the position scale is a viewer knob and not a proven retail constant.
 /// </param>
 /// <param name="ShotAimDegrees">
-/// Aim of a fired shot in model space: 0 points at the viewer, 90 to the mech's right. The right arm
-/// fires to +90, the left arm mirrored to -90, so both muzzles shoot outward. Retail aims at a target
-/// entity; the viewer has none and picks an angle that keeps the shot in frame.
+/// Divergence of a fired shot from straight ahead, in degrees: 0 fires along the mech's facing, 90
+/// would fire sideways. The right arm fires at <c>180 - aim</c>, the left arm at <c>180 + aim</c> in
+/// model space, so both muzzles shoot away from the camera and slightly outward. Retail aims at a
+/// target entity (one vector shared by both muzzles); the viewer has none.
 /// </param>
 /// <param name="ShotScale">
 /// Draw scale of the projectile model. The retail models of this mission are 32 units across, i.e.
@@ -30,8 +31,8 @@ namespace FutureCop.View;
 /// </param>
 public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0,
     bool ForceStatic = false, bool Textured = false, double TransformSpeed = 4.0,
-    double ShotSpeed = 0.0625, double ShotAimDegrees = 90.0, double ShotScale = 1.0,
-    double CameraElevation = 35.0, double CameraDistanceMetres = 30.0);
+    double ShotSpeed = 0.0625, double ShotAimDegrees = 15.0, double ShotScale = 1.0,
+    double CameraElevation = 45.0, double CameraDistanceMetres = 60.0);
 
 /// <summary>
 /// Platform-independent wireframe renderer: turns one .MIS model (or the assembled player
@@ -119,6 +120,7 @@ public sealed class WireframeScene
         _shotAim = options.ShotAimDegrees;
         _shotScale = options.ShotScale > 0 ? options.ShotScale : 1.0;
         _cameraElevation = options.CameraElevation;
+
         _cameraDistanceMetres = options.CameraDistanceMetres > 0 ? options.CameraDistanceMetres : 0;
         _forceStatic = options.ForceStatic;
         _boneFrame = Math.Max(0, options.BoneFrame);
@@ -247,10 +249,10 @@ public sealed class WireframeScene
         int muzzleSide = _muzzleSide;
         var (mx, my, mz) = Muzzle(muzzleSide);
         _muzzleSide ^= 1;
-        // Viewer convention, not retail: the right arm (slot 2) fires to +aim and the left arm
-        // (slot 3) mirrored, so both muzzles shoot outward. func_8006ACB0:166-171 builds ONE aim
-        // vector (posB - posA) from the target and passes it to the spawner for both muzzles.
-        double aim = muzzleSide == 0 ? _shotAim : -_shotAim;
+        // Viewer convention, not retail: both shots leave away from the camera and diverge by the
+        // aim knob, the right arm to one side and the left arm to the other. func_8006ACB0:166-171
+        // builds ONE aim vector (posB - posA) from the target and shares it between both muzzles.
+        double aim = 180.0 + (muzzleSide == 0 ? -_shotAim : _shotAim);
         // func_8005E47C turns the speed word into a 16.16 scale (speed << 4, or << 1 with the alt
         // selector); positions are model units, so one tick covers scale / 4096 units.
         var shot = new Shot(weapon, model, mx, my, mz, _shotSpeed, aim);
@@ -379,7 +381,6 @@ public sealed class WireframeScene
 
         Array.Clear(Rgb);
         var view = ViewTransform.Turn(degrees, _cameraElevation, _cx, _cy, _cz, _dist);
-
         if (_textures is not null)
         {
             RenderTextured(view);
