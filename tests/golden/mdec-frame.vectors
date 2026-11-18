@@ -1,5 +1,5 @@
 # MDEC frame decode vectors (MdecFrameTests).
-# Input: the block stream of CASE frame0 in wve-block.vectors (MOVIES/INTRO.WVE,
+# Input: the block stream of CASE frame1 in wve-block.vectors (MOVIES/INTRO.WVE,
 # video chunk index 1, header frame number 1, 320x192, chunk offset 26432),
 # run through WveBlockDecoder, then MdecFrameDecoder.DecodeDecoderOutput.
 # Only derived numbers are stored here: code words, coefficients, sample values and

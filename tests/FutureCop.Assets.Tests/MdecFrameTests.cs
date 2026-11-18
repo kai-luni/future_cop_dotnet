@@ -66,7 +66,7 @@ public class MdecFrameTests
         return fixture;
     }
 
-    /// <summary>VLC0 symbols and the CASE frame0 input words from wve-block.vectors.</summary>
+    /// <summary>VLC0 symbols and the CASE frame1 input words from wve-block.vectors.</summary>
     private static (WveVlcTable Table, ushort[] Input) LoadStream()
     {
         ushort[]? symbols = null, input = null;
@@ -74,7 +74,7 @@ public class MdecFrameTests
         {
             string[] p = raw.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (p.Length > 1 && p[0] == "SYMBOLS") symbols = LittleEndianWords(Convert.FromHexString(p[1]));
-            if (p.Length > 2 && p[0] == "CASE" && p[1] == "frame0") input = LittleEndianWords(Convert.FromHexString(p[2]));
+            if (p.Length > 2 && p[0] == "CASE" && p[1] == "frame1") input = LittleEndianWords(Convert.FromHexString(p[2]));
         }
 
         Assert.NotNull(symbols);
