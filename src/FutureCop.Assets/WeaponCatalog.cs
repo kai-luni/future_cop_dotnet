@@ -33,21 +33,24 @@ namespace FutureCop.Assets;
 public sealed record ShotDefinition(
     int SectionId, int Half, int Action, int Flags, int ModelId, int ObjWord00, int DamageWord,
     int SpeedWord, int AltSpeed, int ArcWord, int ObjWord0E, int ObjWord12, int SoundId,
-    int SecondaryColumn, int CadencePeriod, int CadenceReload, int CadenceRate, int RecordOffset,
+    int SecondaryColumn, int Burst, int ReloadTicks, int GapTicks, int RecordOffset,
     IReadOnlyList<ResourceReference> Resources)
 {
     /// <summary>
-    /// Leash radius of the shot in retail position units. func_80035904:232 stores the range word
-    /// shifted right by eight into unkA6, and func_80035B7C tests the octagonal distance from the
-    /// home point against unkA6 &lt;&lt; 8 - so the radius is the range word itself, arc &lt;&lt; 4, and the
-    /// shifted field is only its storage form. <see cref="ShotMotion.Range"/> converts it to the
-    /// units the viewer draws in.
+    /// Leash radius of the shot in retail position units: func_80035904:234 stores the range word
+    /// shifted right by eight into unkA6 and func_80035B7C:434 compares the octagonal distance from
+    /// the home point against unkA6 &lt;&lt; 8, so the radius is the range word rounded down to a
+    /// multiple of 256. One model unit is 16 position units (func_80010750 loads the translation
+    /// shifted right by four, func_80010234 stores the vertex result shifted left by four).
     /// </summary>
-    public int Range => ArcWord << 4;
+    public int Range => (ArcWord << 4) >> 8 << 8;
 
     /// <summary>Short label for the HUD and logs.</summary>
     public string Name => $"tACT {SectionId:X2}{(Half == 0 ? 'a' : 'b')}: action {Action:X2}, " +
                           $"model {ModelId}, speed {SpeedWord}, range {Range}, rec 0x{RecordOffset:X}";
+
+    /// <summary>Cadence of this half, as the trigger of func_8006BA50 reads it.</summary>
+    public WeaponCadence Cadence => WeaponCadence.From(this);
 
     /// <summary>Per-tick step target of the mover: speed &lt;&lt; 4, or speed &lt;&lt; 1 when the
     /// alternate-speed selector is set (func_8005E47C:87-93).</summary>
@@ -160,9 +163,9 @@ public static class WeaponCatalog
             ObjWord12: s[0x1E],
             SoundId: s[0x1C],
             SecondaryColumn: s[0x1B],
-            CadencePeriod: s[0x06],
-            CadenceReload: BinaryPrimitives.ReadInt16LittleEndian(s.Slice(0x08)),
-            CadenceRate: BinaryPrimitives.ReadInt16LittleEndian(s.Slice(0x0A)),
+            Burst: s[0x06],
+            ReloadTicks: BinaryPrimitives.ReadInt16LittleEndian(s.Slice(0x08)),
+            GapTicks: BinaryPrimitives.ReadInt16LittleEndian(s.Slice(0x0A)),
             RecordOffset: record,
             Resources: resources);
     }

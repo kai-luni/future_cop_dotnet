@@ -87,6 +87,8 @@ Ported and parity-tested against the unchanged C (`tests/host/shot_test.sh`):
 | muzzle point | `func_80017668` | `PlayerAssembly.Point` | ported earlier with the assembly work |
 | range and step scales | `func_80035904:232`, `func_8005E47C:87-93` | `ShotDefinition.Range`, `StepWord`, `ShotMotion.ModelUnitsPerPositionUnit` | unit tests |
 | per-tick speed ramp | `func_80035B7C:435-448` | `ShotMotion.AdvanceSpeed` | unit tests, values derived from the C text |
+| trigger cadence per weapon | `func_8006C3E0:59-68`, `func_8006BA50:169-217` | `WeaponTrigger`, `WeaponCadence` | `tests/golden/cadence.vectors`, 22 cases, both sides |
+| leash metric and radius | `func_8001A4E8`, `func_80035904:234`, `func_80035B7C:434` | `ShotMotion.OctagonalDistance`, `LeashRadius` | unit tests, values derived from the C text |
 | flight basis of the projectile | `func_800193F8`, `func_80010974` (cross product), rebuilt per tick by `func_80035B7C:554-568` | `WireframeScene.ShotMatrix` | not harness-tested (viewer-only matrix); documented below |
 
 The speed ramp is transcribed rather than harness-tested: the block is inline inside `func_80035B7C`,
@@ -108,6 +110,10 @@ track (`func_80044B34`), collision and the secondary object of `func_800402DC`.
 - **Which two model instances the muzzle comes from.** `func_8006ACB0` indexes `state+0x178`; the
   viewer has no player state and uses the two arm instances of the assembled pose, which are the same
   accessor (`func_80017668`, vertex 0) on the same body.
+- **Time base.** One retail tick is 1/300 s and a 60 Hz frame carries five of them
+  (`func_8002703C`, `func_8001EFF8`). The trigger of `WeaponTrigger` therefore works in ticks and the
+  viewer advances it one frame per 1/60 s, which reproduces the retail fire frames exactly - see
+  `../future-cop-lapd-ps1/docs/weapon-cadence-and-range.md` for the per-weapon table.
 - **The position scale of the integrator.** `func_8001ACA4` advances a position by the speed scale in
   position units; the ratio between position units and the model units the meshes are built in cannot
   be read off the decomp. The viewer uses one documented divisor for both sides

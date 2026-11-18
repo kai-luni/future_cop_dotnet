@@ -144,25 +144,23 @@ public class ShotSceneTests
     }
 
     [RetailFact]
-    public void AutoFireShootsOncePerSecond()
+    public void AutoFireUsesTheWeaponCadence()
     {
         var scene = Scene();
         Assert.Equal(0, scene.ShotCount);
+        var weapon = scene.Weapon!;
+        Assert.Equal(1, weapon.Burst);
+        Assert.Equal(8, weapon.ReloadTicks);
 
-        // Half an interval: nothing yet.
-        Assert.Null(scene.AdvanceAutoFire(0.5));
-        Assert.Equal(0, scene.ShotCount);
-        // The second half completes the interval and fires once.
-        Assert.NotNull(scene.AdvanceAutoFire(0.5));
-        Assert.Equal(1, scene.ShotCount);
-        // The clock keeps running: another full second, another shot.
-        scene.AdvanceAutoFire(1.0);
-        Assert.Equal(2, scene.ShotCount);
-        // A long frame only fires once, the rest stays on the clock.
-        scene.AdvanceAutoFire(0.75);
-        Assert.Equal(2, scene.ShotCount);
-        scene.AdvanceAutoFire(0.25);
-        Assert.Equal(3, scene.ShotCount);
+        // The trigger runs one 60 Hz frame per 1/60 s: the first frame fires, the reload keeps the
+        // next two frames quiet, and the rhythm repeats - the retail every-second-frame pattern.
+        var frames = new List<int>();
+        for (int frame = 0; frame < 12; frame++)
+        {
+            if (scene.AdvanceAutoFire(1.0 / 60.0) is not null) frames.Add(frame);
+        }
+        Assert.Equal(new[] { 0, 2, 4, 6, 8, 10 }, frames);
+        Assert.True(scene.ShotCount > 0);
     }
 
     [RetailFact]

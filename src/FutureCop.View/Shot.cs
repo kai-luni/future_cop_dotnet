@@ -15,7 +15,7 @@ public sealed class Shot
     private int _speedScale;
     private readonly int _speedLimit;
     private readonly int _accelWord;
-    private int _travelled;
+    private readonly int[] _home;
 
     /// <summary>
     /// Aim direction of a shot in model space, in 16.16. 0 degrees points at the viewer (model -Z,
@@ -46,6 +46,7 @@ public sealed class Shot
         _accelWord = definition.AltSpeed;
         Range = Math.Max(1, ShotMotion.Range(definition));
         Muzzle = (x, y, z);
+        _home = new[] { x, y, z };
     }
 
     public ShotDefinition Definition { get; }
@@ -57,9 +58,10 @@ public sealed class Shot
     public int[] Position { get; }
     public int[] Direction { get; }
 
-    /// <summary>Current per-tick step in model units (retail unk84 scaled to model units).</summary>
+    /// <summary>Step of one 60 Hz frame in model units (delta * unk84, scaled to the viewer).</summary>
     public int StepUnits => Math.Max(1, (int)Math.Round(
-        _speedScale / (double)ShotMotion.ModelUnitsPerPositionUnit * SpeedMultiplier));
+        _speedScale * RetailClock.TicksPerFrame / (double)ShotMotion.PositionUnitsPerModelUnit *
+        SpeedMultiplier));
 
     /// <summary>Current retail speed scale (unk84), exposed so tests can follow the acceleration.</summary>
     public int SpeedScale => _speedScale;
@@ -74,25 +76,31 @@ public sealed class Shot
     public int Age { get; private set; }
 
     /// <summary>Distance covered so far, in model units, accumulated over the accelerated steps.</summary>
-    public int Travelled => _travelled;
+    public int Travelled { get; private set; }
 
     public int X => Position[0];
     public int Y => Position[1];
     public int Z => Position[2];
 
-    /// <summary>True once the shot reached its retail range and should be dropped.</summary>
-    public bool Expired => _travelled >= Range;
+    /// <summary>
+    /// True once the shot left its leash. func_80035B7C:434 tests the octagonal distance from the
+    /// home point *before* the step, so a shot overshoots its radius by up to one step - the same
+    /// overshoot retail allows.
+    /// </summary>
+    public bool Expired => ShotMotion.OctagonalDistance(Position, _home) >= Range;
 
     /// <summary>Advances the shot by one retail tick through func_8001ACA4.</summary>
-    public void Tick()
+    public void Tick(int delta = RetailClock.TicksPerFrame)
     {
         // func_80035B7C:435-448 accelerates unk84 toward unkD4 << 4 before the integrator runs:
-        // unk84 += (accel * delta) / 16 with delta = 1 tick, clamped at the limit. With the
-        // alternate-speed selector cleared the accumulator never moves, so the step stays constant.
-        _speedScale = ShotMotion.AdvanceSpeed(_speedScale, _speedLimit, _accelWord);
-        int step = StepUnits;
+        // unk84 += (accel * delta) / 16, clamped at the limit, and the step itself is delta * unk84
+        // (func_80035B7C:450). With the alternate-speed selector cleared the accumulator never moves,
+        // so the step stays constant.
+        _speedScale = ShotMotion.AdvanceSpeed(_speedScale, _speedLimit, _accelWord, delta);
+        int step = Math.Max(1, (int)Math.Round(
+            _speedScale * delta / (double)ShotMotion.PositionUnitsPerModelUnit * SpeedMultiplier));
         ShotMotion.Integrate(Position, Direction, step);
-        _travelled += step;
+        Travelled += step;
         Age++;
     }
 }

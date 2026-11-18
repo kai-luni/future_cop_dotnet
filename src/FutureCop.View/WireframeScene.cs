@@ -31,9 +31,9 @@ namespace FutureCop.View;
 /// </param>
 public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0,
     bool ForceStatic = false, bool Textured = false, double TransformSpeed = 4.0,
-    double ShotSpeed = 0.0625, double ShotAimDegrees = 15.0, double ShotScale = 2.0,
+    double ShotSpeed = 0.0625, double ShotAimDegrees = 15.0, double ShotScale = 1.5,
     double CameraElevation = 45.0, double CameraDistanceMetres = 25.0,
-    double AutoFireSeconds = 1.0);
+    bool AutoFire = true, double FireRateScale = 1.0);
 
 /// <summary>
 /// Platform-independent wireframe renderer: turns one .MIS model (or the assembled player
@@ -73,8 +73,10 @@ public sealed class WireframeScene
     private bool _assemblyMode;
     private readonly bool _forceStatic;
     private readonly int _boneFrame;
-    private readonly double _autoFireSeconds;
-    private double _pendingAutoFire;
+    private readonly bool _autoFire;
+    private readonly double _fireRateScale;
+    private readonly CadenceState[] _cadence = new CadenceState[3];
+    private double _pendingFireFrames;
     private TimeSpan _lastRender;
     private readonly double _cameraElevation;
     private readonly double _cameraDistanceMetres;
@@ -123,7 +125,8 @@ public sealed class WireframeScene
         _shotSpeed = options.ShotSpeed > 0 ? options.ShotSpeed : 4.0;
         _shotAim = options.ShotAimDegrees;
         _shotScale = options.ShotScale > 0 ? options.ShotScale : 1.0;
-        _autoFireSeconds = options.AutoFireSeconds;
+        _autoFire = options.AutoFire;
+        _fireRateScale = options.FireRateScale > 0 ? options.FireRateScale : 1.0;
         _cameraElevation = options.CameraElevation;
 
         _cameraDistanceMetres = options.CameraDistanceMetres > 0 ? options.CameraDistanceMetres : 0;
@@ -298,21 +301,36 @@ public sealed class WireframeScene
     }
 
     /// <summary>
-    /// Advances the auto-fire clock by <paramref name="seconds"/> and fires the selected weapon once
-    /// a full <see cref="ViewerOptions.AutoFireSeconds"/> has passed, so the viewer keeps shooting on
-    /// its own. Render() drives it with the real frame time; tests drive it directly.
+    /// Drives the retail trigger of the selected weapon: one 60 Hz frame subtracts
+    /// <see cref="RetailClock.TicksPerFrame"/> from the reload timer (func_8006C3E0) and then asks the
+    /// slot update whether the weapon fires (func_8006BA50). <see cref="ViewerOptions.FireRateScale"/>
+    /// stretches the wall clock, so 1.0 is the retail cadence and smaller values slow the whole
+    /// trigger down without changing the relative rhythm of the weapons.
     /// </summary>
     public string? AdvanceAutoFire(double seconds)
     {
-        if (_autoFireSeconds <= 0 || !_assemblyMode)
+        if (!_autoFire || !_assemblyMode || _weapons.Count == 0)
         {
-            _pendingAutoFire = 0;
+            _pendingFireFrames = 0;
             return null;
         }
-        if (seconds > 0) _pendingAutoFire += seconds;
-        if (_pendingAutoFire < _autoFireSeconds) return null;
-        _pendingAutoFire -= _autoFireSeconds;
-        return Fire();
+        if (seconds > 0) _pendingFireFrames += seconds * 60.0 * _fireRateScale;
+        int frames = (int)_pendingFireFrames;
+        if (frames <= 0) return null;
+        _pendingFireFrames -= frames;
+        string? description = null;
+        for (int i = 0; i < frames; i++)
+        {
+            ref var state = ref _cadence[Math.Min(_weaponIndex, _cadence.Length - 1)];
+            var cadence = Weapon.Cadence;
+            // The cycle counter starts at the entry's burst byte (func_8006BA50:211 copies it back on
+            // every reload); a fresh slot has to be seeded before the first decrement.
+            if (state.Cycle <= 0) state.Cycle = cadence.Burst;
+            WeaponTrigger.DecrementTimer(ref state, RetailClock.TicksPerFrame);
+            if (WeaponTrigger.TryFire(ref state, cadence))
+                description = Fire();
+        }
+        return description;
     }
 
     private void AdvanceShots(TimeSpan now)

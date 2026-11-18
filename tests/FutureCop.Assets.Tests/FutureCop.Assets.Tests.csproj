@@ -25,5 +25,6 @@
     <None Include="../golden/mech-form.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/mech-form.vectors" />
     <None Include="../golden/shot.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/shot.vectors" />
     <None Include="../golden/shot-move.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/shot-move.vectors" />
+    <None Include="../golden/cadence.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/cadence.vectors" />
   </ItemGroup>
 </Project>

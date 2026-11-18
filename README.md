@@ -166,7 +166,9 @@ projectile `Cobj` (`func_8006A918`, looked up by `func_8006AAEC`), the spawn blo
 is `func_8005E47C`, the muzzle is vertex 0 of the two alternating instances
 (`func_80017668`, `state+0x178`), the range is `arc >> 4` (`func_80035904`) and the
 position step is the retail integrator `func_8001ACA4` with the mover's per-tick speed
-ramp (`func_80035B7C:435-448`), and the projectile is oriented with the retail flight basis
+ramp (`func_80035B7C:435-448`), the trigger of every weapon follows its own retail cadence
+(`WeaponTrigger`, proven against the unchanged `func_8006BA50`), and the projectile is oriented with
+the retail flight basis
 `func_800193F8` rebuilt from its velocity every tick, so the nose points where it flies. `M1A1.MIS` ships eight
 definitions with two triggers each (models 59, 60, 62, 64, 65, 66, 68), so
 up/down steps through sixteen shots.
@@ -180,9 +182,12 @@ document.
 
 Knobs of the fire path:
 
-- `FC_VIEW_SHOT_SPEED=<f>` - multiplier on the retail step (default 0.0625: at
-  retail speed a 4Da shot crosses its whole leash radius in eight ticks, and the
-  slower flight keeps it readable). 1 reproduces the mover exactly.
+- `FC_VIEW_SHOT_SPEED=<f>` - slow motion of the projectile flight (default 0.0625: at
+  retail speed a 4Da shot crosses its whole leash radius in one or two frames).
+  1 reproduces the mover exactly.
+- `FC_VIEW_FIRE_RATE=<f>` - clock scale of the weapon trigger. 1 is the retail
+  cadence (4Da fires every second frame, `53a` every tenth), smaller values slow the
+  trigger down without changing the relative rhythm of the weapons.
 - `FC_VIEW_SHOT_AIM=<deg>` - divergence of a shot from straight ahead (default 15):
   both arms fire away from the camera, splayed by this angle - a viewer convention,
   retail shares one aim vector between both muzzles.

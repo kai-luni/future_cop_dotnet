@@ -55,59 +55,56 @@ public class ShotMotionTests
             Array.Empty<ResourceReference>());
         // Alternate selector set: the spawner stores speed << 1 (func_8005E47C:87-93), the viewer
         // scales position units to model units.
-        Assert.Equal((8192 << 1) / ShotMotion.ModelUnitsPerPositionUnit, ShotMotion.TickScale(shot));
+        Assert.Equal((8192 << 1) / ShotMotion.PositionUnitsPerModelUnit, ShotMotion.TickScale(shot));
         // Range: the leash radius is arc << 4 position units, scaled the same way.
-        Assert.Equal((8192 << 4) / ShotMotion.ModelUnitsPerPositionUnit, ShotMotion.Range(shot));
+        Assert.Equal((8192 << 4) / ShotMotion.PositionUnitsPerModelUnit, ShotMotion.Range(shot));
 
         var straight = shot with { AltSpeed = 0 };
-        Assert.Equal((8192 << 4) / ShotMotion.ModelUnitsPerPositionUnit, ShotMotion.TickScale(straight));
+        Assert.Equal((8192 << 4) / ShotMotion.PositionUnitsPerModelUnit, ShotMotion.TickScale(straight));
     }
 
     [Fact]
     public void AlternateSpeedRampsTowardTheLimitLikeTheMover()
     {
-        // func_80035B7C:435-448 with delta = 1: unk84 += accel / 16, clamped at unkD4 << 4.
-        // Values derived from the C text: 122/16 = 7 (truncating), 1000/16 = 62, -16/16 = -1.
-        Assert.Equal(16391, ShotMotion.AdvanceSpeed(16384, 131072, 122));
-        Assert.Equal(16384, ShotMotion.AdvanceSpeed(16384, 131072, 0));
-        Assert.Equal(131072, ShotMotion.AdvanceSpeed(131070, 131072, 122));
-        Assert.Equal(131072, ShotMotion.AdvanceSpeed(131072, 131072, 122));
-        Assert.Equal(2110, ShotMotion.AdvanceSpeed(2048, 8192, 1000));
-        Assert.Equal(16383, ShotMotion.AdvanceSpeed(16384, 131072, -16));
+        // func_80035B7C:435-448 with the retail frame delta of five ticks:
+        // unk84 += (accel * delta) / 16, clamped at unkD4 << 4.
+        Assert.Equal(16422, ShotMotion.AdvanceSpeed(16384, 131072, 122, 5));
+        Assert.Equal(2360, ShotMotion.AdvanceSpeed(2048, 8192, 1000, 5));
+        Assert.Equal(131072, ShotMotion.AdvanceSpeed(131070, 131072, 122, 5));
+        Assert.Equal(16384, ShotMotion.AdvanceSpeed(16384, 131072, 0, 5));
+        Assert.Equal(131072, ShotMotion.AdvanceSpeed(131072, 131072, 122, 5));
+        Assert.Equal(16379, ShotMotion.AdvanceSpeed(16384, 131072, -16, 5));
+        // The frame delta is part of the product, not a constant: one tick ramps a fifth as far.
+        Assert.Equal(16391, ShotMotion.AdvanceSpeed(16384, 131072, 122, 1));
     }
 
     [Fact]
-    public void FlightBasisTurnsTheNoseOntoTheVelocity()
+    public void OctagonalDistanceIsTheLeashMetric()
     {
-        // func_800193F8: rows are the images of the model axes, model +Z is the nose.
-        foreach (var (degrees, expectX, expectZ) in new[] { (90.0, 1, 0), (0.0, 0, -1), (-90.0, -1, 0) })
-        {
-            var basis = ShotMotion.FlightBasis(Shot.Aim(degrees));
-            Assert.Equal(0, basis[1]);                     // row0 has no Y component
-            Assert.Equal(expectX, basis[6] / 65536);       // row2 = direction
-            Assert.Equal(expectZ, basis[8] / 65536);
-            // rows stay orthonormal: row0 . row2 == 0 and |row0| == |row1| == 0x10000
-            Assert.InRange(((long)basis[0] * basis[6] + (long)basis[2] * basis[8]) >> 16, -1, 1);
-            long length = (long)basis[0] * basis[0] + (long)basis[2] * basis[2];
-            Assert.InRange(Math.Abs(length - 0x10000L * 0x10000), 0L, 0x20000L);
-            // right-handed: row1 is +Y for a horizontal flight, so the nose cannot flip the roll
-            Assert.True(basis[4] > 0xFFFF * 0.9, $"row1.y = {basis[4]}");
-        }
+        // func_8001A4E8: max + (mid + min) / 4.
+        Assert.Equal(0, ShotMotion.OctagonalDistance(new[] { 0, 0, 0 }, new[] { 0, 0, 0 }));
+        Assert.Equal(400, ShotMotion.OctagonalDistance(new[] { 0, 0, 0 }, new[] { 400, 0, 0 }));
+        Assert.Equal(400 + (0 + 0) / 4, ShotMotion.OctagonalDistance(new[] { 0, 0, 0 }, new[] { 400, 0, 0 }));
+        // A diagonal of 400 on two axes is 400 + 400/4, i.e. shorter than the euclidean 566.
+        Assert.Equal(500, ShotMotion.OctagonalDistance(new[] { 0, 0, 0 }, new[] { 400, 400, 0 }));
+        Assert.Equal(500, ShotMotion.OctagonalDistance(new[] { 400, 400, 0 }, new[] { 0, 0, 0 }));
+        // Negative differences are absolute.
+        Assert.Equal(500, ShotMotion.OctagonalDistance(new[] { -400, -400, 0 }, new[] { 0, 0, 0 }));
+        // Three axes: largest plus a quarter of the sum of the other two.
+        Assert.Equal(400 + (300 + 200) / 4, ShotMotion.OctagonalDistance(new[] { 0, 0, 0 }, new[] { 400, 300, 200 }));
     }
 
     [Fact]
-    public void FlightBasisAddsPitchWhenTheVelocityClimbs()
+    public void LeashRadiusIsTheRangeWordRoundedDownTo256()
     {
-        // A 45 degrees upward shot: func_800193F8 keeps the horizontal helper vector and the
-        // cross product then tilts row1 away from +Y.
-        int[] direction = { 0, 46341, -46341 };
-        var basis = ShotMotion.FlightBasis(direction);
-        Assert.Equal(0, basis[6]);
-        Assert.Equal(46341, basis[7]);
-        Assert.Equal(-46341, basis[8]);
-        Assert.InRange(basis[4], 0x8000, 0x10000);   // row1.y drops below 1 as the nose climbs
-        Assert.Equal(0, basis[1]);
-        Assert.Equal(0, basis[2]);
-        Assert.Equal(-0x10000, basis[0]);   // row0 stays the horizontal helper of func_800193F8
+        var shot = new ShotDefinition(0x4D, 0, 3, 0, 59, 25, 0, 8192, 122, 8192, 0, 0, 0, 0, 1, 8, 0, 0,
+            Array.Empty<ResourceReference>());
+        // arc << 4 = 131072, which is already a multiple of 256.
+        Assert.Equal(131072, ShotMotion.LeashRadius(shot));
+        Assert.Equal(131072 / 16, ShotMotion.Range(shot));
+        // A range word of one: 16 position units, i.e. rounded down to zero - the C would gate on
+        // unkA6 << 8 with unkA6 = 0, so such a shot expires at once.
+        var tiny = shot with { ArcWord = 1 };
+        Assert.Equal(0, ShotMotion.LeashRadius(tiny));
     }
 }

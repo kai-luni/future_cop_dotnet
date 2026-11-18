@@ -37,7 +37,7 @@ public class ShotSpawnTests
         SectionId: 0, Half: 0, Action: 0, Flags: 0, ModelId: 0,
         ObjWord00: (int)w[3], DamageWord: (short)w[5], SpeedWord: (short)w[1],
         AltSpeed: (short)w[2], ArcWord: (short)w[4], ObjWord0E: (int)w[6], ObjWord12: (int)w[7],
-        SoundId: 0, SecondaryColumn: 0, CadencePeriod: 0, CadenceReload: 0, CadenceRate: 0,
+        SoundId: 0, SecondaryColumn: 0, Burst: 1, ReloadTicks: 0, GapTicks: 0,
         RecordOffset: 0, Resources: Array.Empty<ResourceReference>());
 
     [Fact]
