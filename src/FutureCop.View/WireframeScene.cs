@@ -31,8 +31,8 @@ namespace FutureCop.View;
 /// </param>
 public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0,
     bool ForceStatic = false, bool Textured = false, double TransformSpeed = 4.0,
-    double ShotSpeed = 0.0625, double ShotAimDegrees = 15.0, double ShotScale = 1.0,
-    double CameraElevation = 45.0, double CameraDistanceMetres = 60.0,
+    double ShotSpeed = 0.0625, double ShotAimDegrees = 15.0, double ShotScale = 2.0,
+    double CameraElevation = 45.0, double CameraDistanceMetres = 25.0,
     double AutoFireSeconds = 1.0);
 
 /// <summary>
@@ -252,16 +252,25 @@ public sealed class WireframeScene
         }
 
         int muzzleSide = _muzzleSide;
-        var (mx, my, mz) = Muzzle(muzzleSide);
+        var (px, py, pz) = Muzzle(muzzleSide);
         _muzzleSide ^= 1;
-        // Viewer convention, not retail: both shots leave away from the camera and diverge by the
-        // aim knob, the right arm to one side and the left arm to the other. func_8006ACB0:166-171
-        // builds ONE aim vector (posB - posA) from the target and shares it between both muzzles.
+        // PlayerAssembly.Point returns engine translation units, i.e. 16x model units like Gte.Mat.Tx
+        // (func_80017668 shifts the GTE result left by four). The flight state, the step and the leash
+        // radius all live in plain model units, so the muzzle is scaled down here and ShotMatrix turns
+        // the position back into translation units - mixing the two made the shot crawl out of the arm
+        // and expire after a fraction of its leash.
+        var (mx, my, mz) = (px >> 4, py >> 4, pz >> 4);
+        // Viewer convention, not retail: the two arms splay by the aim knob in opposite directions.
+        // func_8006ACB0:166-171 builds ONE aim vector (posB - posA) from the target and shares it
+        // between both muzzles. 180 degrees is straight away from the camera: the mech faces the
+        // camera, so 0 degrees (model -Z) would fly at the viewer and leave the frame within a few
+        // ticks. Measured through ViewTransform: the projected depth grows with 180 and shrinks with 0.
         double aim = 180.0 + (muzzleSide == 0 ? -_shotAim : _shotAim);
         // func_8005E47C turns the speed word into a 16.16 scale (speed << 4, or << 1 with the alt
         // selector); positions are model units, so one tick covers scale / 4096 units.
         var shot = new Shot(weapon, model, mx, my, mz, _shotSpeed, aim);
         _shots.Add(shot);
+
         Description = $"{WeaponLine()}, fired model {model.Id} ({model.Polygons.Count} parts) " +
                       $"from {mx},{my},{mz} (step {shot.StepUnits}, range {shot.Range})";
         return Description;
@@ -486,7 +495,7 @@ public sealed class WireframeScene
             Apply(basis[0], scale), Apply(basis[1], scale), Apply(basis[2], scale),
             Apply(basis[3], scale), Apply(basis[4], scale), Apply(basis[5], scale),
             Apply(basis[6], scale), Apply(basis[7], scale), Apply(basis[8], scale),
-        }, shot.X, shot.Y, shot.Z);
+        }, shot.X << 4, shot.Y << 4, shot.Z << 4);
         return ScriptRender.Compose(local, view);
     }
 

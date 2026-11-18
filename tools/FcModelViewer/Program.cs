@@ -22,11 +22,14 @@
 //   FC_VIEW_STATIC=1       force the rigid single-list path
 //   FC_VIEW_FRAME=<n>      animation frame of the scripted/bone path (default 0)
 //   FC_VIEW_TEXTURED=1     render textured polygons (or pass 'textured' / '--textured' on CLI)
-//   FC_VIEW_SHOT_SPEED=<f> projectile step multiplier (default 4)
-//   FC_VIEW_SHOT_AIM=<deg>  aim of the shot in model space (0 = at the viewer, 90 = to the right)
-//   FC_VIEW_SHOT_SCALE=<f> draw scale of the projectile model (default 3)
+//   FC_VIEW_SHOT_SPEED=<f> multiplier on the retail step (1 = retail speed)
+//   FC_VIEW_SHOT_AIM=<deg> divergence of a shot from straight ahead (default 15)
+//   FC_VIEW_SHOT_SCALE=<f> draw scale of the projectile model (default 1 = retail)
 //   FC_VIEW_SHOTS=<n>      fire <n> projectiles for a still capture
 //   FC_VIEW_SHOT_TICKS=<n> advance the shot clock by n more ticks before that capture
+//   FC_VIEW_AUTOFIRE=<s>   fire the selected weapon every <s> seconds, 0 = off (default 1)
+//   FC_VIEW_CAM_ELEV=<deg> camera elevation above the mech, 0 = level view (default 45)
+//   FC_VIEW_CAM_DIST=<m>   camera distance in metres, 0 = auto framing (default 25)
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
@@ -50,9 +53,9 @@ var options = new ViewerOptions(
     Textured: texturedFlag || Environment.GetEnvironmentVariable("FC_VIEW_TEXTURED") == "1",
     ShotSpeed: EnvDouble("FC_VIEW_SHOT_SPEED", 0.0625),
     ShotAimDegrees: EnvDouble("FC_VIEW_SHOT_AIM", 15.0),
-    ShotScale: EnvDouble("FC_VIEW_SHOT_SCALE", 1.0),
+    ShotScale: EnvDouble("FC_VIEW_SHOT_SCALE", 2.0),
     CameraElevation: EnvDouble("FC_VIEW_CAM_ELEV", 45.0),
-    CameraDistanceMetres: EnvDouble("FC_VIEW_CAM_DIST", 60.0),
+    CameraDistanceMetres: EnvDouble("FC_VIEW_CAM_DIST", 25.0),
     AutoFireSeconds: EnvDouble("FC_VIEW_AUTOFIRE", 1.0));
 var scene = new WireframeScene(mis, options, W, H);
 Console.WriteLine(scene.Description);

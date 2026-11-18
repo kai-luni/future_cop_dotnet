@@ -92,6 +92,8 @@ namespace FutureCop.Viewer.Tv
         private WireframeScene _scene;
         private ImageView _image;
         private TextLabel _hud;
+        private Window _window;
+        private int _focusTicks;
         private Tizen.NUI.Timer _timer;
         private byte[] _pixels;
         private string _probe = "full";
@@ -128,6 +130,7 @@ namespace FutureCop.Viewer.Tv
         private void Initialize()
         {
             var window = Window.Instance;
+            _window = window;
             window.BackgroundColor = new Color(0.02f, 0.03f, 0.06f, 1.0f);
 
             (_bufferWidth, _bufferHeight) = ReadFramebuffer();
@@ -187,6 +190,13 @@ namespace FutureCop.Viewer.Tv
 
             window.Resized += (s, e) => LayoutImage(window);
             window.KeyEvent += OnKeyEvent;
+            // The window loses the compositor focus whenever the TV's own UI gets a turn; without
+            // re-asserting it the remote stops reaching the app while the picture keeps running.
+            window.FocusChanged += (s, e) =>
+            {
+                window.SetAcceptFocus(true);
+                window.Activate();
+            };
             window.SetAcceptFocus(true);
             window.Show();
             window.Activate();
@@ -200,6 +210,7 @@ namespace FutureCop.Viewer.Tv
                 return true;
             };
             _timer.Start();
+            _focusTicks = 100;
             WriteLog("timer started");
         }
 
@@ -221,6 +232,15 @@ namespace FutureCop.Viewer.Tv
         {
             try
             {
+                // Right after the start the compositor still hands the first key press to the TV's own
+                // UI, so the remote seems dead until something is clicked. Re-assert the keyboard focus
+                // for the first few seconds (about 100 ticks at 33 ms).
+                if (_focusTicks > 0 && _window != null)
+                {
+                    _focusTicks--;
+                    _window.SetAcceptFocus(true);
+                    _window.Activate();
+                }
                 double now = _clock.Elapsed.TotalSeconds;
                 double delta = Math.Max(0.0, now - _lastSeconds);
                 _lastSeconds = now;
