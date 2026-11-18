@@ -42,6 +42,16 @@ dotnet run --project tools/FcAssetTool -- list build/disc/files/CW/M1A1.MIS
 dotnet run --project tools/FcAssetTool -- dump build/disc/files/CW/M1A1.MIS 11
 ```
 
+### Experimental Precinct Assault menu (Linux/X11)
+
+Run `dotnet run --project tools/FcMainMenu -- build/disc/files/CW/FE.MIS`.
+Choose Precinct Assault Single Player to reach player setup, mission selection,
+loadout and a 3D mech preview. Use arrow keys, Enter and Escape; Q quits outside
+name entry. The preview has no level or gameplay loop, and briefing movies are
+not played. Other main menu actions are not implemented. The font and background
+are placeholders; music uses `pw-play` when available. Retail assets are not
+included. Front-end text and UI integration have not been fully parity-tested.
+
 ## Tests (identical cases in .NET and C)
 
 Shared golden vectors: `tests/golden/3dtl.vectors` (line form `fcop-3dtl-golden/v2`,
