@@ -142,4 +142,36 @@ public class ShotSceneTests
         textured.Render(0);
         Assert.True(textured.ShotFaceCount > 0, "the projectile contributed no textured faces");
     }
+
+    [RetailFact]
+    public void AutoFireShootsOncePerSecond()
+    {
+        var scene = Scene();
+        Assert.Equal(0, scene.ShotCount);
+
+        // Half an interval: nothing yet.
+        Assert.Null(scene.AdvanceAutoFire(0.5));
+        Assert.Equal(0, scene.ShotCount);
+        // The second half completes the interval and fires once.
+        Assert.NotNull(scene.AdvanceAutoFire(0.5));
+        Assert.Equal(1, scene.ShotCount);
+        // The clock keeps running: another full second, another shot.
+        scene.AdvanceAutoFire(1.0);
+        Assert.Equal(2, scene.ShotCount);
+        // A long frame only fires once, the rest stays on the clock.
+        scene.AdvanceAutoFire(0.75);
+        Assert.Equal(2, scene.ShotCount);
+        scene.AdvanceAutoFire(0.25);
+        Assert.Equal(3, scene.ShotCount);
+    }
+
+    [RetailFact]
+    public void AutoFireStaysOffWithoutTheAssembly()
+    {
+        var mis = TextureGoldenTests.FindRetailMis();
+        Assert.NotNull(mis);
+        var scene = new WireframeScene(mis!, new ViewerOptions(ModelId: 30), 320, 240);
+        Assert.Null(scene.AdvanceAutoFire(5.0));
+        Assert.Equal(0, scene.ShotCount);
+    }
 }

@@ -52,7 +52,8 @@ var options = new ViewerOptions(
     ShotAimDegrees: EnvDouble("FC_VIEW_SHOT_AIM", 15.0),
     ShotScale: EnvDouble("FC_VIEW_SHOT_SCALE", 1.0),
     CameraElevation: EnvDouble("FC_VIEW_CAM_ELEV", 45.0),
-    CameraDistanceMetres: EnvDouble("FC_VIEW_CAM_DIST", 60.0));
+    CameraDistanceMetres: EnvDouble("FC_VIEW_CAM_DIST", 60.0),
+    AutoFireSeconds: EnvDouble("FC_VIEW_AUTOFIRE", 1.0));
 var scene = new WireframeScene(mis, options, W, H);
 Console.WriteLine(scene.Description);
 foreach (var weapon in scene.Weapons)
@@ -129,6 +130,7 @@ try
 {
     var clock = Stopwatch.StartNew();
     double last = 0, angle = 0;
+    string lastTitle = "";
     while (win.Pump(action =>
     {
         switch (action)
@@ -156,6 +158,13 @@ try
         angle = (angle + degPerSec * (now - last)) % 360.0;
         last = now;
         RenderFrame(angle);
+        // The title carries the live shot count, so it has to follow the frame rather than the input.
+        string title = scene.Title;
+        if (title != lastTitle)
+        {
+            win.SetTitle(title);
+            lastTitle = title;
+        }
         win.Blit();
         Thread.Sleep(15); // ~60 fps ceiling; one frame costs far less
     }

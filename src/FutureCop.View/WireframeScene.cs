@@ -32,7 +32,8 @@ namespace FutureCop.View;
 public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0,
     bool ForceStatic = false, bool Textured = false, double TransformSpeed = 4.0,
     double ShotSpeed = 0.0625, double ShotAimDegrees = 15.0, double ShotScale = 1.0,
-    double CameraElevation = 45.0, double CameraDistanceMetres = 60.0);
+    double CameraElevation = 45.0, double CameraDistanceMetres = 60.0,
+    double AutoFireSeconds = 1.0);
 
 /// <summary>
 /// Platform-independent wireframe renderer: turns one .MIS model (or the assembled player
@@ -72,6 +73,9 @@ public sealed class WireframeScene
     private bool _assemblyMode;
     private readonly bool _forceStatic;
     private readonly int _boneFrame;
+    private readonly double _autoFireSeconds;
+    private double _pendingAutoFire;
+    private TimeSpan _lastRender;
     private readonly double _cameraElevation;
     private readonly double _cameraDistanceMetres;
     private readonly int _focal;
@@ -119,6 +123,7 @@ public sealed class WireframeScene
         _shotSpeed = options.ShotSpeed > 0 ? options.ShotSpeed : 4.0;
         _shotAim = options.ShotAimDegrees;
         _shotScale = options.ShotScale > 0 ? options.ShotScale : 1.0;
+        _autoFireSeconds = options.AutoFireSeconds;
         _cameraElevation = options.CameraElevation;
 
         _cameraDistanceMetres = options.CameraDistanceMetres > 0 ? options.CameraDistanceMetres : 0;
@@ -178,7 +183,7 @@ public sealed class WireframeScene
 
     /// <summary>Window/HUD title for the current subject.</summary>
     public string Title => _assemblyMode
-        ? $"Future Cop wireframe - player mech {_form!.Name} " +
+        ? $"Future Cop wireframe - player mech {_form!.Name}, {_shots.Count} shots in flight " +
           $"(left = hover, right = walker, up/down = {WeaponLine()})"
         : $"Future Cop wireframe - model {_model.Id}";
 
@@ -283,6 +288,24 @@ public sealed class WireframeScene
         _shots.RemoveAll(s => s.Expired);
     }
 
+    /// <summary>
+    /// Advances the auto-fire clock by <paramref name="seconds"/> and fires the selected weapon once
+    /// a full <see cref="ViewerOptions.AutoFireSeconds"/> has passed, so the viewer keeps shooting on
+    /// its own. Render() drives it with the real frame time; tests drive it directly.
+    /// </summary>
+    public string? AdvanceAutoFire(double seconds)
+    {
+        if (_autoFireSeconds <= 0 || !_assemblyMode)
+        {
+            _pendingAutoFire = 0;
+            return null;
+        }
+        if (seconds > 0) _pendingAutoFire += seconds;
+        if (_pendingAutoFire < _autoFireSeconds) return null;
+        _pendingAutoFire -= _autoFireSeconds;
+        return Fire();
+    }
+
     private void AdvanceShots(TimeSpan now)
     {
         double seconds = (now - _lastShotAdvance).TotalSeconds;
@@ -378,6 +401,8 @@ public sealed class WireframeScene
         Advance((now - _lastAdvance).TotalSeconds);
         _lastAdvance = now;
         AdvanceShots(now);
+        AdvanceAutoFire((now - _lastRender).TotalSeconds);
+        _lastRender = now;
 
         Array.Clear(Rgb);
         var view = ViewTransform.Turn(degrees, _cameraElevation, _cx, _cy, _cz, _dist);
