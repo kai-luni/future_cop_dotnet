@@ -12,8 +12,25 @@ namespace FutureCop.View;
 /// Multiplier for the mech transformation cadence: 1 = retail (0xA0 progress per 1/60 s tick,
 /// about 6.8 s for the whole transform), 4 = about 1.7 s.
 /// </param>
+/// <param name="ShotSpeed">
+/// Multiplier for the projectile step: 1 = retail reading of the mover (speed word / 4096 model
+/// units per tick), 4 = the viewer's default, which crosses the retail range in about half a second
+/// like <see cref="TransformSpeed"/> speeds up the form change. See docs/weapon-fire-path.md for why
+/// the position scale is a viewer knob and not a proven retail constant.
+/// </param>
+/// <param name="ShotAimDegrees">
+/// Aim of a fired shot in model space: 0 points at the viewer, 90 to the mech's right. The right arm
+/// fires to +90, the left arm mirrored to -90, so both muzzles shoot outward. Retail aims at a target
+/// entity; the viewer has none and picks an angle that keeps the shot in frame.
+/// </param>
+/// <param name="ShotScale">
+/// Draw scale of the projectile model. The retail models of this mission are 32 units across, i.e.
+/// a few pixels at the viewer's framing; retail world space is far larger than this one mech, so
+/// the viewer enlarges the shot to stay readable.
+/// </param>
 public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0,
-    bool ForceStatic = false, bool Textured = false, double TransformSpeed = 4.0);
+    bool ForceStatic = false, bool Textured = false, double TransformSpeed = 4.0,
+    double ShotSpeed = 4.0, double ShotAimDegrees = 90.0, double ShotScale = 3.0);
 
 /// <summary>
 /// Platform-independent wireframe renderer: turns one .MIS model (or the assembled player
@@ -57,6 +74,16 @@ public sealed class WireframeScene
     private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
     private TimeSpan _lastAdvance;
 
+    private readonly List<Shot> _shots = new();
+    private readonly List<ShotDefinition> _weapons = new();
+    private int _weaponIndex;
+    private int _muzzleSide;
+    private double _pendingShotTicks;
+    private readonly double _shotSpeed;
+    private readonly double _shotAim;
+    private readonly double _shotScale;
+    private TimeSpan _lastShotAdvance;
+
     public WireframeScene(string misPath, ViewerOptions options, int width = 320, int height = 240)
     {
         if (width <= 0 || height <= 0) throw new ArgumentOutOfRangeException(nameof(width));
@@ -70,6 +97,9 @@ public sealed class WireframeScene
 
         _assemblyMode = options.Assembly;
         _transformSpeed = options.TransformSpeed > 0 ? options.TransformSpeed : 4.0;
+        _shotSpeed = options.ShotSpeed > 0 ? options.ShotSpeed : 4.0;
+        _shotAim = options.ShotAimDegrees;
+        _shotScale = options.ShotScale > 0 ? options.ShotScale : 1.0;
         _forceStatic = options.ForceStatic;
         _boneFrame = Math.Max(0, options.BoneFrame);
         Rgb = new byte[width * height * 3];
@@ -84,6 +114,10 @@ public sealed class WireframeScene
             .GroupBy(a => string.Join(",", a.Resources.Select(r => $"{r.Type}:{r.Id}")))
             .Select(g => g.First())
             .ToList();
+
+        // The mission's own fire definitions: the tACT records the retail registry D_800A3340
+        // caches, restricted to halves that name a spawner action and a model the mission carries.
+        _weapons.AddRange(WeaponCatalog.Load(_file));
 
         if (_assemblyMode)
         {
@@ -122,7 +156,8 @@ public sealed class WireframeScene
 
     /// <summary>Window/HUD title for the current subject.</summary>
     public string Title => _assemblyMode
-        ? $"Future Cop wireframe - player mech {_form!.Name} (left = hover, right = walker)"
+        ? $"Future Cop wireframe - player mech {_form!.Name} " +
+          $"(left = hover, right = walker, up/down = {WeaponLine()})"
         : $"Future Cop wireframe - model {_model.Id}";
 
     /// <summary>Form of the assembled player mech, null outside the assembly mode.</summary>
@@ -130,6 +165,113 @@ public sealed class WireframeScene
 
     /// <summary>Camera framing (pivot and distance) - lets a test prove it stays put.</summary>
     public (int Cx, int Cy, int Cz, int Dist) Framing => (_cx, _cy, _cz, _dist);
+
+    /// <summary>Fire definitions the mission carries; cycled with up/down (mouse wheel).</summary>
+    public IReadOnlyList<ShotDefinition> Weapons => _weapons;
+
+    /// <summary>Currently selected fire definition, null when the mission has none.</summary>
+    public ShotDefinition? Weapon
+    {
+        get
+        {
+            if (_weapons.Count == 0) return null;
+            int index = _weaponIndex % _weapons.Count;
+            if (index < 0) index += _weapons.Count;
+            return _weapons[index];
+        }
+    }
+
+    /// <summary>Live projectiles; they fly on their own clock and vanish at the retail range.</summary>
+    public IReadOnlyList<Shot> Shots => _shots;
+
+    public int ShotCount => _shots.Count;
+
+    /// <summary>Faces the projectiles contributed to the last <see cref="Render"/> call.</summary>
+    public int ShotFaceCount { get; private set; }
+
+    /// <summary>Status line of the selected weapon.</summary>
+    public string WeaponLine() => _weapons.Count == 0
+        ? "no fire definitions in this mission"
+        : $"weapon {_weaponIndex + 1}/{_weapons.Count}: {Weapon!.Name}";
+
+    /// <summary>Cycles the fire definition (up/down, mouse wheel); returns the status line.</summary>
+    public string CycleWeapon(int step)
+    {
+        if (_weapons.Count == 0) return WeaponLine();
+        if (step != 0)
+        {
+            int count = _weapons.Count;
+            _weaponIndex = ((_weaponIndex + step) % count + count) % count;
+            Description = WeaponLine();
+        }
+        return WeaponLine();
+    }
+
+    /// <summary>
+    /// Fires the selected definition from one of the two alternating muzzles and returns a status
+    /// line. Mirrors func_8006ACB0: the definition's model id becomes the projectile model and the
+    /// entity's spawner turns the speed word into the per-tick step.
+    /// </summary>
+    public string Fire()
+    {
+        if (!_assemblyMode || _parts is null) return "firing needs the player assembly";
+        var weapon = Weapon;
+        if (weapon is null) return WeaponLine();
+        var model = _file.Models.FirstOrDefault(m => m.Id == weapon.ModelId);
+        if (model is null || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0)
+        {
+            Description = $"projectile model {weapon.ModelId} is not drawable";
+            return Description;
+        }
+
+        int muzzleSide = _muzzleSide;
+        var (mx, my, mz) = Muzzle(muzzleSide);
+        _muzzleSide ^= 1;
+        // Viewer convention, not retail: the right arm (slot 2) fires to +aim and the left arm
+        // (slot 3) mirrored, so both muzzles shoot outward. func_8006ACB0:166-171 builds ONE aim
+        // vector (posB - posA) from the target and passes it to the spawner for both muzzles.
+        double aim = muzzleSide == 0 ? _shotAim : -_shotAim;
+        // func_8005E47C turns the speed word into a 16.16 scale (speed << 4, or << 1 with the alt
+        // selector); positions are model units, so one tick covers scale / 4096 units.
+        var shot = new Shot(weapon, model, mx, my, mz, _shotSpeed, aim);
+        _shots.Add(shot);
+        Description = $"{WeaponLine()}, fired model {model.Id} ({model.Polygons.Count} parts) " +
+                      $"from {mx},{my},{mz} (step {shot.StepUnits}, range {shot.Range})";
+        return Description;
+    }
+
+    /// <summary>
+    /// Muzzle point of one of the two alternating sides. Retail keeps two 76-byte model instances at
+    /// state + 0x178 and reads vertex 0 of each through func_80017668; the viewer reads the same
+    /// point 0 of the main body and of the twin arm instance of the assembly pose.
+    /// </summary>
+    private (int X, int Y, int Z) Muzzle(int side)
+    {
+        // Slots 2 and 3 of the assembly are the two arm instances (joints.fifth and joints.third);
+        // retail keeps the same pair of model instances at state + 0x178 and alternates them.
+        var part = _parts!.Count >= 4 ? _parts![side == 0 ? 2 : 3] : _parts![0];
+        return PlayerAssembly.Point(part.Model, part.Frame, 0, part.Matrix);
+    }
+
+    /// <summary>Deterministic shot clock: one tick = 1/60 s of the retail cadence.</summary>
+    public void AdvanceShotTicks(int ticks)
+    {
+        for (int t = 0; t < ticks; t++)
+            foreach (var shot in _shots) shot.Tick();
+        _shots.RemoveAll(s => s.Expired);
+    }
+
+    private void AdvanceShots(TimeSpan now)
+    {
+        double seconds = (now - _lastShotAdvance).TotalSeconds;
+        _lastShotAdvance = now;
+        if (_shots.Count == 0 || seconds <= 0) return;
+        _pendingShotTicks += seconds * PlayerForm.TicksPerSecond;
+        int ticks = (int)_pendingShotTicks;
+        if (ticks <= 0) return;
+        _pendingShotTicks -= ticks;
+        AdvanceShotTicks(ticks);
+    }
 
     /// <summary>
     /// Rebuilds the five instances for the current form progress. The camera is only refitted
@@ -213,6 +355,7 @@ public sealed class WireframeScene
         var now = _clock.Elapsed;
         Advance((now - _lastAdvance).TotalSeconds);
         _lastAdvance = now;
+        AdvanceShots(now);
 
         Array.Clear(Rgb);
         var view = ViewTransform.Turn(degrees, _cx, _cy, _cz, _dist);
@@ -241,6 +384,7 @@ public sealed class WireframeScene
                 total += faces.Count;
             }
             FaceCount = total;
+            FaceCount += DrawShotsWire(view);
             return;
         }
 
@@ -251,7 +395,41 @@ public sealed class WireframeScene
         foreach (var face in wire)
             foreach (var (x0, y0, x1, y1) in ModelRender.Edges(face))
                 Line(x0, y0, x1, y1, Palette[face.Group & 7]);
-        FaceCount = wire.Count;
+        FaceCount = wire.Count + DrawShotsWire(view);
+    }
+
+    /// <summary>
+    /// Draws every live projectile as wireframe edges in the projectile colour. The shot matrix is a
+    /// translation of the projectile position in model space composed with the view transform, i.e.
+    /// the same pipeline the mech parts use.
+    /// </summary>
+    private int DrawShotsWire(Gte.Mat view)
+    {
+        int faces = 0;
+        foreach (var shot in _shots)
+        {
+            if (!shot.Model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
+            var matrix = ShotMatrix(shot, view);
+            var projected = shot.Model.IsScripted
+                ? ScriptRender.Project(shot.Model, verts, 0, matrix, _focal, _offsetX, _offsetY, 1)
+                : ModelRender.Project(Gte.Load(matrix), verts, _focal, _offsetX, _offsetY, 1);
+            var widths = shot.Model.Widths.TryGetValue(1, out var w) ? w.ToArray() : Array.Empty<short>();
+            var walk = ModelRender.Walk(shot.Model.Polygons, projected, widths, 0xFF, 0);
+            faces += walk.Count;
+            foreach (var face in walk)
+                foreach (var (x0, y0, x1, y1) in ModelRender.Edges(face))
+                    Line(x0, y0, x1, y1, Palette[2]);
+        }
+        ShotFaceCount = faces;
+        return faces;
+    }
+
+    private Gte.Mat ShotMatrix(Shot shot, Gte.Mat view)
+    {
+        int scale = (int)Math.Round(_shotScale * 0x10000);
+        var local = new Gte.Mat(new[] { scale, 0, 0, 0, scale, 0, 0, 0, scale },
+            shot.X, shot.Y, shot.Z);
+        return ScriptRender.Compose(local, view);
     }
 
     private void RenderTextured(Gte.Mat view)
@@ -280,11 +458,31 @@ public sealed class WireframeScene
                 allFaces.Add((face, _model));
         }
 
+        CollectShots(view, allFaces);
+
         // Painter's order (largest Z first), matching the PS1 ordering table.
         allFaces.Sort((a, b) => b.Face.Work.Z.CompareTo(a.Face.Work.Z));
         foreach (var (face, model) in allFaces)
             DrawTexturedFace(face, model);
         FaceCount = allFaces.Count;
+    }
+
+    /// <summary>Adds every live projectile to the textured face list (same walk, mask 0xFF).</summary>
+    private void CollectShots(Gte.Mat view, List<(TexturedFace Face, Model Model)> faces)
+    {
+        int before = faces.Count;
+        foreach (var shot in _shots)
+        {
+            if (!shot.Model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
+            var matrix = ShotMatrix(shot, view);
+            var projected = shot.Model.IsScripted
+                ? ScriptRender.Project(shot.Model, verts, 0, matrix, _focal, _offsetX, _offsetY, 1)
+                : ModelRender.Project(Gte.Load(matrix), verts, _focal, _offsetX, _offsetY, 1);
+            var widths = shot.Model.Widths.TryGetValue(1, out var w) ? w.ToArray() : Array.Empty<short>();
+            foreach (var face in ModelRender.WalkTextured(shot.Model.Polygons, projected, widths, 0xFF, 0))
+                faces.Add((face, shot.Model));
+        }
+        ShotFaceCount = faces.Count - before;
     }
 
     private Dictionary<int, TextureRecord> TextureLookup(Model model)

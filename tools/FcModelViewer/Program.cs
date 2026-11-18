@@ -2,10 +2,15 @@
 // with the derived GTE math (decomp func_80013F08 single-list path) and draws the masked
 // polygon walk (func_80016A64 / func_80015B68) as a wireframe that turns slowly about its own
 // Y axis. Shows the result in an X11 window (320x240 framebuffer, 2x scale; q/Esc closes) and
-// writes a 24-bit BMP of the current frame. In model mode the left/right mouse buttons browse the
-// drawable models; in the assembly mode the left button transforms the mech into the hover form
-// and the right button back into the walker (func_80055988 transition). The assembly mode is
-// experimental. No shading.
+// writes a 24-bit BMP of the current frame.
+//
+// Input in the assembly mode:
+//   left arrow / left mouse button    walker -> hover (func_80055988 transition)
+//   right arrow / right mouse button  hover -> walker
+//   up / down, mouse wheel            cycle the mission's fire definitions
+//   space / return / middle button    fire one projectile from the alternating muzzle
+// In model mode the left/right buttons and the wheel browse the drawable models.
+// The assembly mode is experimental. No shading.
 //
 // The same renderer runs on the TV (tools/FcModelViewer.Tizen); this file only adds the
 // desktop frontend: X11 window, mouse keys, BMP capture.
@@ -17,6 +22,11 @@
 //   FC_VIEW_STATIC=1       force the rigid single-list path
 //   FC_VIEW_FRAME=<n>      animation frame of the scripted/bone path (default 0)
 //   FC_VIEW_TEXTURED=1     render textured polygons (or pass 'textured' / '--textured' on CLI)
+//   FC_VIEW_SHOT_SPEED=<f> projectile step multiplier (default 4)
+//   FC_VIEW_SHOT_AIM=<deg>  aim of the shot in model space (0 = at the viewer, 90 = to the right)
+//   FC_VIEW_SHOT_SCALE=<f> draw scale of the projectile model (default 3)
+//   FC_VIEW_SHOTS=<n>      fire <n> projectiles for a still capture
+//   FC_VIEW_SHOT_TICKS=<n> advance the shot clock by n more ticks before that capture
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
@@ -37,9 +47,14 @@ var options = new ViewerOptions(
     Assembly: Environment.GetEnvironmentVariable("FC_VIEW_ASSEMBLY") == "1",
     BoneFrame: EnvInt("FC_VIEW_FRAME", 0),
     ForceStatic: Environment.GetEnvironmentVariable("FC_VIEW_STATIC") == "1",
-    Textured: texturedFlag || Environment.GetEnvironmentVariable("FC_VIEW_TEXTURED") == "1");
+    Textured: texturedFlag || Environment.GetEnvironmentVariable("FC_VIEW_TEXTURED") == "1",
+    ShotSpeed: EnvDouble("FC_VIEW_SHOT_SPEED", 4.0),
+    ShotAimDegrees: EnvDouble("FC_VIEW_SHOT_AIM", 90.0),
+    ShotScale: EnvDouble("FC_VIEW_SHOT_SCALE", 3.0));
 var scene = new WireframeScene(mis, options, W, H);
 Console.WriteLine(scene.Description);
+foreach (var weapon in scene.Weapons)
+    Console.WriteLine($"  {weapon.Name}");
 
 // Scaled 32bpp BGRX framebuffer shared by the BMP writer and the X11 image.
 int sw = W * Scale, sh = H * Scale;
@@ -68,7 +83,34 @@ if (frames > 0)
     return;
 }
 if (Environment.GetEnvironmentVariable("FC_VIEW_NOWINDOW") == "1")
+{
+    RenderShotsIfRequested();
     return;
+}
+
+// Still capture of the fire path: fire one projectile per tick interval and stop the shot clock,
+// so a BMP shows the muzzle point and a chain of projectiles in flight.
+void RenderShotsIfRequested()
+{
+    int shotsWanted = EnvInt("FC_VIEW_SHOTS", 0);
+    if (shotsWanted <= 0) return;
+    int interval = Math.Max(1, EnvInt("FC_VIEW_SHOT_INTERVAL", 6));
+    int fired = 0;
+    for (int i = 0; i < shotsWanted * interval; i++)
+    {
+        if (i % interval == 0 && fired < shotsWanted)
+        {
+            Console.WriteLine(scene.Fire());
+            fired++;
+        }
+        scene.AdvanceShotTicks(1);
+    }
+    scene.AdvanceShotTicks(EnvInt("FC_VIEW_SHOT_TICKS", 0));
+    RenderFrame(0);
+    WriteBmp(bmpPath, sw, sh, pixels);
+    Console.WriteLine($"wrote {bmpPath} with {fired} shots in flight " +
+                      $"({scene.ShotFaceCount} shot faces, {scene.FaceCount} faces total)");
+}
 
 double degPerSec = EnvDouble("FC_VIEW_DEG_SEC", DefaultDegPerSec);
 var win = X11Window.TryOpen(sw, sh, pixels, scene.Title);
@@ -77,16 +119,34 @@ if (win is null)
     Console.WriteLine("no X display; BMP only");
     return;
 }
-Console.WriteLine($"turning at {degPerSec} deg/s - left/right click changes " +
-    $"{(scene.Assembly ? "mech form (left = hover, right = walker)" : "model")}; q/Esc closes");
+Console.WriteLine($"turning at {degPerSec} deg/s - " +
+    (scene.Assembly
+        ? "left/right = mech form, up/down or wheel = weapon, space/return/middle = fire"
+        : "left/right or wheel = model") + "; q/Esc closes");
 try
 {
     var clock = Stopwatch.StartNew();
     double last = 0, angle = 0;
-    while (win.Pump(step =>
+    while (win.Pump(action =>
     {
-        if (step == 0) return;
-        Console.WriteLine(scene.Select(step));
+        switch (action)
+        {
+            case ViewerAction.FormLeft:
+                Console.WriteLine(scene.Select(-1));
+                break;
+            case ViewerAction.FormRight:
+                Console.WriteLine(scene.Select(1));
+                break;
+            case ViewerAction.WeaponPrevious:
+                Console.WriteLine(scene.Assembly ? scene.CycleWeapon(-1) : scene.Select(-1));
+                break;
+            case ViewerAction.WeaponNext:
+                Console.WriteLine(scene.Assembly ? scene.CycleWeapon(1) : scene.Select(1));
+                break;
+            case ViewerAction.Fire:
+                Console.WriteLine(scene.Fire());
+                break;
+        }
         win.SetTitle(scene.Title);
     }))
     {
@@ -205,7 +265,7 @@ sealed class X11Window
     public void SetTitle(string title) => XStoreName(_d, _win, title);
 
     /// <summary>Drains pending X events; false = window closed or q/Esc pressed.</summary>
-    public bool Pump(Action<int> navigate)
+    public bool Pump(Action<ViewerAction> act)
     {
         var ev = new byte[192];
         while (XPending(_d) > 0)
@@ -213,13 +273,27 @@ sealed class X11Window
             XNextEvent(_d, ev);
             switch (ev[0])
             {
-                case 2: // KeyPress: q / Escape quit
-                    if (ev[32] == 24 || ev[32] == 9) return false;
+                case 2: // KeyPress: keycode of the US layout in ev[32]
+                    switch (ev[32])
+                    {
+                        case 24: case 9: return false;                       // q, Escape
+                        case 113: act(ViewerAction.FormLeft); break;         // Left arrow
+                        case 114: act(ViewerAction.FormRight); break;        // Right arrow
+                        case 111: act(ViewerAction.WeaponPrevious); break;   // Up arrow
+                        case 116: act(ViewerAction.WeaponNext); break;       // Down arrow
+                        case 65: case 36: act(ViewerAction.Fire); break;     // space, return
+                    }
                     break;
                 case 4: // ButtonPress: button field in the native XButtonEvent
                     uint button = BitConverter.ToUInt32(ev, IntPtr.Size == 8 ? 84 : 48);
-                    if (button == 1) navigate(-1);
-                    else if (button == 3) navigate(1);
+                    switch (button)
+                    {
+                        case 1: act(ViewerAction.FormLeft); break;           // left button
+                        case 2: act(ViewerAction.Fire); break;               // middle button
+                        case 3: act(ViewerAction.FormRight); break;          // right button
+                        case 4: act(ViewerAction.WeaponPrevious); break;     // wheel up
+                        case 5: act(ViewerAction.WeaponNext); break;         // wheel down
+                    }
                     break;
                 case 17: // DestroyNotify
                 case 33: // ClientMessage (window manager close)
@@ -236,4 +310,19 @@ sealed class X11Window
         XCloseDisplay(_d);
         _pin.Free();
     }
+}
+
+/// <summary>Input actions of the desktop frontend; the keys and mouse buttons map onto these.</summary>
+enum ViewerAction
+{
+    /// <summary>Left arrow / left mouse button: hover form in the assembly, previous model otherwise.</summary>
+    FormLeft,
+    /// <summary>Right arrow / right mouse button: walker form in the assembly, next model otherwise.</summary>
+    FormRight,
+    /// <summary>Up arrow / wheel up: previous fire definition.</summary>
+    WeaponPrevious,
+    /// <summary>Down arrow / wheel down: next fire definition.</summary>
+    WeaponNext,
+    /// <summary>Space, return or middle button: fire one projectile.</summary>
+    Fire,
 }

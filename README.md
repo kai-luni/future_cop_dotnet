@@ -149,6 +149,44 @@ Environment knobs:
 - `FC_VIEW_STATIC=1` - force the rigid single-list path, to compare a posed model
   against its rest geometry.
 
+### Projectiles (the retail fire path)
+
+The assembly mode can fire the weapon definitions the mission ships, and the
+projectiles are drawn as flying models:
+
+```
+left / right arrow, left / right mouse button   walker <-> hover form
+up / down arrow, mouse wheel                    cycle the fire definitions
+space / return / middle mouse button            fire one projectile
+```
+
+The data path is traced and documented in `docs/weapon-fire-path.md`: the
+definitions are the `tACT` records whose following `aRSL` list names the
+projectile `Cobj` (`func_8006A918`, looked up by `func_8006AAEC`), the spawn block
+is `func_8005E47C`, the muzzle is vertex 0 of the two alternating instances
+(`func_80017668`, `state+0x178`), the range is `arc >> 4` (`func_80035904`) and the
+position step is the retail integrator `func_8001ACA4` with the mover's per-tick speed
+ramp (`func_80035B7C:435-448`). `M1A1.MIS` ships eight
+definitions with two triggers each (models 59, 60, 62, 64, 65, 66, 68), so
+up/down steps through sixteen shots.
+
+Ported with C parity: `WeaponCatalog` (definition and resource reader),
+`ShotSpawn.Compose` (`tests/golden/shot.vectors`, 7 cases against the unchanged
+`func_8005E47C`) and `ShotMotion.Integrate` (`tests/golden/shot-move.vectors`,
+8 cases against `func_8001ACA4`). Not ported: the pursuit logic of the mover,
+the lob solver, the beam paths and collision - see the open points in the
+document.
+
+Knobs of the fire path:
+
+- `FC_VIEW_SHOT_SPEED=<f>` - cadence multiplier of the position step (default 4,
+  like the form change; 1 is the plain reading of the mover).
+- `FC_VIEW_SHOT_AIM=<deg>` - aim in model space (0 = at the viewer, 90 = outward;
+  default 90, mirrored per arm - a viewer convention, retail shares one aim vector).
+- `FC_VIEW_SHOT_SCALE=<f>` - draw scale of the projectile model (default 3).
+- `FC_VIEW_SHOTS=<n>` - headless still: fire `n` projectiles one interval apart
+  and write the frame with all of them in flight.
+
 ## .NET version
 
 All projects target `net10.0` (`dotnet --list-sdks` needs a 10.x SDK; the

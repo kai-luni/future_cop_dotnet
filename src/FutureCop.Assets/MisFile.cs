@@ -14,6 +14,11 @@ public sealed class MisFile
 {
     private readonly byte[] _data;
     public string Path { get; }
+
+    /// <summary>Raw archive bytes; lets readers that walk other chunk families (entity definitions)
+    /// reuse the parsed file instead of loading it again.</summary>
+    public byte[] Bytes => _data;
+
     public IReadOnlyList<int> SectionOffsets { get; }
     public IReadOnlyList<Model> Models { get; }
     public IReadOnlyList<PlayerActor> PlayerActors { get; }

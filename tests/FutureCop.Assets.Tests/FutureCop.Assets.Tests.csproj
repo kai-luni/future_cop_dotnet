@@ -13,6 +13,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
+    <ProjectReference Include="../../src/FutureCop.View/FutureCop.View.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="../golden/3dtl.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/3dtl.vectors" />
@@ -22,5 +23,7 @@
     <None Include="../golden/joints.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/joints.vectors" />
     <None Include="../golden/cbmp.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/cbmp.vectors" />
     <None Include="../golden/mech-form.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/mech-form.vectors" />
+    <None Include="../golden/shot.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/shot.vectors" />
+    <None Include="../golden/shot-move.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/shot-move.vectors" />
   </ItemGroup>
 </Project>
