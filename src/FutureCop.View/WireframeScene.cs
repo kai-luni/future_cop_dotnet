@@ -12,11 +12,11 @@ namespace FutureCop.View;
 /// Multiplier for the mech transformation cadence: 1 = retail (0xA0 progress per 1/60 s tick,
 /// about 6.8 s for the whole transform), 4 = about 1.7 s.
 /// </param>
-/// <param name="ShotSpeed">
-/// Multiplier for the projectile step: 1 = retail reading of the mover (speed word / 4096 model
-/// units per tick), 4 = the viewer's default, which crosses the retail range in about half a second
-/// like <see cref="TransformSpeed"/> speeds up the form change. See docs/weapon-fire-path.md for why
-/// the position scale is a viewer knob and not a proven retail constant.
+/// <param name="ShotSlowMotion">
+/// Slow motion of the projectile flight. The mover is retail-exact in <see cref="Shot.Tick"/>, and at
+/// retail speed a 4Da shot (speed word 0x2000 &lt;&lt; 4) covers its whole leash within a single frame,
+/// so the viewer divides the step: 300 stretches that flight to about a second, 1 is retail. The
+/// ratio between fast and slow weapons stays the retail one.
 /// </param>
 /// <param name="ShotAimDegrees">
 /// Divergence of a fired shot from straight ahead, in degrees: 0 fires along the mech's facing, 90
@@ -31,9 +31,9 @@ namespace FutureCop.View;
 /// </param>
 public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0,
     bool ForceStatic = false, bool Textured = false, double TransformSpeed = 4.0,
-    double ShotSpeed = 0.0625, double ShotAimDegrees = 15.0, double ShotScale = 1.5,
-    double CameraElevation = 45.0, double CameraDistanceMetres = 25.0,
-    bool AutoFire = true, double FireRateScale = 1.0);
+    double ShotSlowMotion = 300.0, double ShotAimDegrees = 15.0, double ShotScale = 1.5,
+    double CameraElevation = 45.0, double CameraDistanceMetres = 45.0,
+    bool AutoFire = true, double FireRateScale = 0.1);
 
 /// <summary>
 /// Platform-independent wireframe renderer: turns one .MIS model (or the assembled player
@@ -122,7 +122,9 @@ public sealed class WireframeScene
 
         _assemblyMode = options.Assembly;
         _transformSpeed = options.TransformSpeed > 0 ? options.TransformSpeed : 4.0;
-        _shotSpeed = options.ShotSpeed > 0 ? options.ShotSpeed : 4.0;
+        // Retail crosses the leash of a 4Da shot within one frame; the viewer stretches that
+        // flight by ShotSlowMotion so the rocket stays readable (300 -> about one second).
+        _shotSpeed = 1.0 / Math.Max(1.0, options.ShotSlowMotion);
         _shotAim = options.ShotAimDegrees;
         _shotScale = options.ShotScale > 0 ? options.ShotScale : 1.0;
         _autoFire = options.AutoFire;

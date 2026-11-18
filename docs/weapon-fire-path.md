@@ -120,7 +120,7 @@ track (`func_80044B34`), collision and the secondary object of `func_800402DC`.
   (`ShotMotion.ModelUnitsPerPositionUnit = 16`): with it a 4Da shot covers about one body height
   (8192 model units) in its eight retail ticks, which is the scale the mission data reads at. Using
   different divisors for step and radius either killed the shot within a fraction of a tick or let it
-  crawl a few pixels. `ShotSpeed` (default 1/16) slows the flight down to about two seconds and
+  crawl a few pixels. `ShotSlowMotion` (default 300) stretches that single frame to about a second and
   `ShotScale` (default 1, retail) sizes the rocket; both are viewer knobs, not retail numbers.
 - **Flight basis of the projectile.** `func_800193F8` turns the flight vector `d` into a
   right-handed basis: `rows[0] = normalize(dz, 0, -dx)`, `rows[1] = d x rows[0]`,

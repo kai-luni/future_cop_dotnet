@@ -22,13 +22,13 @@
 //   FC_VIEW_STATIC=1       force the rigid single-list path
 //   FC_VIEW_FRAME=<n>      animation frame of the scripted/bone path (default 0)
 //   FC_VIEW_TEXTURED=1     render textured polygons (or pass 'textured' / '--textured' on CLI)
-//   FC_VIEW_SHOT_SPEED=<f> multiplier on the retail step (1 = retail speed)
+//   FC_VIEW_SHOT_SLOW=<n> slow motion of the shot flight (default 300, 1 = retail)
 //   FC_VIEW_SHOT_AIM=<deg> divergence of a shot from straight ahead (default 15)
 //   FC_VIEW_SHOT_SCALE=<f> draw scale of the projectile model (default 1.5)
 //   FC_VIEW_SHOTS=<n>      fire <n> projectiles for a still capture
 //   FC_VIEW_SHOT_TICKS=<n> advance the shot clock by n more ticks before that capture
 //   FC_VIEW_AUTOFIRE=0     switch the automatic fire off (default: on)
-//   FC_VIEW_FIRE_RATE=<f>  clock scale of the weapon trigger, 1 = retail cadence
+//   FC_VIEW_FIRE_RATE=<f>  clock scale of the weapon trigger (default 0.1, 1 = retail)
 //   FC_VIEW_CAM_ELEV=<deg> camera elevation above the mech, 0 = level view (default 45)
 //   FC_VIEW_CAM_DIST=<m>   camera distance in metres, 0 = auto framing (default 25)
 using System.Diagnostics;
@@ -52,13 +52,13 @@ var options = new ViewerOptions(
     BoneFrame: EnvInt("FC_VIEW_FRAME", 0),
     ForceStatic: Environment.GetEnvironmentVariable("FC_VIEW_STATIC") == "1",
     Textured: texturedFlag || Environment.GetEnvironmentVariable("FC_VIEW_TEXTURED") == "1",
-    ShotSpeed: EnvDouble("FC_VIEW_SHOT_SPEED", 0.0625),
+    ShotSlowMotion: EnvDouble("FC_VIEW_SHOT_SLOW", 300.0),
     ShotAimDegrees: EnvDouble("FC_VIEW_SHOT_AIM", 15.0),
     ShotScale: EnvDouble("FC_VIEW_SHOT_SCALE", 1.5),
     CameraElevation: EnvDouble("FC_VIEW_CAM_ELEV", 45.0),
-    CameraDistanceMetres: EnvDouble("FC_VIEW_CAM_DIST", 25.0),
+    CameraDistanceMetres: EnvDouble("FC_VIEW_CAM_DIST", 45.0),
     AutoFire: Environment.GetEnvironmentVariable("FC_VIEW_AUTOFIRE") != "0",
-    FireRateScale: EnvDouble("FC_VIEW_FIRE_RATE", 1.0));
+    FireRateScale: EnvDouble("FC_VIEW_FIRE_RATE", 0.1));
 var scene = new WireframeScene(mis, options, W, H);
 Console.WriteLine(scene.Description);
 foreach (var weapon in scene.Weapons)

@@ -182,12 +182,14 @@ document.
 
 Knobs of the fire path:
 
-- `FC_VIEW_SHOT_SPEED=<f>` - slow motion of the projectile flight (default 0.0625: at
-  retail speed a 4Da shot crosses its whole leash radius in one or two frames).
-  1 reproduces the mover exactly.
-- `FC_VIEW_FIRE_RATE=<f>` - clock scale of the weapon trigger. 1 is the retail
-  cadence (4Da fires every second frame, `53a` every tenth), smaller values slow the
-  trigger down without changing the relative rhythm of the weapons.
+- `FC_VIEW_SHOT_SLOW=<n>` - slow motion of the projectile flight (default 300, 1 =
+  retail). At retail speed a 4Da shot crosses its whole leash radius within a single
+  frame, so the viewer divides the step; the ratio between fast and slow weapons stays
+  the retail one.
+- `FC_VIEW_FIRE_RATE=<f>` - clock scale of the weapon trigger (default 0.1). 1 is the
+  retail cadence (4Da fires every second frame, `53a` every tenth), which is far too
+  fast to watch; smaller values slow the trigger down without changing the relative
+  rhythm of the weapons.
 - `FC_VIEW_SHOT_AIM=<deg>` - divergence of a shot from straight ahead (default 15):
   both arms fire away from the camera, splayed by this angle - a viewer convention,
   retail shares one aim vector between both muzzles.
@@ -201,7 +203,7 @@ readable):
 
 - `FC_VIEW_CAM_ELEV=<deg>` - camera elevation above the mech, 0 = level view (default 45).
 - `FC_VIEW_CAM_DIST=<m>` - camera distance in metres, 0 = automatic framing (default
-  60). Metres are anchored on `WireframeScene.ModelUnitsPerMetre`; the projection cannot
+  45). Metres are anchored on `WireframeScene.ModelUnitsPerMetre`; the projection cannot
   carry a distance beyond `WireframeScene.MaxDistance`, because the GTE emulation keeps the
   rotated vertex in a 16-bit register and drops every face of a model viewed from further
   out.

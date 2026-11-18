@@ -11,11 +11,12 @@ namespace FutureCop.Assets.Tests;
 /// </summary>
 public class ShotSceneTests
 {
-    private static WireframeScene Scene(double shotSpeed = 0.0625)
+    private static WireframeScene Scene(double shotSlowMotion = 300.0, double fireRateScale = 0.1)
     {
         var mis = TextureGoldenTests.FindRetailMis();
         Assert.NotNull(mis);
-        return new WireframeScene(mis!, new ViewerOptions(Assembly: true, ShotSpeed: shotSpeed), 320, 240);
+        return new WireframeScene(mis!, new ViewerOptions(Assembly: true, ShotSlowMotion: shotSlowMotion,
+            FireRateScale: fireRateScale), 320, 240);
     }
 
     [RetailFact]
@@ -49,11 +50,12 @@ public class ShotSceneTests
     [RetailFact]
     public void AShotDisappearsAtItsRetailRange()
     {
-        var scene = Scene(shotSpeed: 0.0625);
+        var scene = Scene();
         scene.Fire();
         var shot = scene.Shots[0];
         int expected = (shot.Range + shot.StepUnits - 1) / shot.StepUnits;
-        Assert.True(expected is > 2 and < 1000, $"unexpected lifetime {expected} ticks");
+        // One retail-speed step covers a large part of the leash, so the shot lives only a few ticks.
+        Assert.True(expected is >= 1 and < 1000, $"unexpected lifetime {expected} ticks");
 
         int ticks = 0;
         while (scene.ShotCount > 0 && ticks < 5000)
@@ -146,7 +148,7 @@ public class ShotSceneTests
     [RetailFact]
     public void AutoFireUsesTheWeaponCadence()
     {
-        var scene = Scene();
+        var scene = Scene(fireRateScale: 1.0);
         Assert.Equal(0, scene.ShotCount);
         var weapon = scene.Weapon!;
         Assert.Equal(1, weapon.Burst);
