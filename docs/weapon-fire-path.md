@@ -85,7 +85,7 @@ Ported and parity-tested against the unchanged C (`tests/host/shot_test.sh`):
 | spawn block composition | `func_8005E47C` | `ShotSpawn.Compose` | `tests/golden/shot.vectors`, 7 cases, both sides |
 | position integrator | `func_8001ACA4` | `ShotMotion.Integrate` | `tests/golden/shot-move.vectors`, 8 cases, both sides |
 | muzzle point | `func_80017668` | `PlayerAssembly.Point` | ported earlier with the assembly work |
-| range and step scales | `func_80035904:232`, `func_8005E47C:87-93` | `ShotDefinition.Range`, `StepWord` | unit tests |
+| range and step scales | `func_80035904:232`, `func_8005E47C:87-93` | `ShotDefinition.Range`, `StepWord`, `ShotMotion.ModelUnitsPerPositionUnit` | unit tests |
 | per-tick speed ramp | `func_80035B7C:435-448` | `ShotMotion.AdvanceSpeed` | unit tests, values derived from the C text |
 
 The speed ramp is transcribed rather than harness-tested: the block is inline inside `func_80035B7C`,
@@ -108,10 +108,13 @@ track (`func_80044B34`), collision and the secondary object of `func_800402DC`.
   viewer has no player state and uses the two arm instances of the assembled pose, which are the same
   accessor (`func_80017668`, vertex 0) on the same body.
 - **The position scale of the integrator.** `func_8001ACA4` advances a position by the speed scale in
-  position units; whether the mover stores those in model units, 1/16 units or a shifted form cannot be
-  read off the decomp without a device run. The viewer therefore treats the step as
-  `speed / 4096` model units per tick and exposes `ShotSpeed` (cadence multiplier, default 4 like the
-  form change) and `ShotScale` (draw size) as knobs instead of asserting a retail number.
+  position units; the ratio between position units and the model units the meshes are built in cannot
+  be read off the decomp. The viewer uses one documented divisor for both sides
+  (`ShotMotion.ModelUnitsPerPositionUnit = 16`): with it a 4Da shot covers about one body height
+  (8192 model units) in its eight retail ticks, which is the scale the mission data reads at. Using
+  different divisors for step and radius either killed the shot within a fraction of a tick or let it
+  crawl a few pixels. `ShotSpeed` (default 1/16) slows the flight down to about two seconds and
+  `ShotScale` (default 5) sizes the rocket; both are viewer knobs, not retail numbers.
 - **Aim.** Retail aims at a target entity and builds ONE direction vector `normalize(posB - posA)`
   (`func_8006ACB0:166-171`) that both alternating muzzles share. The viewer has no target, so it fires
   along `ViewerOptions.ShotAimDegrees` (default 90°) and integrates that unit direction through the

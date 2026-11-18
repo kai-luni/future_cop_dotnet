@@ -62,7 +62,7 @@ public class WeaponCatalogTests
         Assert.Equal(8192, shot.ArcWord);
         Assert.Equal(45, shot.SoundId);
         Assert.Equal(0x4E, shot.SecondaryColumn);
-        Assert.Equal(512, shot.Range);              // (arc << 4) >> 8
+        Assert.Equal(8192 << 4, shot.Range);        // arc << 4 position units
         Assert.Equal(8192 << 1, shot.StepWord);     // alternate selector
         Assert.Equal("Cobj", shot.Resources[0].Type);
         Assert.Equal(59, shot.Resources[0].Id);
@@ -105,7 +105,7 @@ public class WeaponCatalogTests
             Assert.True(drawable.Contains(shot.ModelId), $"model {shot.ModelId} is not drawable");
             Assert.InRange(shot.Action, 1, 0x15);
             Assert.True(shot.SpeedWord > 0 && shot.ArcWord > 0);
-            Assert.Equal((shot.ArcWord << 4) >> 8, shot.Range);
+            Assert.Equal(shot.ArcWord << 4, shot.Range);
         }
 
         // M1A1 ships definition 0x4D (model 59, speed 8192, both triggers) and 0x4F (model 60, 10240).

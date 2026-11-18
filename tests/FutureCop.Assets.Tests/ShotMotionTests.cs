@@ -52,13 +52,14 @@ public class ShotMotionTests
     {
         var shot = new ShotDefinition(0x4D, 0, 3, 0, 59, 25, 0, 8192, 122, 8192, 0, 0, 0, 0, 0, 0, 0, 0,
             Array.Empty<ResourceReference>());
-        // Alternate selector set: the spawner stores speed << 1 (func_8005E47C:87-93).
-        Assert.Equal(8192 << 1, ShotMotion.TickScale(shot));
-        // Range: func_80035904:232 stores (arc << 4) >> 8.
-        Assert.Equal(8192 >> 4, ShotMotion.Range(shot));
+        // Alternate selector set: the spawner stores speed << 1 (func_8005E47C:87-93), the viewer
+        // scales position units to model units.
+        Assert.Equal((8192 << 1) / ShotMotion.ModelUnitsPerPositionUnit, ShotMotion.TickScale(shot));
+        // Range: the leash radius is arc << 4 position units, scaled the same way.
+        Assert.Equal((8192 << 4) / ShotMotion.ModelUnitsPerPositionUnit, ShotMotion.Range(shot));
 
         var straight = shot with { AltSpeed = 0 };
-        Assert.Equal(8192 << 4, ShotMotion.TickScale(straight));
+        Assert.Equal((8192 << 4) / ShotMotion.ModelUnitsPerPositionUnit, ShotMotion.TickScale(straight));
     }
 
     [Fact]

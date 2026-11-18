@@ -42,7 +42,7 @@ public sealed class Shot
         Direction = Aim(aimDegrees);
         SpeedMultiplier = speedMultiplier > 0 ? speedMultiplier : 1.0;
         _speedScale = definition.StepWord;
-        _speedLimit = definition.SpeedWord << 4;
+        _speedLimit = definition.SpeedWord << 4;   // position units, unkD4 << 4
         _accelWord = definition.AltSpeed;
         Range = Math.Max(1, ShotMotion.Range(definition));
         Muzzle = (x, y, z);
@@ -58,12 +58,13 @@ public sealed class Shot
     public int[] Direction { get; }
 
     /// <summary>Current per-tick step in model units (retail unk84 scaled to model units).</summary>
-    public int StepUnits => Math.Max(1, (int)Math.Round(_speedScale / 4096.0 * SpeedMultiplier));
+    public int StepUnits => Math.Max(1, (int)Math.Round(
+        _speedScale / (double)ShotMotion.ModelUnitsPerPositionUnit * SpeedMultiplier));
 
     /// <summary>Current retail speed scale (unk84), exposed so tests can follow the acceleration.</summary>
     public int SpeedScale => _speedScale;
 
-    /// <summary>Leash distance in model units (func_80035904:232: arc &gt;&gt; 4).</summary>
+    /// <summary>Leash distance in model units (arc &lt;&lt; 4 position units, see ShotMotion.Range).</summary>
     public int Range { get; }
 
     /// <summary>Muzzle the shot left from, for tests and logs.</summary>

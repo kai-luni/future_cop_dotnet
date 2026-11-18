@@ -37,10 +37,13 @@ public sealed record ShotDefinition(
     IReadOnlyList<ResourceReference> Resources)
 {
     /// <summary>
-    /// Range of the shot in model units: func_80035904:232 stores unkA6 = (arc &lt;&lt; 4) &gt;&gt; 8,
-    /// i.e. arc &gt;&gt; 4, and func_80035B7C leashes the entity to that distance from its home point.
+    /// Leash radius of the shot in retail position units. func_80035904:232 stores the range word
+    /// shifted right by eight into unkA6, and func_80035B7C tests the octagonal distance from the
+    /// home point against unkA6 &lt;&lt; 8 - so the radius is the range word itself, arc &lt;&lt; 4, and the
+    /// shifted field is only its storage form. <see cref="ShotMotion.Range"/> converts it to the
+    /// units the viewer draws in.
     /// </summary>
-    public int Range => (ArcWord << 4) >> 8;
+    public int Range => ArcWord << 4;
 
     /// <summary>Short label for the HUD and logs.</summary>
     public string Name => $"tACT {SectionId:X2}{(Half == 0 ? 'a' : 'b')}: action {Action:X2}, " +

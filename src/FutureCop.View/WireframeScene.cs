@@ -30,7 +30,7 @@ namespace FutureCop.View;
 /// </param>
 public sealed record ViewerOptions(int ModelId = 30, bool Assembly = false, int BoneFrame = 0,
     bool ForceStatic = false, bool Textured = false, double TransformSpeed = 4.0,
-    double ShotSpeed = 4.0, double ShotAimDegrees = 90.0, double ShotScale = 3.0);
+    double ShotSpeed = 0.0625, double ShotAimDegrees = 90.0, double ShotScale = 5.0);
 
 /// <summary>
 /// Platform-independent wireframe renderer: turns one .MIS model (or the assembled player

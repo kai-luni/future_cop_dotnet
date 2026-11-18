@@ -48,7 +48,7 @@ var options = new ViewerOptions(
     BoneFrame: EnvInt("FC_VIEW_FRAME", 0),
     ForceStatic: Environment.GetEnvironmentVariable("FC_VIEW_STATIC") == "1",
     Textured: texturedFlag || Environment.GetEnvironmentVariable("FC_VIEW_TEXTURED") == "1",
-    ShotSpeed: EnvDouble("FC_VIEW_SHOT_SPEED", 4.0),
+    ShotSpeed: EnvDouble("FC_VIEW_SHOT_SPEED", 0.0625),
     ShotAimDegrees: EnvDouble("FC_VIEW_SHOT_AIM", 90.0),
     ShotScale: EnvDouble("FC_VIEW_SHOT_SCALE", 3.0));
 var scene = new WireframeScene(mis, options, W, H);

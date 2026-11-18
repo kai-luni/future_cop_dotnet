@@ -179,11 +179,12 @@ document.
 
 Knobs of the fire path:
 
-- `FC_VIEW_SHOT_SPEED=<f>` - cadence multiplier of the position step (default 4,
-  like the form change; 1 is the plain reading of the mover).
+- `FC_VIEW_SHOT_SPEED=<f>` - multiplier on the retail step (default 0.0625, i.e.
+  1/16 speed, so a shot stays in frame for about two seconds; 1 is the plain
+  reading of the mover, where a 4Da shot crosses in eight ticks).
 - `FC_VIEW_SHOT_AIM=<deg>` - aim in model space (0 = at the viewer, 90 = outward;
   default 90, mirrored per arm - a viewer convention, retail shares one aim vector).
-- `FC_VIEW_SHOT_SCALE=<f>` - draw scale of the projectile model (default 3).
+- `FC_VIEW_SHOT_SCALE=<f>` - draw scale of the projectile model (default 5).
 - `FC_VIEW_SHOTS=<n>` - headless still: fire `n` projectiles one interval apart
   and write the frame with all of them in flight.
 

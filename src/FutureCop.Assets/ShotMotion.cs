@@ -14,6 +14,17 @@ namespace FutureCop.Assets;
 /// </remarks>
 public static class ShotMotion
 {
+    /// <summary>
+    /// Viewer mapping from a retail position unit to a model unit. The mover works in position
+    /// units (the step is <c>delta * unk84</c>, the leash compares against <c>unkA6 &lt;&lt; 8</c>) while
+    /// the models are built in model units, and the ratio between the two is not stated anywhere in
+    /// the decomp. The viewer divides BOTH the step and the radius by this one constant: using a
+    /// different divisor per side would either kill the shot within a fraction of a tick or let it
+    /// crawl a few pixels. With 16 a 4Da shot covers about one body height in its eight retail
+    /// ticks, which is the scale the mission data reads at.
+    /// </summary>
+    public const int ModelUnitsPerPositionUnit = 16;
+
     /// <summary>func_8001ACA4: out = a + (b * scale &gt;&gt; 16) per component, aliasing allowed.</summary>
     public static void Integrate(int[] position, int[] direction, int scale)
     {
@@ -25,12 +36,12 @@ public static class ShotMotion
             position[i] = unchecked(position[i] + (int)(((long)direction[i] * scale) >> 16));
     }
 
-    /// <summary>func_8005E47C speed scale: speed &lt;&lt; 4, or speed &lt;&lt; 1 with the alternate
-    /// selector (mirrored by <see cref="ShotDefinition.StepWord"/>).</summary>
-    public static int TickScale(ShotDefinition shot) => shot.StepWord;
+    /// <summary>func_8005E47C speed scale in model units per tick: speed &lt;&lt; 4, or speed &lt;&lt; 1
+    /// with the alternate selector (mirrored by <see cref="ShotDefinition.StepWord"/>).</summary>
+    public static int TickScale(ShotDefinition shot) => shot.StepWord / ModelUnitsPerPositionUnit;
 
-    /// <summary>Range of the shot in model units: func_80035904:232, (arc &lt;&lt; 4) &gt;&gt; 8.</summary>
-    public static int Range(ShotDefinition shot) => shot.Range;
+    /// <summary>Leash radius in model units: the range word arc &lt;&lt; 4, scaled to model units.</summary>
+    public static int Range(ShotDefinition shot) => shot.Range / ModelUnitsPerPositionUnit;
 
     /// <summary>
     /// The mover's acceleration block (func_80035B7C:435-448): the current 16.16 speed scale grows

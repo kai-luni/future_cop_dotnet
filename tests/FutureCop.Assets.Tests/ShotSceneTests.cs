@@ -11,7 +11,7 @@ namespace FutureCop.Assets.Tests;
 /// </summary>
 public class ShotSceneTests
 {
-    private static WireframeScene Scene(double shotSpeed = 4.0)
+    private static WireframeScene Scene(double shotSpeed = 0.0625)
     {
         var mis = TextureGoldenTests.FindRetailMis();
         Assert.NotNull(mis);
@@ -49,7 +49,7 @@ public class ShotSceneTests
     [RetailFact]
     public void AShotDisappearsAtItsRetailRange()
     {
-        var scene = Scene(shotSpeed: 1.0);
+        var scene = Scene(shotSpeed: 0.0625);
         scene.Fire();
         var shot = scene.Shots[0];
         int expected = (shot.Range + shot.StepUnits - 1) / shot.StepUnits;
@@ -62,7 +62,9 @@ public class ShotSceneTests
             ticks++;
         }
         Assert.Empty(scene.Shots);
-        Assert.InRange(ticks, expected - 1, expected + 1);
+        // The mover accelerates the step while the alternate-speed word is set, so the shot can only
+        // die earlier than the constant-step estimate, never later.
+        Assert.InRange(ticks, expected / 2, expected);
     }
 
     [RetailFact]
