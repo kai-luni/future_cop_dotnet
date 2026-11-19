@@ -14,6 +14,8 @@
   <ItemGroup>
     <Compile Include="../../tools/FcLevelTv/CameraMotion.cs" Link="CameraMotion.cs" />
     <Compile Include="../../tools/FcLevelTv/BitmapHud.cs" Link="BitmapHud.cs" />
+    <Compile Include="../../tools/FcMainMenu/MenuFlow.cs" Link="MenuFlow.cs" />
+    <Compile Include="../../tools/FcMainMenu/FrameBlit.cs" Link="FrameBlit.cs" />
     <ProjectReference Include="../../src/FutureCop.Audio/FutureCop.Audio.csproj" />
     <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
     <ProjectReference Include="../../src/FutureCop.Game/FutureCop.Game.csproj" />
@@ -21,6 +23,8 @@
     <ProjectReference Include="../../src/FutureCop.View/FutureCop.View.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="../golden/mech-input.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/mech-input.vectors" />
+    <None Include="../golden/mech-walk.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/mech-walk.vectors" />
     <None Include="../golden/menu-navigation.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/menu-navigation.vectors" />
     <None Include="../golden/precinct-assault.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/precinct-assault.vectors" />
     <None Include="../golden/level.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/level.vectors" />

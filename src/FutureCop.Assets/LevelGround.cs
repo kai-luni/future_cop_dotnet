@@ -7,6 +7,39 @@ namespace FutureCop.Assets;
 /// </summary>
 public static class LevelGround
 {
+    /// <summary>Static surface by rank, as selected for player placement by func_80067684.</summary>
+    public static int? PlacementHeight(LevelMap map, int x, int z, int rank)
+    {
+        var header = map.Header;
+        if (x < 0 || z < 0 || (x >> 17) >= header.Height - 1 || (z >> 17) >= header.Width - 1)
+            return null;
+        int cell = (z >> 17) + header.Width * (x >> 17);
+        var block = map.Section((int)((header.Entry(cell) >> 2) & 0x3FFF))
+            ?? throw new InvalidDataException("ground cell names a section that is not loaded");
+        int tx = (x >> 13) & 0xF, tz = (z >> 13) & 0xF;
+        int tile = tx * 16 + tz;
+        int descriptor = block.U16(0x3CC + tile * 2);
+        int list = 0x5D0 + (descriptor >> 4);
+        Span<int> heights = stackalloc int[15];
+        int count = 0;
+        for (int i = 0; i < (descriptor & 0xF); i++)
+        {
+            int type = (int)((block.U32(list + i * 4) >> 15) & 0x7F);
+            if (type >= 0x47) break;
+            if (Sample(block, (tx + tile) * 3, type, (z << 3) & 0xFFFF, (x << 3) & 0xFFFF, out int height))
+                heights[count++] = height;
+        }
+        if (count == 0) return null;
+        heights[..count].Sort();
+        return rank switch
+        {
+            -2 => heights[0],
+            -1 => heights[count - 1],
+            >= 0 and <= 2 when rank < count => heights[rank],
+            _ => null,
+        };
+    }
+
     /// <summary>func_80066F78(position, NULL, &amp;attribute, NULL).</summary>
     public static int Height(LevelMap map, int x, int y, int z, out int attribute)
     {

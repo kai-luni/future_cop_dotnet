@@ -1,132 +1,42 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using FutureCop.Assets;
-using FutureCop.View;
+using FcMainMenu;
 
 const int width = 640, height = 480;
 string path = args.Length > 0 ? args[0] : "build/disc/files/CW/FE.MIS";
-var menu = new MainMenu();
-var pa = new PrecinctAssaultFrontEnd();
-pa.Session.PlayerOption = pa.Session.PlayerOption2 = 1;
-for (int p = 0; p < 2; p++) { pa.Session.Loadout[p * 3] = 0; pa.Session.Loadout[p * 3 + 1] = 0x10; pa.Session.Loadout[p * 3 + 2] = 0x20; }
+var flow = new MenuFlow(path, MenuFlow.SceneKindFrom(Environment.GetEnvironmentVariable("FC_MENU_SCENE")),
+    Console.Out, Console.Error, enableLevelMovement: true);
+var menu = flow.Menu;
 FrontEndText? text = null;
 try { text = FrontEndText.FromMisFile(path); }
 catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException) { Console.Error.WriteLine($"Menu text unavailable: {ex.Message}"); }
 string Label(ushort id, string fallback) => (text?.Lookup(id) ?? fallback).Replace('\n', ' ');
-string missionDir = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(path)))!, "PA");
-string screen = "main", name = "PLAYER";
-int selected = 0;
-WireframeScene? scene = null;
 using var window = MenuWindow.Open(width, height);
 if (window == null) { Console.Error.WriteLine("Cannot open X11 display."); return; }
 MenuAudio? audio = MenuAudio.TryStart(path);
-Console.WriteLine("Arrows: navigate; Enter: accept; Escape: back; Q: quit.");
-while (window.Pump(key => {
-    if (key == 24 && !(screen == "setup" && selected == 1)) { screen = "quit"; return; }
-    bool accept = key == 36 || key == 65, back = key == 9;
-    int vertical = key == 111 ? -1 : key == 116 ? 1 : 0;
-    int horizontal = key == 113 ? -1 : key == 114 ? 1 : 0;
-    if (screen == "main") {
-        if (vertical != 0) menu.Move(vertical);
-        else if (accept && menu.SelectedIndex == 3) {
-            pa.SelectPrecinctAssault1P(3);
-            if (pa.DeferredTransition == 5) {
-                pa.ActiveMenu = PrecinctAssaultMenus.PlayerSetup; pa.DeferredTransition = 0;
-                if (pa.PendingMovie != null) Console.WriteLine($"Briefing not yet played: {pa.PendingMovie}");
-                pa.InitMissionSelectState(); screen = "setup"; selected = 0;
-            }
-        } else if (accept) Console.WriteLine($"Not implemented: {menu.Entries[menu.SelectedIndex].Text}");
-        else if (back) screen = "quit";
-    } else if (screen == "setup") {
-        if (back) { screen = "main"; selected = 0; }
-        else if (vertical != 0) selected = (selected + vertical + 3) % 3;
-        else if (selected == 2 && horizontal != 0) pa.PlayerSelection = (pa.PlayerSelection + (horizontal > 0 ? -1 : 1) + 3) % 3;
-        else if (selected == 1 && key == 22 && name.Length > 0) name = name[..^1];
-        else if (accept && selected == 0) {
-            pa.HandlePlayerJoinSelection(3, 0); pa.ActiveMenu = PrecinctAssaultMenus.Hub1P;
-            pa.MenuDepth[0] = 0; screen = "hub"; selected = 0;
-        } else if (selected == 1 && key is >= 10 and <= 61) {
-            char ch = XKeyName.FromCode(key);
-            if (ch != '\0' && name.Length < 12) name += ch;
-        }
-    } else if (screen == "hub") {
-        if (back) {
-            if (pa.MenuDepth[0] > 0) pa.MenuDepth[0]--;
-            else { screen = "setup"; selected = 0; }
-        } else if (vertical != 0 || horizontal != 0) {
-            if (pa.MenuDepth[0] > 0) pa.HandleProfileListItem((vertical != 0 ? vertical : horizontal) > 0 ? 5 : 4);
-        } else if (accept) {
-            int before = pa.PushedMenus.Count;
-            pa.HandleProfileListItem(3);
-            if (pa.PushedMenus.Count > before && pa.PushedMenus[^1] == PrecinctAssaultMenus.Loadout1P) {
-                pa.ActiveMenu = PrecinctAssaultMenus.Loadout1P; pa.MenuDepth[0] = 0;
-                pa.DeferredTransition = 0; pa.InitSelectionIndices(); screen = "loadout"; selected = 0;
-            }
-        }
-    } else if (screen == "loadout") {
-        if (back) { screen = "hub"; pa.ActiveMenu = PrecinctAssaultMenus.Hub1P; pa.MenuDepth[0] = 1; selected = 0; }
-        else if (vertical != 0) selected = (selected + vertical + 4) % 4;
-        else if (horizontal != 0 && selected > 0) {
-            int col = selected - 1; var c = pa.LoadoutTable[col];
-            int value = pa.LoadoutSelection[col, 0] + horizontal;
-            if (value < c.Min) value = c.Count - 1; else if (value >= c.Count) value = c.Min;
-            pa.LoadoutSelection[col, 0] = (sbyte)value;
-        } else if (accept && selected == 0) {
-            pa.FinalizeMissionLoadout(3, 0);
-            if (pa.ScreenState == 5) {
-                string mission = Path.Combine(missionDir, pa.ModuleName.ToUpperInvariant() + ".MIS");
-                try {
-                    scene = new WireframeScene(mission, new ViewerOptions(Assembly: true, Textured: true, AutoFire: false));
-                    audio?.Dispose(); audio = null;
-                    screen = "scene";
-                    Console.WriteLine($"Started mission preview: {mission}; loadout {string.Join(", ", pa.Session.Loadout.Take(3))}");
-                } catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException) {
-                    Console.Error.WriteLine($"Cannot load mission {mission}: {ex.Message}"); pa.ScreenState = 0;
-                }
-            }
-        }
-    } else if (screen == "scene") {
-        if (back) { screen = "loadout"; pa.ScreenState = 0; scene = null; audio = MenuAudio.TryStart(path); }
-        else if (horizontal != 0) scene!.Select(horizontal);
-        else if (accept) scene!.Fire();
-        else if (vertical != 0) scene!.CycleWeapon(vertical);
+flow.SceneEntered += () => { audio?.Dispose(); audio = null; };
+flow.SceneLeft += () => audio = MenuAudio.TryStart(path);
+Console.WriteLine("Arrows: navigate / move and turn in the level; Enter: accept; Escape: back; Q: quit.");
+long lastFrame = Stopwatch.GetTimestamp();
+while (true) {
+    long now = Stopwatch.GetTimestamp();
+    var priorLevel = flow.Level;
+    var priorPreview = flow.Preview;
+    if (!window.Pump(flow)) break;
+    var screen = flow.Screen;
+    if (screen == MenuScreen.Quit) break;
+    if (screen == MenuScreen.Main) window.Draw(menu);
+    else if (screen == MenuScreen.Scene) {
+        if (ReferenceEquals(priorLevel, flow.Level) && ReferenceEquals(priorPreview, flow.Preview))
+            flow.Advance(Stopwatch.GetElapsedTime(lastFrame, now).TotalSeconds);
+        window.DrawScene(flow);
     }
-})) {
-    if (screen == "quit") break;
-    if (screen == "main") window.Draw(menu);
-    else if (screen == "setup") {
-        ushort skill = pa.PlayerSelection == 2 ? (ushort)0x640 : pa.PlayerSelection == 1 ? (ushort)0x64a : (ushort)0x654;
-        window.DrawPanel(Label(0x438, "Precinct Assault"), new[] { Label(0x10c, "Ready"), $"{Label(0x5dc, "Name")}: {name}", $"{Label(0x5e6, "Skill")}: {Label(skill, "Normal")}" }, selected, "ARROWS: SELECT / CHANGE   ENTER: ACCEPT   ESC: BACK");
-    } else if (screen == "hub") {
-        var entries = PrecinctAssaultData.PrecinctAssaultMissionList.Take(pa.ListCount).Select((r, i) => {
-            var rec = PrecinctAssaultData.MissionRecords[r];
-            ushort id = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(rec.Raw.AsSpan(0x10));
-            return $"{(i == pa.SelectedMission && pa.MenuDepth[0] > 0 ? "> " : "")}{Label(id, rec.Name)}";
-        }).ToArray();
-        window.DrawPanel(Label(0xbb8, "Select Zone"), entries, pa.SelectedMission, pa.MenuDepth[0] == 0 ? "ENTER: ACTIVATE MAP   ESC: BACK" : "ARROWS: CHANGE ZONE   ENTER: ACCEPT   ESC: BACK");
-    } else if (screen == "loadout") {
-        var entries = new List<string> { Label(0x64, "Ready") };
-        ushort[] captions = { 0x271a, 0x2724, 0x272e };
-        for (int col = 0; col < 3; col++) {
-            var c = pa.LoadoutTable[col]; int offset = (int)(c.Items - PrecinctAssaultData.LoadoutRowsAddress) + pa.LoadoutSelection[col, 0] * 6;
-            ushort id = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(PrecinctAssaultData.LoadoutRows.AsSpan(offset + 4));
-            entries.Add($"{Label(captions[col], "Weapon")}: {Label(id, "Unknown")}");
-        }
-        window.DrawPanel(Label(0x2710, "Weapons"), entries, selected, "ARROWS: SELECT / CHANGE   ENTER: START   ESC: BACK");
-    } else if (screen == "scene" && scene != null) { scene.Advance(0.016); window.DrawScene(scene); }
+    else if (flow.Panel(Label) is { } panel) window.DrawPanel(panel.Heading, panel.Entries, panel.Selected, panel.Hint);
+    lastFrame = now;
     Thread.Sleep(16);
 }
 audio?.Dispose();
-
-static class XKeyName
-{
-    public static char FromCode(uint code) => code switch {
-        >= 10 and <= 18 => (char)('1' + (code - 10)), 19 => '0',
-        >= 24 and <= 33 => "QWERTYUIOP"[(int)code - 24],
-        >= 38 and <= 46 => "ASDFGHJKL"[(int)code - 38],
-        >= 52 and <= 58 => "ZXCVBNM"[(int)code - 52], _ => '\0'
-    };
-}
 
 sealed class MenuAudio : IDisposable
 {
@@ -178,6 +88,8 @@ sealed class MenuWindow : IDisposable
     [DllImport(Lib)] private static extern int XMapWindow(IntPtr display, IntPtr window);
     [DllImport(Lib)] private static extern int XPending(IntPtr display);
     [DllImport(Lib)] private static extern int XNextEvent(IntPtr display, byte[] ev);
+    [DllImport(Lib)] private static extern int XPeekEvent(IntPtr display, byte[] ev);
+    [DllImport(Lib)] private static extern int XkbSetDetectableAutoRepeat(IntPtr display, int detectable, out int supported);
     [DllImport(Lib)] private static extern int XSetForeground(IntPtr display, IntPtr gc, ulong color);
     [DllImport(Lib)] private static extern int XFillRectangle(IntPtr display, IntPtr window, IntPtr gc, int x, int y, uint width, uint height);
     [DllImport(Lib)] private static extern int XDrawString(IntPtr display, IntPtr window, IntPtr gc, int x, int y, string text, int length);
@@ -191,31 +103,47 @@ sealed class MenuWindow : IDisposable
     private readonly IntPtr display, window, gc, font;
     private readonly int width, height;
     private readonly Stopwatch clock = Stopwatch.StartNew();
+    private readonly byte[] ev = new byte[192];
+    private readonly byte[] nextEvent = new byte[192];
+    private readonly bool detectableRepeat;
     private byte[]? scenePixels;
     private GCHandle scenePin;
     private IntPtr sceneImage;
-    private MenuWindow(IntPtr d, IntPtr w, IntPtr g, IntPtr f, int width, int height) { display=d; window=w; gc=g; font=f; this.width=width; this.height=height; }
+    private MenuWindow(IntPtr d, IntPtr w, IntPtr g, IntPtr f, int width, int height, bool detectableRepeat) { display=d; window=w; gc=g; font=f; this.width=width; this.height=height; this.detectableRepeat=detectableRepeat; }
     public static MenuWindow? Open(int width, int height) {
         var d = XOpenDisplay(null); if (d == IntPtr.Zero) return null;
         int screen = XDefaultScreen(d);
         var w = XCreateSimpleWindow(d, XRootWindow(d, screen), 0, 0, (uint)width, (uint)height, 0, 0, 0);
         XStoreName(d, w, "Future Cop - Main Menu (prototype)");
-        XSelectInput(d, w, (1 << 0) | (1 << 15) | (1 << 17));
+        XSelectInput(d, w, (1 << 0) | (1 << 1) | (1 << 15) | (1 << 17) | (1 << 21));
+        bool detectableRepeat = XkbSetDetectableAutoRepeat(d, 1, out int supported) != 0 && supported != 0;
         XMapWindow(d, w);
         var g = XDefaultGC(d, screen);
         var f = XLoadQueryFont(d, "9x15bold");
         if (f == IntPtr.Zero) f = XLoadQueryFont(d, "fixed");
         if (f != IntPtr.Zero) XSetFont(d, g, Marshal.ReadIntPtr(f, IntPtr.Size));
-        return new MenuWindow(d, w, g, f, width, height);
+        return new MenuWindow(d, w, g, f, width, height, detectableRepeat);
     }
-    public bool Pump(Action<uint> action) {
-        var ev = new byte[192];
+    public bool Pump(MenuFlow flow) {
+        int keyOffset = IntPtr.Size == 8 ? 84 : 48;
+        int timeOffset = IntPtr.Size == 8 ? 56 : 28;
         while (XPending(display) > 0) {
             XNextEvent(display, ev);
-            if (ev[0] == 2) {
-                uint key = BitConverter.ToUInt32(ev, IntPtr.Size == 8 ? 84 : 48);
-                action(key);
-            } else if (ev[0] == 17 || ev[0] == 33) return false;
+            switch (BitConverter.ToInt32(ev)) {
+                case 2: flow.HandleKey(BitConverter.ToUInt32(ev, keyOffset)); break;
+                case 3:
+                    // Without detectable repeat, X11 sends a synthetic release/press pair.
+                    if (!detectableRepeat && XPending(display) > 0) {
+                        XPeekEvent(display, nextEvent);
+                        if (BitConverter.ToInt32(nextEvent) == 2 &&
+                            BitConverter.ToUInt32(nextEvent, keyOffset) == BitConverter.ToUInt32(ev, keyOffset) &&
+                            BitConverter.ToUInt32(nextEvent, timeOffset) == BitConverter.ToUInt32(ev, timeOffset)) break;
+                    }
+                    flow.HandleKeyRelease(BitConverter.ToUInt32(ev, keyOffset));
+                    break;
+                case 10: flow.ClearHeldKeys(); break; // FocusOut
+                case 17: case 33: return false;
+            }
         }
         return true;
     }
@@ -244,7 +172,7 @@ sealed class MenuWindow : IDisposable
         Text(hint, 218, 0xc0c0c0);
         XFlush(display);
     }
-    public void DrawScene(WireframeScene scene) {
+    public void DrawScene(MenuFlow flow) {
         if (sceneImage == IntPtr.Zero) {
             scenePixels = new byte[width * height * 4];
             scenePin = GCHandle.Alloc(scenePixels, GCHandleType.Pinned);
@@ -252,8 +180,7 @@ sealed class MenuWindow : IDisposable
                 scenePin.AddrOfPinnedObject(), (uint)width, (uint)height, 32, 0);
             if (sceneImage == IntPtr.Zero) { scenePin.Free(); throw new InvalidOperationException("Could not create X11 image."); }
         }
-        scene.Render(0);
-        scene.CopyToBgrx(scenePixels!, 2);
+        flow.RenderScene(scenePixels!, 2);
         XPutImage(display, window, gc, sceneImage, 0, 0, 0, 0, (uint)width, (uint)height);
         XFlush(display);
     }

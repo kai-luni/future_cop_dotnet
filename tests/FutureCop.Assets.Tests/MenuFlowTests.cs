@@ -1,0 +1,382 @@
+using FcMainMenu;
+using FutureCop.Assets;
+using FutureCop.Game.Mech;
+using FutureCop.View;
+using Xunit;
+
+namespace FutureCop.Assets.Tests;
+
+/// <summary>
+/// Key-level checks of the Linux front-end prototype (tools/FcMainMenu): the same X11 keycodes the
+/// window delivers drive the real FutureCop.Game menu state up to the mission start. Viewer and UI
+/// checks, not parity: the screen machine is prototype code, only the PrecinctAssaultFrontEnd calls
+/// behind it are ported.
+/// </summary>
+public class MenuFlowTests
+{
+    private const uint Up = 111, Down = 116, Left = 113, Right = 114, Enter = 36, Escape = 9, Q = 24;
+
+    private static string? FrontEndPath()
+    {
+        string? disc = LevelTerrainTests.FindDisc();
+        string? path = disc == null ? null : Path.Combine(disc, "CW", "FE.MIS");
+        if (path == null || !File.Exists(path))
+        {
+            Assert.NotEqual("1", Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL"));
+            return null;
+        }
+        return path;
+    }
+
+    /// <summary>Main menu -> Precinct Assault single player -> setup -> zone list -> loadout.</summary>
+    private static void ToLoadout(MenuFlow flow, int zoneSteps = 0)
+    {
+        flow.HandleKey(Down); flow.HandleKey(Down);            // 0 -> 1 -> 3 (2 is disabled)
+        Assert.Equal(3, flow.Menu.SelectedIndex);
+        flow.HandleKey(Enter);
+        Assert.Equal(MenuScreen.Setup, flow.Screen);
+        flow.HandleKey(Enter);
+        Assert.Equal(MenuScreen.Hub, flow.Screen);
+        flow.HandleKey(Enter);                                 // activate the zone list
+        for (int i = 0; i < zoneSteps; i++) flow.HandleKey(Right);
+        flow.HandleKey(Enter);
+        Assert.Equal(MenuScreen.Loadout, flow.Screen);
+    }
+
+    private static MenuFlow NewFlow(string fe, SceneKind kind = SceneKind.Level) =>
+        new MenuFlow(fe, kind, TextWriter.Null, TextWriter.Null, enableLevelMovement: true);
+
+    [Fact]
+    public void AcceptingTheLoadoutOpensTheFirstZoneAsLevelScene()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var flow = NewFlow(fe);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        Assert.Equal(MenuScreen.Scene, flow.Screen);
+        Assert.Equal(5, flow.FrontEnd.ScreenState);
+        Assert.NotNull(flow.Level);
+        Assert.Null(flow.Preview);
+        Assert.Equal("CONFT.MIS", Path.GetFileName(flow.Level!.MissionPath));
+        Assert.Equal("PA", Path.GetFileName(Path.GetDirectoryName(flow.Level.MissionPath)));
+    }
+
+    [Fact]
+    public void TheZoneChosenInTheListIsTheLevelThatStarts()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var flow = NewFlow(fe);
+        ToLoadout(flow, zoneSteps: 1);
+        Assert.Equal(1, flow.FrontEnd.SelectedMission);
+        flow.HandleKey(Enter);
+        Assert.Equal(MenuScreen.Scene, flow.Screen);
+        string expected = PrecinctAssaultData.MissionRecords[PrecinctAssaultData.PrecinctAssaultMissionList[1]].Name;
+        Assert.Equal(expected.ToUpperInvariant() + ".MIS", Path.GetFileName(flow.Level!.MissionPath));
+        Assert.Equal(flow.FrontEnd.ModuleName.ToUpperInvariant() + ".MIS", Path.GetFileName(flow.Level.MissionPath));
+    }
+
+    [Fact]
+    public void TheStartedLevelRendersTerrainAndTheWalker()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var flow = NewFlow(fe);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var frame = new byte[640 * 480 * 4];
+        flow.RenderScene(frame, 2);
+        Assert.True(flow.Level!.TilePackets > 100, $"{flow.Level.TilePackets} terrain packets");
+        Assert.True(flow.Level.MechFaces > 0, "walker not drawn");
+        int lit = 0;
+        for (int i = 0; i < frame.Length; i += 4) if (frame[i] != 0 || frame[i + 1] != 0 || frame[i + 2] != 0) lit++;
+        Assert.True(lit > 640 * 480 * 9 / 10, $"only {lit} lit pixels in the window frame");
+    }
+
+    [Fact]
+    public void HoldingForwardMovesStartedLevelAndCameraOverTerrain()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var flow = NewFlow(fe);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var level = flow.Level!;
+        flow.RenderScene(new byte[640 * 480 * 4], 2);
+        var before = level.MechWorld;
+        var eye = level.Eye;
+        flow.HandleKey(Up);
+        for (int i = 0; i < 120; i++) flow.Advance(1.0 / 60);
+        flow.RenderScene(new byte[640 * 480 * 4], 2);
+        Assert.NotEqual((before.X, before.Z), (level.MechWorld.X, level.MechWorld.Z));
+        Assert.NotEqual(eye, level.Eye);
+        Assert.True(level.MechFaces > 0 && level.TilePackets > 0);
+        var (x, y, z) = level.MechWorld;
+        Assert.Equal(LevelGround.Height(level.Map, x, y + 0x0CCC, z, out _), y);
+    }
+
+    [Fact]
+    public void ReleasingForwardLetsTheWalkerComeToRest()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var flow = NewFlow(fe);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var level = flow.Level!;
+        var start = level.MechWorld;
+        flow.HandleKey(Up);
+        for (int i = 0; i < 60; i++) flow.Advance(1.0 / 60);
+        Assert.NotEqual((start.X, start.Z), (level.MechWorld.X, level.MechWorld.Z));
+        flow.HandleKeyRelease(Up);
+        for (int i = 0; i < 120; i++) flow.Advance(1.0 / 60);
+        var stopped = level.MechWorld;
+        for (int i = 0; i < 60; i++) flow.Advance(1.0 / 60);
+        Assert.Equal(stopped, level.MechWorld);
+    }
+
+    [Fact]
+    public void WalkerStartsAtTheFirstRetailPlayerActor()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var flow = NewFlow(fe);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var level = flow.Level!;
+        Assert.Equal(12, level.Actor.Id);
+        Assert.Equal((0x8E000, 0xB46F6), (level.MechWorld.X, level.MechWorld.Z));
+    }
+
+    [Fact]
+    public void RetailBoundsStartAfterThe3DbbPayloadHeader()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var mis = new MisFile(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(fe))!, "PA", "CONFT.MIS"));
+        var model = PlayerForm.ModelOf(mis.PlayerActors.First(), mis.Models, 0);
+        Assert.Equal(new short[] { 0, 189, 16, 132, 189, 164, 283, 211 }, model.FrameBounds[0]);
+    }
+
+    [Fact]
+    public void SpawnBuildsTheWalkFootprintFromTheRestFrame()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var flow = NewFlow(fe);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var level = flow.Level!;
+        var mis = new MisFile(level.MissionPath);
+        var model = PlayerForm.ModelOf(level.Actor, mis.Models, 0);
+        var body = MechSpawn.CreateWalker(level.Actor, model, level.Map);
+        Assert.Equal(model.AnimationClips[0].Start, body.Track.Frame);
+        Assert.Equal(new short[] { -132, 174, 180, 132, 174, 180, 132, 174, -148, -132, 174, -148 },
+            body.Footprint);
+        Assert.Equal(LevelGround.PlacementHeight(level.Map, body.X, body.Z, -1) + 0x200, body.Y);
+    }
+
+    [Fact]
+    public void EscapeLeavesTheLevelBackToTheLoadout()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var flow = NewFlow(fe);
+        int left = 0, entered = 0;
+        flow.SceneEntered += () => entered++;
+        flow.SceneLeft += () => left++;
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        Assert.Equal(1, entered);
+        flow.HandleKey(Escape);
+        Assert.Equal(MenuScreen.Loadout, flow.Screen);
+        Assert.Equal(0, flow.FrontEnd.ScreenState);
+        Assert.Null(flow.Level);
+        Assert.Equal(1, left);
+    }
+
+    [Fact]
+    public void ArrowAndAcceptKeysInTheLevelDoNotTouchTheMenu()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var flow = NewFlow(fe);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var level = flow.Level;
+        foreach (uint key in new[] { Up, Down, Left, Right, Enter }) flow.HandleKey(key);
+        Assert.Equal(MenuScreen.Scene, flow.Screen);
+        Assert.Same(level, flow.Level);
+    }
+
+    [Fact]
+    public void WireframeOptionKeepsTheOldMechPreview()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var flow = NewFlow(fe, SceneKind.Wireframe);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        Assert.Equal(MenuScreen.Scene, flow.Screen);
+        Assert.NotNull(flow.Preview);
+        Assert.Null(flow.Level);
+        var frame = new byte[640 * 480 * 4];
+        flow.RenderScene(frame, 2);
+        Assert.Contains(frame, b => b != 0);
+    }
+
+    [Fact]
+    public void MissingMissionFileKeepsTheLoadoutAndReportsTheError()
+    {
+        // No retail data needed: the front-end text falls back, the PA directory does not exist.
+        string root = Path.Combine(Path.GetTempPath(), "fc-menuflow-" + Guid.NewGuid().ToString("N"));
+        var err = new StringWriter();
+        var flow = new MenuFlow(Path.Combine(root, "CW", "FE.MIS"), SceneKind.Level, TextWriter.Null, err);
+        int entered = 0;
+        flow.SceneEntered += () => entered++;
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        Assert.Equal(MenuScreen.Loadout, flow.Screen);
+        Assert.Equal(0, flow.FrontEnd.ScreenState);
+        Assert.Null(flow.Level);
+        Assert.Equal(0, entered);
+        Assert.Contains($"Cannot load mission {Path.Combine(root, "PA", "CONFT.MIS")}", err.ToString());
+    }
+
+    [Fact]
+    public void QuitAndBackFromTheMainMenuEndTheProgram()
+    {
+        var flow = new MenuFlow("/nonexistent/CW/FE.MIS", SceneKind.Level, TextWriter.Null, TextWriter.Null);
+        flow.HandleKey(Q);
+        Assert.Equal(MenuScreen.Quit, flow.Screen);
+        flow = new MenuFlow("/nonexistent/CW/FE.MIS", SceneKind.Level, TextWriter.Null, TextWriter.Null);
+        flow.HandleKey(Escape);
+        Assert.Equal(MenuScreen.Quit, flow.Screen);
+    }
+
+    [Fact]
+    public void QTypesIntoTheNameInsteadOfQuitting()
+    {
+        var flow = new MenuFlow("/nonexistent/CW/FE.MIS", SceneKind.Level, TextWriter.Null, TextWriter.Null);
+        flow.HandleKey(Down); flow.HandleKey(Down); flow.HandleKey(Enter);
+        flow.HandleKey(Down);                                  // name row
+        flow.HandleKey(Q);
+        Assert.Equal(MenuScreen.Setup, flow.Screen);
+        Assert.Equal("PLAYERQ", flow.PlayerName);
+    }
+
+    [Fact]
+    public void LevelFrameIsScaledIntoTheWindowAsBgrx()
+    {
+        // 2 x 2 RGB source: red, green / blue, white.
+        byte[] rgb = { 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255 };
+        var dst = new byte[4 * 4 * 4];
+        FrameBlit.RgbToBgrx(rgb, 2, 2, dst, 2);
+        byte[] Px(int x, int y) => dst.Skip((y * 4 + x) * 4).Take(4).ToArray();
+        Assert.Equal(new byte[] { 0, 0, 255, 0 }, Px(0, 0));
+        Assert.Equal(new byte[] { 0, 0, 255, 0 }, Px(1, 1));
+        Assert.Equal(new byte[] { 0, 255, 0, 0 }, Px(2, 0));
+        Assert.Equal(new byte[] { 0, 255, 0, 0 }, Px(3, 1));
+        Assert.Equal(new byte[] { 255, 0, 0, 0 }, Px(0, 2));
+        Assert.Equal(new byte[] { 255, 255, 255, 0 }, Px(3, 3));
+        Assert.Throws<ArgumentException>(() => FrameBlit.RgbToBgrx(rgb, 2, 2, new byte[63], 2));
+    }
+
+    [Fact]
+    public void ExplicitMissionDirectoryIsWhereTheLevelIsLoaded()
+    {
+        // TV layout: FE.MIS and the maps share one flat assets directory tree (assets/FE.MIS, assets/PA).
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        string pa = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(fe))!, "PA");
+        var flow = new MenuFlow("/nonexistent/FE.MIS", SceneKind.Level, TextWriter.Null, TextWriter.Null, pa);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        Assert.Equal(MenuScreen.Scene, flow.Screen);
+        Assert.Equal(Path.Combine(pa, "CONFT.MIS"), flow.Level!.MissionPath);
+    }
+
+    [Theory]
+    [InlineData("Up", 111, 111u)]
+    [InlineData("Down", 116, 116u)]
+    [InlineData("Left", 113, 113u)]
+    [InlineData("Right", 114, 114u)]
+    [InlineData("Return", 36, 36u)]
+    [InlineData("Up", 0, 111u)]
+    [InlineData("Down", 0, 116u)]
+    [InlineData("Left", 0, 113u)]
+    [InlineData("Right", 0, 114u)]
+    [InlineData("Return", 0, 36u)]
+    [InlineData("Escape", 0, 9u)]
+    [InlineData("XF86Select", 0, 36u)]
+    [InlineData("XF86Back", 166, 9u)]
+    [InlineData("Escape", 9, 9u)]
+    [InlineData("", 166, 9u)]
+    [InlineData("a", 38, 38u)]
+    public void TvRemoteKeysMapToTheMenuKeycodes(string name, int code, uint expected) =>
+        Assert.Equal(expected, MenuFlow.KeyFromTizen(name, code));
+
+    [Fact]
+    public void TvBackKeyLeavesTheLevel()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var flow = NewFlow(fe);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        flow.HandleKey(MenuFlow.KeyFromTizen("XF86Back", 166));
+        Assert.Equal(MenuScreen.Loadout, flow.Screen);
+    }
+
+    private static string Fallback(ushort id, string fallback) => fallback;
+
+    [Fact]
+    public void PanelsDescribeSetupZoneListAndLoadout()
+    {
+        var flow = new MenuFlow("/nonexistent/CW/FE.MIS", SceneKind.Level, TextWriter.Null, TextWriter.Null);
+        Assert.Null(flow.Panel(Fallback));                     // main menu has its own presentation
+        flow.HandleKey(Down); flow.HandleKey(Down); flow.HandleKey(Enter);
+        var setup = flow.Panel(Fallback)!;
+        Assert.Equal("Precinct Assault", setup.Heading);
+        Assert.Equal(new[] { "Ready", "Name: PLAYER", "Skill: Normal" }, setup.Entries);
+        Assert.Equal(0, setup.Selected);
+        flow.HandleKey(Enter);
+        var hub = flow.Panel(Fallback)!;
+        Assert.Equal("Select Zone", hub.Heading);
+        Assert.Equal(flow.FrontEnd.ListCount, hub.Entries.Count);
+        Assert.Equal("ENTER: ACTIVATE MAP   ESC: BACK", hub.Hint);
+        flow.HandleKey(Enter); flow.HandleKey(Right);
+        hub = flow.Panel(Fallback)!;
+        Assert.StartsWith("> ", hub.Entries[1]);
+        Assert.Equal(1, hub.Selected);
+        flow.HandleKey(Enter);
+        var loadout = flow.Panel(Fallback)!;
+        Assert.Equal("Weapons", loadout.Heading);
+        Assert.Equal(4, loadout.Entries.Count);
+        Assert.Equal("Ready", loadout.Entries[0]);
+        Assert.All(loadout.Entries.Skip(1), e => Assert.StartsWith("Weapon: ", e));
+        Assert.Equal("ARROWS: SELECT / CHANGE   ENTER: START   ESC: BACK", loadout.Hint);
+    }
+
+    [Fact]
+    public void LoadoutPanelUsesTheRetailWeaponNames()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var text = FrontEndText.FromMisFile(fe);
+        var flow = NewFlow(fe);
+        ToLoadout(flow);
+        var loadout = flow.Panel((id, fb) => (text.Lookup(id) ?? fb).Replace('\n', ' '))!;
+        Assert.Equal(new[] { "Ready", "Gun: Powered Mini-Gun", "Heavy: Hellfire2000 Missile", "Special: Mortar Launcher" }, loadout.Entries);
+    }
+
+    [Fact]
+    public void SceneKindComesFromTheEnvironmentValue()
+    {
+        Assert.Equal(SceneKind.Level, MenuFlow.SceneKindFrom(null));
+        Assert.Equal(SceneKind.Level, MenuFlow.SceneKindFrom("level"));
+        Assert.Equal(SceneKind.Wireframe, MenuFlow.SceneKindFrom("wireframe"));
+        Assert.Equal(SceneKind.Wireframe, MenuFlow.SceneKindFrom("WIREFRAME"));
+    }
+}

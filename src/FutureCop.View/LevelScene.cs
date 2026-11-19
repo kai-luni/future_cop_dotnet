@@ -1,4 +1,5 @@
 using FutureCop.Assets;
+using FutureCop.Game.Mech;
 
 namespace FutureCop.View;
 
@@ -12,7 +13,7 @@ public sealed record LevelCamera(double Yaw = 30.0, double Elevation = 35.0, int
 /// First runnable start of a Precinct Assault map: the retail terrain of the mission (GRDB grid +
 /// Ctil sections, drawn through the ported layer-1 path: cell window func_80064460, grid projection
 /// func_800646BC, cell walk func_80065134 and packet emit func_800648E8) with the player walker
-/// (PlayerForm) standing on the ground height (func_80066F78) at the centre of the map's clip rect.
+/// (PlayerForm) at the clip-rect centre in the static viewer, or at the mission spawn for WALK.
 /// The software rasterizer only turns the emitted packets into pixels; it is a viewer, not a GPU port.
 /// </summary>
 public sealed class LevelScene
@@ -26,16 +27,64 @@ public sealed class LevelScene
 
     private readonly MisFile _file;
     private readonly TextureBank _textures;
-    private readonly IReadOnlyList<PlayerPart> _parts;
+    private IReadOnlyList<PlayerPart> _parts;
     private readonly Dictionary<int, Dictionary<int, TextureRecord>> _texByModel = new();
     private readonly uint[] _texpages = TerrainRender.DefaultTexpages();
     private readonly int _mechCx, _mechCy, _mechCz;
 
     public LevelMap Map { get; }
     public string MissionPath { get; }
-    /// <summary>World position of the mech (world units, y up): clip-rect centre, ground height.</summary>
-    public (int X, int Y, int Z) MechWorld { get; }
-    public int GroundAttribute { get; }
+    /// <summary>World position in world units, y up.</summary>
+    public (int X, int Y, int Z) MechWorld { get; private set; }
+    private MechBody? _walker;
+    private FutureCop.Game.Mech.MechWorld? _walkerWorld;
+    private bool _animateWalker;
+
+    /// <summary>Use the mission's player record and body model for the interactive WALK viewer.</summary>
+    public void EnableMechMovement()
+    {
+        AttachWalker(MechSpawn.CreateWalker(Actor, _parts[0].Model, Map));
+        _animateWalker = true;
+        UpdateWalkerPose();
+        var (x, y, z) = MechWorld;
+        LevelGround.Height(Map, x, y, z, out int attribute);
+        GroundAttribute = attribute;
+    }
+
+    /// <summary>
+    /// Opt in to a caller-initialized one-player walker. Initialization and clip records must be
+    /// supplied from a verified game state; this viewer does not invent a retail spawn state.
+    /// Platforms, dynamic objects, 2P, script/sound side effects and rendered pose are not integrated.
+    /// </summary>
+    public void AttachWalker(MechBody body)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        if (body.Port != 0) throw new NotSupportedException("Only player port 0 is integrated");
+        _animateWalker = false;
+        _walker = body;
+        _walkerWorld = new FutureCop.Game.Mech.MechWorld(Map);
+        MechWorld = (body.X, body.Y, body.Z);
+    }
+
+    /// <summary>Advance the persistent walker by caller-supplied retail steps and input flags.</summary>
+    public int AdvanceWalker(int steps, uint flags, AnalogPad pad)
+    {
+        if (_walker is null || _walkerWorld is null) throw new InvalidOperationException("Attach a walker first");
+        _walkerWorld.Pads[0] = pad;
+        int result = MechWalker.Tick(_walker, _walkerWorld, steps, flags);
+        MechWorld = (_walker.X, _walker.Y, _walker.Z);
+        UpdateWalkerPose();
+        return result;
+    }
+
+    private void UpdateWalkerPose()
+    {
+        if (_animateWalker && _walker is { } walker && _parts[0].Frame != walker.Track.Frame)
+            _parts = PlayerAssembly.Build(Actor, _file.Models, mainFrame: walker.Track.Frame);
+    }
+
+    /// <summary>Ground attribute at the scene's initial placement.</summary>
+    public int GroundAttribute { get; private set; }
     public PlayerActor Actor { get; }
 
     public byte[] Rgb { get; } = new byte[Width * Height * 3];
@@ -176,10 +225,17 @@ public sealed class LevelScene
 
         // The walker: mech-local parts composed with the view, the same path as WireframeScene.
         int mechFaces = 0;
+        var bodyView = view;
+        if (_animateWalker && _walker is { Angle: not 0 } walker)
+        {
+            var (sin, cos) = MechMath.SinCos(walker.Angle);
+            var heading = new Gte.Mat(new[] { cos, 0, -sin, 0, 0x10000, 0, sin, 0, cos }, 0, 0, 0);
+            bodyView = ScriptRender.Compose(heading, view);
+        }
         foreach (var part in DrawMech ? _parts : Array.Empty<PlayerPart>())
         {
             var partVerts = part.Model.Vertices[part.Model.IsScripted ? 1 : part.Frame + 1];
-            var composed = ScriptRender.Compose(part.Matrix, view);
+            var composed = ScriptRender.Compose(part.Matrix, bodyView);
             var projected = part.Model.IsScripted
                 ? ScriptRender.Project(part.Model, partVerts, part.Frame, composed, Focal, Ofx, Ofy, 1)
                 : ModelRender.Project(Gte.Load(composed), partVerts, Focal, Ofx, Ofy, 1);

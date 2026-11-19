@@ -74,6 +74,8 @@ public sealed class Model
     public List<short> AnimationStarts { get; } = new();
     /// <summary>Full AnmD clip records, indexed like <see cref="AnimationStarts"/>.</summary>
     public List<AnimationClip> AnimationClips { get; } = new();
+    /// <summary>3DBB per-frame s16 records used by func_800518A8, in model units.</summary>
+    public List<short[]> FrameBounds { get; } = new();
     public int HierarchyEntries { get; set; }
     public List<string> ChunkTags { get; } = new();
 }

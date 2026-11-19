@@ -46,16 +46,36 @@ dotnet run --project tools/FcAssetTool -- dump build/disc/files/CW/M1A1.MIS 11
 
 `dotnet run --project tools/FcMainMenu -- build/disc/files/CW/FE.MIS` opens an
 experimental X11 menu. Select Precinct Assault's Single Player entry to go through
-player setup, mission selection and loadout to a 3D mech preview. Use the arrow
-keys to navigate, Enter to accept, Escape to go back and Q to quit (except while
-entering a name). The preview is not gameplay: it has no level or game loop, and
-briefing movies are not played. Other main menu actions are not implemented.
+player setup, zone selection and loadout; accepting the loadout opens the selected
+zone's retail map (`PA/<ZONE>.MIS`) as the level view. In menus, use the arrows
+to navigate and Enter to accept. In the level, hold Up/Down to move forward/back
+and Left/Right to turn. Escape goes back to the loadout, and Q quits (except while
+entering a name). `FC_MENU_SCENE=wireframe` opens the earlier mech-only preview with
+weapon test fire instead. Other main menu actions and briefing movies are not
+implemented. The menu's key handling lives in
+`tools/FcMainMenu/MenuFlow.cs` and is tested in `tests/FutureCop.Assets.Tests/MenuFlowTests.cs`.
+
+The Linux level uses the limited single-player WALK port on static terrain. It
+takes the first player actor's position, heading and ground selector from `tACT`
+(`func_800573A4`, `func_800579D4`) and initializes the body track and footprint from
+the mission model's `AnmD` and `3DBB` (`func_80051AF8`, `func_800518A8`). The arrow
+keys feed the ported digital pad mapping; elapsed time drives the eight-tick
+locomotion substeps (`func_800588D4`, `func_80055988`). The viewer orbit follows
+the position, not the retail chase camera. The main body uses the WALK track;
+the companion uses its rest clip. This is not full gameplay or parity: no hover,
+weapons, dynamic ground objects, multiplayer, mission logic, damage/respawn, or
+in-level sound. The separate static viewers and TV path do not enable movement.
+
 Menu music is decoded from FE.MIS and played in a loop using PipeWire `pw-play`;
 if audio is unavailable, the menu still runs. The Linux frontend uses a placeholder
 background and font.
 The experimental Samsung TV frontend lives in `tools/FcMainMenu.Tizen`: it
 presents generated BMPs via NUI, accepts Up/Down/OK/Back on the remote, and
-streams decoded music through the TV's PulseAudio socket. It is a manually
+streams decoded music through the TV's PulseAudio socket. OK on Precinct Assault's
+Single Player continues through the same `MenuFlow` (setup, zone and loadout as NUI
+text panels) into the selected map, rendered by the CPU `LevelScene` and shown as BMP
+frames like `tools/FcLevelTv`; it expects the maps under `assets/PA/` next to
+`assets/FE.MIS`. This TV path is built on the host but has not yet been run on the device. It is a manually
 deployed prototype, not an installed TV app. The TV background was reconstructed
 from the original FE.MIS Cmdc 3 and 4; the font, static selection highlight and
 bottom instruction are still placeholders. Its asset-generation script takes a

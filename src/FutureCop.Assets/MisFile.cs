@@ -8,7 +8,11 @@ namespace FutureCop.Assets;
 /// record header; this avoids depending on the not-fully-documented record stride.
 /// </summary>
 public readonly record struct ResourceReference(string Type, int Id);
-public sealed record PlayerActor(int Id, IReadOnlyList<ResourceReference> Resources);
+public readonly record struct PlayerSpawn(int X, int Z, short Heading, sbyte GroundSelector, ushort Health);
+public sealed record PlayerActor(int Id, IReadOnlyList<ResourceReference> Resources)
+{
+    public PlayerSpawn? Spawn { get; init; }
+}
 
 public sealed class MisFile
 {
@@ -55,7 +59,19 @@ public sealed class MisFile
             for (int i = q + 12; i < q + size; i += 8)
                 resources.Add(new ResourceReference(ChunkReader.TagName(BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(i))),
                     BinaryPrimitives.ReadInt32LittleEndian(_data.AsSpan(i + 4))));
-            actors.Add(new PlayerActor(id, resources));
+            var actor = new PlayerActor(id, resources);
+            // func_8004D6D4 passes tACT + 8 as the spawn record to the entity handler.
+            if (length >= 0x30)
+            {
+                var spawn = _data.AsSpan(p + 8, length - 8);
+                actor = actor with { Spawn = new PlayerSpawn(
+                    BinaryPrimitives.ReadInt32LittleEndian(spawn[0x08..]),
+                    BinaryPrimitives.ReadInt32LittleEndian(spawn[0x10..]),
+                    BinaryPrimitives.ReadInt16LittleEndian(spawn[0x24..]),
+                    unchecked((sbyte)spawn[0x26]),
+                    BinaryPrimitives.ReadUInt16LittleEndian(spawn[0x18..])) };
+            }
+            actors.Add(actor);
         }
         return actors;
     }
@@ -212,6 +228,16 @@ public sealed class MisFile
                         model.AttachmentPoints.Add(new Vertex(BinaryPrimitives.ReadInt16LittleEndian(span.Slice(i)),
                             BinaryPrimitives.ReadInt16LittleEndian(span.Slice(i + 2)),
                             BinaryPrimitives.ReadInt16LittleEndian(span.Slice(i + 4))));
+                    break;
+                case "3DBB":
+                    // func_80012E48 keeps chunk + 8; func_800518A8 reads records at pointer + 8.
+                    for (int i = 4; i + 16 <= span.Length; i += 16)
+                    {
+                        var bound = new short[8];
+                        for (int j = 0; j < bound.Length; j++)
+                            bound[j] = BinaryPrimitives.ReadInt16LittleEndian(span.Slice(i + j * 2));
+                        model.FrameBounds.Add(bound);
+                    }
                     break;
                 case "AnmD":
                     for (int i = 0; i + 16 <= span.Length; i += 16)
