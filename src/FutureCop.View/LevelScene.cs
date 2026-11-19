@@ -98,6 +98,15 @@ public sealed class LevelScene
     /// <summary>Draw the walker (on by default); off lets a check isolate the mech pixels.</summary>
     public bool DrawMech { get; set; } = true;
 
+    /// <summary>
+    /// When set, <see cref="Render"/> emits the triangles to this sink instead of rasterizing them
+    /// into <see cref="Rgb"/>. Geometry, culling, ordering and camera maths are unchanged.
+    /// </summary>
+    public IPrimitiveSink? Sink { get; set; }
+
+    /// <summary>The mission's texture memory, i.e. the source the GPU texture cache decodes from.</summary>
+    public Vram Vram => _textures.Vram;
+
     /// <summary>Local y range of the assembled walker in model units (min, max).</summary>
     public (double Min, double Max) MechBounds { get; private set; }
 
@@ -244,11 +253,22 @@ public sealed class LevelScene
         int x0 = Sx(xy0), y0 = Sy(xy0), x1 = Sx(xy1), y1 = Sy(xy1), x2 = Sx(xy2), y2 = Sy(xy2);
         int area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
         if (area == 0) return;
+        int u0 = (int)(uv0 & 0xFF), v0 = (int)((uv0 >> 8) & 0xFF), u1 = (int)(uv1 & 0xFF), v1 = (int)((uv1 >> 8) & 0xFF);
+        int u2 = (int)(uv2 & 0xFF), v2 = (int)((uv2 >> 8) & 0xFF);
+        // GPU path: hand the triangle over instead of rasterizing it here. The order is the same,
+        // because every consumer walks the same painter's-order list built in Render().
+        if (Sink is not null)
+        {
+            Sink.TexturedTriangle(
+                x0, y0, u0, v0, c0[0], c0[1], c0[2],
+                x1, y1, u1, v1, c1[0], c1[1], c1[2],
+                x2, y2, u2, v2, c2[0], c2[1], c2[2],
+                tpage, clut, semi);
+            return;
+        }
         int minX = Math.Max(0, Math.Min(x0, Math.Min(x1, x2))), maxX = Math.Min(Width - 1, Math.Max(x0, Math.Max(x1, x2)));
         int minY = Math.Max(0, Math.Min(y0, Math.Min(y1, y2))), maxY = Math.Min(Height - 1, Math.Max(y0, Math.Max(y1, y2)));
         if (minX > maxX || minY > maxY) return;
-        int u0 = (int)(uv0 & 0xFF), v0 = (int)((uv0 >> 8) & 0xFF), u1 = (int)(uv1 & 0xFF), v1 = (int)((uv1 >> 8) & 0xFF);
-        int u2 = (int)(uv2 & 0xFF), v2 = (int)((uv2 >> 8) & 0xFF);
         int abr = (tpage >> 5) & 3;
         double inv = 1.0 / area;
         Span<int> rgb = stackalloc int[3];
@@ -336,6 +356,11 @@ public sealed class LevelScene
             int x0 = Sx(p0), y0 = Sy(p0), x1 = Sx(p1), y1 = Sy(p1), x2 = Sx(p2), y2 = Sy(p2);
             int area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
             if (area == 0) return;
+            if (Sink is not null)
+            {
+                Sink.FlatTriangle(x0, y0, x1, y1, x2, y2, colour[0], colour[1], colour[2]);
+                return;
+            }
             for (int y = Math.Max(0, Math.Min(y0, Math.Min(y1, y2))); y <= Math.Min(Height - 1, Math.Max(y0, Math.Max(y1, y2))); y++)
                 for (int x = Math.Max(0, Math.Min(x0, Math.Min(x1, x2))); x <= Math.Min(Width - 1, Math.Max(x0, Math.Max(x1, x2))); x++)
                 {
