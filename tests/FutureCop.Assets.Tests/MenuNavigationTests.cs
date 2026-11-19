@@ -9,7 +9,9 @@ public class MenuNavigationTests
     public void SharedVectorsMatchOriginalSelection()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "golden", "menu-navigation.vectors");
-        foreach (var line in File.ReadLines(path).Where(s => s.Length > 0 && s[0] != '#'))
+        var lines = File.ReadLines(path).Where(s => s.Length > 0 && s[0] != '#').ToArray();
+        Assert.NotEmpty(lines);
+        foreach (var line in lines)
         {
             var p = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             int count = int.Parse(p[1]), enabled = int.Parse(p[2]), groups = int.Parse(p[3]);

@@ -1,0 +1,354 @@
+using FutureCop.Assets;
+
+namespace FutureCop.View;
+
+/// <summary>Camera of the level start view: orbit around the mech pivot.</summary>
+/// <param name="Yaw">Degrees about the world y axis.</param>
+/// <param name="Elevation">Degrees above the horizon.</param>
+/// <param name="Distance">Eye distance from the pivot in model units (world units / 16).</param>
+public sealed record LevelCamera(double Yaw = 30.0, double Elevation = 35.0, int Distance = 0x1C00);
+
+/// <summary>
+/// First runnable start of a Precinct Assault map: the retail terrain of the mission (GRDB grid +
+/// Ctil sections, drawn through the ported layer-1 path: cell window func_80064460, grid projection
+/// func_800646BC, cell walk func_80065134 and packet emit func_800648E8) with the player walker
+/// (PlayerForm) standing on the ground height (func_80066F78) at the centre of the map's clip rect.
+/// The software rasterizer only turns the emitted packets into pixels; it is a viewer, not a GPU port.
+/// </summary>
+public sealed class LevelScene
+{
+    public const int Width = 320;
+    public const int Height = 240;
+    /// <summary>GTE H. func_80063FF8 encodes the 1-player view cone |x| &lt;= 0.3125 z, |y| &lt;= 0.234 z,
+    /// i.e. 160/H and 120/H with H = 0x200 on the 320 x 240 screen.</summary>
+    public const int Focal = 0x200;
+    private const int Ofx = 160 << 16, Ofy = 120 << 16;
+
+    private readonly MisFile _file;
+    private readonly TextureBank _textures;
+    private readonly IReadOnlyList<PlayerPart> _parts;
+    private readonly Dictionary<int, Dictionary<int, TextureRecord>> _texByModel = new();
+    private readonly uint[] _texpages = TerrainRender.DefaultTexpages();
+    private readonly int _mechCx, _mechCy, _mechCz;
+
+    public LevelMap Map { get; }
+    public string MissionPath { get; }
+    /// <summary>World position of the mech (world units, y up): clip-rect centre, ground height.</summary>
+    public (int X, int Y, int Z) MechWorld { get; }
+    public int GroundAttribute { get; }
+    public PlayerActor Actor { get; }
+
+    public byte[] Rgb { get; } = new byte[Width * Height * 3];
+    public int VisibleCells { get; private set; }
+    public int TilePackets { get; private set; }
+    public int MechFaces { get; private set; }
+    public IReadOnlyList<int> DrawnSections { get; private set; } = Array.Empty<int>();
+    public (int X, int Y, int Z) Eye { get; private set; }
+
+    /// <summary>
+    /// Ramp table D_800A2630 for the k == 6/7 colour variants. Viewer placeholder, not retail:
+    /// gBuildTilePattern func_800654F8 (which fills it from the SLFX definition and the frame time)
+    /// is not ported, so every entry is the neutral modulation 0x80.
+    /// </summary>
+    public byte[] Ramp { get; } = Enumerable.Repeat((byte)0x80, 256).ToArray();
+
+    public LevelScene(string misPath)
+    {
+        MissionPath = misPath;
+        _file = new MisFile(misPath);
+        Map = LevelMap.FromMisFile(misPath);
+        _textures = TextureBank.FromMisFile(misPath);
+        Actor = _file.PlayerActors.FirstOrDefault() ?? throw new InvalidDataException("mission has no player actor");
+        _parts = PlayerForm.Build(Actor, _file.Models, 0);
+
+        var clip = Map.Header.WorldClipRect;
+        int x = (clip[2] + clip[3]) / 2, z = (clip[0] + clip[1]) / 2;
+        // Probe from well above so the highest surface below the ceiling wins (func_80066F78 keeps
+        // the greatest height below position[1] + 0x200).
+        int ground = LevelGround.Height(Map, x, 0x100000, z, out int attribute);
+        MechWorld = (x, ground, z);
+        GroundAttribute = attribute;
+        (_mechCx, _mechCy, _mechCz) = MechCentre();
+    }
+
+    private (int, int, int) MechCentre()
+    {
+        double x0 = double.MaxValue, x1 = double.MinValue, y0 = double.MaxValue, y1 = double.MinValue;
+        double z0 = double.MaxValue, z1 = double.MinValue;
+        foreach (var part in _parts)
+        {
+            var verts = part.Model.Vertices[part.Model.IsScripted ? 1 : part.Frame + 1];
+            var points = part.Model.IsScripted
+                ? ScriptRender.PoseVertices(part.Model, verts, part.Frame, part.Matrix)
+                : verts.Select(v => (
+                    (part.Matrix.W[0] * (double)v.X + part.Matrix.W[3] * (double)v.Y + part.Matrix.W[6] * (double)v.Z) / 65536 + part.Matrix.Tx / 16.0,
+                    (part.Matrix.W[1] * (double)v.X + part.Matrix.W[4] * (double)v.Y + part.Matrix.W[7] * (double)v.Z) / 65536 + part.Matrix.Ty / 16.0,
+                    (part.Matrix.W[2] * (double)v.X + part.Matrix.W[5] * (double)v.Y + part.Matrix.W[8] * (double)v.Z) / 65536 + part.Matrix.Tz / 16.0)).ToArray();
+            foreach (var (px, py, pz) in points)
+            {
+                x0 = Math.Min(x0, px); x1 = Math.Max(x1, px);
+                y0 = Math.Min(y0, py); y1 = Math.Max(y1, py);
+                z0 = Math.Min(z0, pz); z1 = Math.Max(z1, pz);
+            }
+        }
+        MechBounds = (y0, y1);
+        return ((int)((x0 + x1) / 2), (int)((y0 + y1) / 2), (int)((z0 + z1) / 2));
+    }
+
+    /// <summary>Draw the walker (on by default); off lets a check isolate the mech pixels.</summary>
+    public bool DrawMech { get; set; } = true;
+
+    /// <summary>Local y range of the assembled walker in model units (min, max).</summary>
+    public (double Min, double Max) MechBounds { get; private set; }
+
+    /// <summary>Renders one frame. Returns the number of drawn primitives.</summary>
+    public int Render(LevelCamera camera)
+    {
+        Array.Clear(Rgb);
+        // View of the mech-local frame (model units, pivot = walker centre). Viewer camera, not the
+        // retail chase camera func_800569EC.
+        var view = ViewTransform.Turn(camera.Yaw, camera.Elevation, _mechCx, _mechCy, _mechCz, camera.Distance);
+
+        // Eye in mech-local model units: camera = A p + T/16 vanishes at the eye -> e = -A^T T / 16.
+        double[] t = { view.Tx / 16.0, view.Ty / 16.0, view.Tz / 16.0 };
+        double A(int i, int j) => view.W[i + 3 * j] / 65536.0;
+        double ex = 0, ey = 0, ez = 0;
+        for (int i = 0; i < 3; i++) { ex -= A(i, 0) * t[i]; ey -= A(i, 1) * t[i]; ez -= A(i, 2) * t[i]; }
+        // Mech-local model units -> world units (x16); the mech stands at MechWorld with its local
+        // origin on the ground (world y up). The local frame is not rotated against the world.
+        var eye = (MechWorld.X + (int)Math.Round(ex * 16), MechWorld.Y + (int)Math.Round(ey * 16),
+            MechWorld.Z + (int)Math.Round(ez * 16));
+        Eye = eye;
+        var pivotWorld = (X: MechWorld.X + _mechCx * 16, Z: MechWorld.Z + _mechCz * 16);
+
+        var rotation = Gte.Load(view with { Tx = 0, Ty = 0, Tz = 0 });
+        var gte = new TerrainRender.GteSetup(rotation, Focal, Ofx, Ofy, 1);
+
+        // gUpdateCameraAnchor: window origin = (look-at ground point >> 17) - 2 on both axes.
+        int originZ = (pivotWorld.Z >> 17) - 2, originX = (pivotWorld.X >> 17) - 2;
+        var window = CellWindow.Sample(Map, eye.Item1, eye.Item2, eye.Item3, originZ, originX, 1, rotation);
+
+        var faces = new List<(int Key, Action Draw)>();
+        var ctx = new TerrainRender.EmitContext(_texpages, Ramp, 0);
+        var drawn = new List<int>();
+        int packetsTotal = 0;
+        VisibleCells = window.Count(e => e.Visible);
+        for (int j = 0; j < 5; j++)
+        {
+            for (int i = 0; i < 5; i++)
+            {
+                var entry = window[j * 5 + i];
+                if (entry.Mask == 0) continue;
+                var section = Map.Section(entry.SectionId)!;
+                drawn.Add(entry.SectionId);
+                var buffer = new byte[TerrainRender.VertexBufferBytes];
+                TerrainRender.ProjectGrid(section, buffer, entry.X, entry.Y, entry.Z, (uint)entry.Mask << 16, gte);
+                // func_8006531C: camera position relative to the region in 1/16 tile units.
+                int a = (eye.Item3 >> 9) - (originZ << 8) - 0x100 * i;
+                int b = (eye.Item1 >> 9) - (originX << 8) - 0x100 * j;
+                var packets = new List<uint[]>();
+                uint mask = (uint)entry.Mask;
+                for (int ra = 0xC0; ra >= 0; ra -= 0x40)
+                    for (int rb = 0xC; rb >= 0; rb -= 4)
+                    {
+                        if ((mask & 1) != 0) TerrainRender.EmitCell(section, buffer, a, b, (uint)(ra + rb), ctx, packets);
+                        mask >>= 1;
+                    }
+                packetsTotal += packets.Count;
+                foreach (var p in packets)
+                {
+                    var packet = p;
+                    faces.Add(((int)(packet[0] & 0xFFFFFF) << 8 >> 8, () => DrawPacket(packet)));
+                }
+            }
+        }
+        DrawnSections = drawn;
+        TilePackets = packetsTotal;
+
+        // The walker: mech-local parts composed with the view, the same path as WireframeScene.
+        int mechFaces = 0;
+        foreach (var part in DrawMech ? _parts : Array.Empty<PlayerPart>())
+        {
+            var partVerts = part.Model.Vertices[part.Model.IsScripted ? 1 : part.Frame + 1];
+            var composed = ScriptRender.Compose(part.Matrix, view);
+            var projected = part.Model.IsScripted
+                ? ScriptRender.Project(part.Model, partVerts, part.Frame, composed, Focal, Ofx, Ofy, 1)
+                : ModelRender.Project(Gte.Load(composed), partVerts, Focal, Ofx, Ofy, 1);
+            var widths = part.Model.Widths.TryGetValue(1, out var pw) ? pw.ToArray() : Array.Empty<short>();
+            foreach (var face in ModelRender.WalkTextured(part.Model.Polygons, projected, widths, part.Mask, 0))
+            {
+                var f = face;
+                var model = part.Model;
+                faces.Add((f.Work.Z, () => DrawModelFace(f, model)));
+                mechFaces++;
+            }
+        }
+        MechFaces = mechFaces;
+
+        // Painter's order, far first, stable for equal keys (submission order). Viewer convention:
+        // retail sorts into an ordering table whose bucket mapping is not ported; both keys are SZ3
+        // averages. An unstable sort reorders coplanar terrain packets whenever the mech is added.
+        var ordered = faces.Select((f, i) => (f.Key, f.Draw, Index: i))
+            .OrderByDescending(f => f.Key).ThenBy(f => f.Index).ToList();
+        foreach (var f in ordered) f.Draw();
+        return faces.Count;
+    }
+
+    private static int Sx(uint xy) => (short)(xy & 0xFFFF);
+    private static int Sy(uint xy) => (short)(xy >> 16);
+
+    /// <summary>Decodes one func_800648E8 packet (codes 0x24/0x2C/0x34/0x3C, bit 1 = semi-transparent).</summary>
+    private void DrawPacket(uint[] p)
+    {
+        byte code = (byte)(p[1] >> 24);
+        bool semi = (code & 2) != 0;
+        ushort clut = (ushort)(p[3] >> 16);
+        byte[] Rgb3(uint w) => new[] { (byte)w, (byte)(w >> 8), (byte)(w >> 16) };
+        switch (code & ~2)
+        {
+            case 0x24:
+            {
+                ushort tpage = (ushort)(p[5] >> 16);
+                var c = Rgb3(p[1]);
+                Tri(p[2], p[3], c, p[4], p[5], c, p[6], p[7], c, tpage, clut, semi);
+                break;
+            }
+            case 0x2C:
+            {
+                ushort tpage = (ushort)(p[5] >> 16);
+                var c = Rgb3(p[1]);
+                Tri(p[2], p[3], c, p[4], p[5], c, p[6], p[7], c, tpage, clut, semi);
+                Tri(p[4], p[5], c, p[8], p[9], c, p[6], p[7], c, tpage, clut, semi);
+                break;
+            }
+            case 0x34:
+            {
+                ushort tpage = (ushort)(p[6] >> 16);
+                Tri(p[2], p[3], Rgb3(p[1]), p[5], p[6], Rgb3(p[4]), p[8], p[9], Rgb3(p[7]), tpage, clut, semi);
+                break;
+            }
+            case 0x3C:
+            {
+                ushort tpage = (ushort)(p[6] >> 16);
+                Tri(p[2], p[3], Rgb3(p[1]), p[5], p[6], Rgb3(p[4]), p[8], p[9], Rgb3(p[7]), tpage, clut, semi);
+                Tri(p[5], p[6], Rgb3(p[4]), p[11], p[12], Rgb3(p[10]), p[8], p[9], Rgb3(p[7]), tpage, clut, semi);
+                break;
+            }
+        }
+    }
+
+    /// <summary>Textured, colour-modulated triangle; xy = packed screen word, uv = low 16 bits (u | v &lt;&lt; 8).</summary>
+    private void Tri(uint xy0, uint uv0, byte[] c0, uint xy1, uint uv1, byte[] c1, uint xy2, uint uv2, byte[] c2,
+        ushort tpage, ushort clut, bool semi)
+    {
+        int x0 = Sx(xy0), y0 = Sy(xy0), x1 = Sx(xy1), y1 = Sy(xy1), x2 = Sx(xy2), y2 = Sy(xy2);
+        int area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+        if (area == 0) return;
+        int minX = Math.Max(0, Math.Min(x0, Math.Min(x1, x2))), maxX = Math.Min(Width - 1, Math.Max(x0, Math.Max(x1, x2)));
+        int minY = Math.Max(0, Math.Min(y0, Math.Min(y1, y2))), maxY = Math.Min(Height - 1, Math.Max(y0, Math.Max(y1, y2)));
+        if (minX > maxX || minY > maxY) return;
+        int u0 = (int)(uv0 & 0xFF), v0 = (int)((uv0 >> 8) & 0xFF), u1 = (int)(uv1 & 0xFF), v1 = (int)((uv1 >> 8) & 0xFF);
+        int u2 = (int)(uv2 & 0xFF), v2 = (int)((uv2 >> 8) & 0xFF);
+        int abr = (tpage >> 5) & 3;
+        double inv = 1.0 / area;
+        Span<int> rgb = stackalloc int[3];
+        for (int y = minY; y <= maxY; y++)
+            for (int x = minX; x <= maxX; x++)
+            {
+                int w0 = (x1 - x) * (y2 - y) - (y1 - y) * (x2 - x);
+                int w1 = (x2 - x) * (y0 - y) - (y2 - y) * (x0 - x);
+                int w2 = (x0 - x) * (y1 - y) - (y0 - y) * (x1 - x);
+                if (area > 0 ? (w0 < 0 || w1 < 0 || w2 < 0) : (w0 > 0 || w1 > 0 || w2 > 0)) continue;
+                double b0 = w0 * inv, b1 = w1 * inv, b2 = w2 * inv;
+                int u = (int)Math.Round(b0 * u0 + b1 * u1 + b2 * u2), v = (int)Math.Round(b0 * v0 + b1 * v1 + b2 * v2);
+                ushort raw = _textures.Vram.SampleRaw(tpage, clut, u, v);
+                if (raw == 0) continue; // PS1: texel 0x0000 is fully transparent
+                var (tr, tg, tb, _) = Vram.Abgr1555ToRgb(raw);
+                int o = (y * Width + x) * 3;
+                rgb[0] = tr; rgb[1] = tg; rgb[2] = tb;
+                for (int ch = 0; ch < 3; ch++)
+                {
+                    double cm = b0 * c0[ch] + b1 * c1[ch] + b2 * c2[ch];
+                    int value = Math.Min(255, (int)(rgb[ch] * cm / 128.0));
+                    if (semi && (raw & 0x8000) != 0)
+                    {
+                        int back = Rgb[o + ch];
+                        value = abr switch
+                        {
+                            0 => (back + value) >> 1,
+                            1 => Math.Min(255, back + value),
+                            2 => Math.Max(0, back - value),
+                            _ => Math.Min(255, back + (value >> 2)),
+                        };
+                    }
+                    Rgb[o + ch] = (byte)value;
+                }
+            }
+    }
+
+    private Dictionary<int, TextureRecord> TextureLookup(Model model)
+    {
+        if (!_texByModel.TryGetValue(model.Id, out var map))
+        {
+            map = model.Textures.GroupBy(t => t.Offset).ToDictionary(g => g.Key, g => g.First());
+            _texByModel[model.Id] = map;
+        }
+        return map;
+    }
+
+    /// <summary>Mech face, drawn like WireframeScene.DrawTexturedFace (3DTL record, unmodulated texels).</summary>
+    private void DrawModelFace(TexturedFace face, Model model)
+    {
+        bool hasRec = TextureLookup(model).TryGetValue(face.TextureOffset, out var rec);
+        uint uvA = hasRec ? rec.Uv0 : 0, uvB = hasRec ? rec.Uv1 : 0;
+        uint UV(int i) => i switch
+        {
+            0 => uvA & 0xFFFF, 1 => uvA >> 16, 2 => uvB & 0xFFFF, _ => uvB >> 16,
+        };
+        bool flat = hasRec && rec.TypeLoaded is 0 or 1;
+        if (!hasRec || flat)
+        {
+            byte[] c = hasRec ? new[] { (byte)(rec.Rgb >> 16), (byte)(rec.Rgb >> 8), (byte)rec.Rgb } : new byte[] { 255, 0, 255 };
+            FlatFace(face, c);
+            return;
+        }
+        var w = new byte[] { 0x80, 0x80, 0x80 };
+        uint a = (uint)face.Work.Xy0, b = (uint)face.Work.Xy1, c2 = (uint)face.Work.Xy2, d = (uint)face.Work.Xy3;
+        if (face.Type == 3)
+            Tri(a, UV(0), w, b, UV(1), w, c2, UV(2), w, rec.Tpage, rec.Clut, false);
+        else if (face.Type == 4)
+        {
+            // Work holds (v0, v1, v3, v2).
+            Tri(a, UV(0), w, b, UV(1), w, c2, UV(3), w, rec.Tpage, rec.Clut, false);
+            Tri(b, UV(1), w, d, UV(2), w, c2, UV(3), w, rec.Tpage, rec.Clut, false);
+        }
+        else
+        {
+            Tri(a, UV(0), w, b, UV(1), w, c2, UV(2), w, rec.Tpage, rec.Clut, false);
+            Tri(b, UV(1), w, d, UV(3), w, c2, UV(2), w, rec.Tpage, rec.Clut, false);
+        }
+    }
+
+    private void FlatFace(TexturedFace face, byte[] colour)
+    {
+        void Fill(uint p0, uint p1, uint p2)
+        {
+            int x0 = Sx(p0), y0 = Sy(p0), x1 = Sx(p1), y1 = Sy(p1), x2 = Sx(p2), y2 = Sy(p2);
+            int area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+            if (area == 0) return;
+            for (int y = Math.Max(0, Math.Min(y0, Math.Min(y1, y2))); y <= Math.Min(Height - 1, Math.Max(y0, Math.Max(y1, y2))); y++)
+                for (int x = Math.Max(0, Math.Min(x0, Math.Min(x1, x2))); x <= Math.Min(Width - 1, Math.Max(x0, Math.Max(x1, x2))); x++)
+                {
+                    int w0 = (x1 - x) * (y2 - y) - (y1 - y) * (x2 - x);
+                    int w1 = (x2 - x) * (y0 - y) - (y2 - y) * (x0 - x);
+                    int w2 = (x0 - x) * (y1 - y) - (y0 - y) * (x1 - x);
+                    if (area > 0 ? (w0 < 0 || w1 < 0 || w2 < 0) : (w0 > 0 || w1 > 0 || w2 > 0)) continue;
+                    int o = (y * Width + x) * 3;
+                    Rgb[o] = colour[0]; Rgb[o + 1] = colour[1]; Rgb[o + 2] = colour[2];
+                }
+        }
+        uint a = (uint)face.Work.Xy0, b = (uint)face.Work.Xy1, c = (uint)face.Work.Xy2, d = (uint)face.Work.Xy3;
+        Fill(a, b, c);
+        if (face.Type != 3) Fill(b, d, c);
+    }
+}

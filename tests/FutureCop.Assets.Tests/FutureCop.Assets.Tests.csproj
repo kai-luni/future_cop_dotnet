@@ -12,12 +12,18 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.4" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="../../tools/FcLevelTv/CameraMotion.cs" Link="CameraMotion.cs" />
+    <Compile Include="../../tools/FcLevelTv/BitmapHud.cs" Link="BitmapHud.cs" />
+    <ProjectReference Include="../../src/FutureCop.Audio/FutureCop.Audio.csproj" />
     <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Game/FutureCop.Game.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Render/FutureCop.Render.csproj" />
     <ProjectReference Include="../../src/FutureCop.View/FutureCop.View.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="../golden/menu-navigation.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/menu-navigation.vectors" />
     <None Include="../golden/precinct-assault.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/precinct-assault.vectors" />
+    <None Include="../golden/level.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/level.vectors" />
     <None Include="../golden/3dtl.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/3dtl.vectors" />
     <None Include="../golden/render.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/render.vectors" />
     <None Include="../golden/rotation.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/rotation.vectors" />
@@ -28,5 +34,8 @@
     <None Include="../golden/shot.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/shot.vectors" />
     <None Include="../golden/shot-move.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/shot-move.vectors" />
     <None Include="../golden/cadence.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/cadence.vectors" />
+    <None Include="../golden/mdec-frame.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/mdec-frame.vectors" />
+    <None Include="../golden/wve-block.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/wve-block.vectors" />
+    <None Include="../golden/wve-demux.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/wve-demux.vectors" />
   </ItemGroup>
 </Project>

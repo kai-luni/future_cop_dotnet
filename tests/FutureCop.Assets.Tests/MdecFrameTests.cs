@@ -43,7 +43,7 @@ public class MdecFrameTests
     private static Fixture LoadFixture()
     {
         var fixture = new Fixture();
-        foreach (string raw in File.ReadAllLines(Path.Combine(RepoRoot(), "tests/golden/mdec-frame.vectors")))
+        foreach (string raw in File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "golden", "mdec-frame.vectors")))
         {
             string line = raw.Trim();
             if (line.Length == 0 || line[0] == '#') continue;
@@ -70,7 +70,7 @@ public class MdecFrameTests
     private static (WveVlcTable Table, ushort[] Input) LoadStream()
     {
         ushort[]? symbols = null, input = null;
-        foreach (string raw in File.ReadAllLines(Path.Combine(RepoRoot(), "tests/golden/wve-block.vectors")))
+        foreach (string raw in File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "golden", "wve-block.vectors")))
         {
             string[] p = raw.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (p.Length > 1 && p[0] == "SYMBOLS") symbols = LittleEndianWords(Convert.FromHexString(p[1]));

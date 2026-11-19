@@ -7,7 +7,8 @@ namespace FutureCop.Assets.Tests;
 /// <summary>
 /// Compares PrecinctAssaultData with the retail executable. Set FUTURECOP_SLUS to the
 /// SLUS_007.39 path; otherwise the sibling decomp checkout is tried, and the
-/// executable-backed checks are skipped silently when neither exists.
+/// executable-backed checks return without comparison when neither exists, unless
+/// FC_REQUIRE_RETAIL=1 requires the executable.
 /// </summary>
 public class PrecinctAssaultDataTests
 {
@@ -38,7 +39,11 @@ public class PrecinctAssaultDataTests
     public void TablesMatchRetailExecutable()
     {
         var exe = LoadSlus();
-        if (exe == null) return;
+        if (exe == null)
+        {
+            Assert.NotEqual("1", Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL"));
+            return;
+        }
         Assert.Equal("PS-X EXE", Encoding.ASCII.GetString(exe, 0, 8));
         Assert.Equal(PrecinctAssaultData.CrimeWarMissionList.Select(b => (byte)b),
             At(exe, PrecinctAssaultData.CrimeWarMissionListAddress, 8).ToArray());

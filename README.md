@@ -42,15 +42,40 @@ dotnet run --project tools/FcAssetTool -- list build/disc/files/CW/M1A1.MIS
 dotnet run --project tools/FcAssetTool -- dump build/disc/files/CW/M1A1.MIS 11
 ```
 
-### Experimental Precinct Assault menu (Linux/X11)
+### Main menu prototype (Linux/X11)
 
-Run `dotnet run --project tools/FcMainMenu -- build/disc/files/CW/FE.MIS`.
-Choose Precinct Assault Single Player to reach player setup, mission selection,
-loadout and a 3D mech preview. Use arrow keys, Enter and Escape; Q quits outside
-name entry. The preview has no level or gameplay loop, and briefing movies are
-not played. Other main menu actions are not implemented. The font and background
-are placeholders; music uses `pw-play` when available. Retail assets are not
-included. Front-end text and UI integration have not been fully parity-tested.
+`dotnet run --project tools/FcMainMenu -- build/disc/files/CW/FE.MIS` opens an
+experimental X11 menu. Select Precinct Assault's Single Player entry to go through
+player setup, mission selection and loadout to a 3D mech preview. Use the arrow
+keys to navigate, Enter to accept, Escape to go back and Q to quit (except while
+entering a name). The preview is not gameplay: it has no level or game loop, and
+briefing movies are not played. Other main menu actions are not implemented.
+Menu music is decoded from FE.MIS and played in a loop using PipeWire `pw-play`;
+if audio is unavailable, the menu still runs. The Linux frontend uses a placeholder
+background and font.
+The experimental Samsung TV frontend lives in `tools/FcMainMenu.Tizen`: it
+presents generated BMPs via NUI, accepts Up/Down/OK/Back on the remote, and
+streams decoded music through the TV's PulseAudio socket. It is a manually
+deployed prototype, not an installed TV app. The TV background was reconstructed
+from the original FE.MIS Cmdc 3 and 4; the font, static selection highlight and
+bottom instruction are still placeholders. Its asset-generation script takes a
+640x480 background image as its first argument and optionally an output directory;
+it requires Pillow and DejaVu Sans Mono on the build host. The source game data
+and reconstructed background are not included in the repository.
+
+The initial menu items and the shared C/.NET selection test are documented in
+[`docs/main-menu-port.md` in the decomp repo](https://github.com/kai-luni/Future-Cop-L.A.P.D-PS1/blob/main/docs/main-menu-port.md).
+The music decoder has not been validated against PS1 SPU audio.
+
+### Experimental Precinct Assault level preview
+
+`dotnet run --project tools/FcLevelStart -- --mis build/disc/files/PA/CONFT.MIS`
+produces a static terrain and walker preview; see the tool's arguments for output
+and camera settings. `tools/FcLevelTv` provides a separately deployed Samsung TV
+preview with left/right camera rotation and an FPS overlay. It expects the retail
+mission at `assets/CONFT.MIS` beside its assembly. Retail assets and the Tizen
+framework are not included. The preview is not playable and does not yet provide
+complete C parity or mutation-tested coverage.
 
 ## Tests (identical cases in .NET and C)
 

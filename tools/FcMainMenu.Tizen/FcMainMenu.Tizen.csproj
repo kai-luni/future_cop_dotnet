@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>FcMainMenu.Tizen</AssemblyName>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>10</LangVersion>
+    <TizenFrameworkDir Condition="'$(TizenFrameworkDir)' == ''">$(MSBuildThisFileDirectory)../../tizen/framework</TizenFrameworkDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Tizen.NUI"><HintPath>$(TizenFrameworkDir)/Tizen.NUI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Tizen.Applications.Common"><HintPath>$(TizenFrameworkDir)/Tizen.Applications.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Tizen"><HintPath>$(TizenFrameworkDir)/Tizen.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Tizen.Tracer"><HintPath>$(TizenFrameworkDir)/Tizen.Tracer.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Tizen.System"><HintPath>$(TizenFrameworkDir)/Tizen.System.dll</HintPath><Private>false</Private></Reference>
+    <ProjectReference Include="../../src/FutureCop.Audio/FutureCop.Audio.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Game/FutureCop.Game.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
+  </ItemGroup>
+</Project>

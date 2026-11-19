@@ -12,12 +12,7 @@ namespace FutureCop.Assets.Tests;
 /// </summary>
 public class WveBlockTests
 {
-    private static string FixturePath()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "tests/golden/wve-block.vectors"))) dir = dir.Parent;
-        return Path.Combine(dir?.FullName ?? throw new Exception("fixture not found"), "tests/golden/wve-block.vectors");
-    }
+    private static string FixturePath() => Path.Combine(AppContext.BaseDirectory, "golden", "wve-block.vectors");
 
     private sealed record Row(string Id, ushort[] Input, int Words, long Sum, ushort[] Head);
 

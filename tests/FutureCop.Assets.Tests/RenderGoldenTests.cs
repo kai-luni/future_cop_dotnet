@@ -144,7 +144,9 @@ public class RenderGoldenTests
                     vtx[i] = new ScreenVertex(Hex(head[vo + 1 + i * 3]), Dec(head[vo + 2 + i * 3]), (byte)Hex(head[vo + 3 + i * 3]));
                 int wo = vo + 1 + nv * 3;
                 var widths = new[] { H16(head[wo]), H16(head[wo + 1]), H16(head[wo + 2]), H16(head[wo + 3]) };
-                var faces = ModelRender.Walk(parts, vtx, widths, Hex(head[2]), Dec(head[3]));
+                // The C walk harness fixes the instance depth bias at zero.
+                Assert.Equal(0, Dec(head[3]));
+                var faces = ModelRender.Walk(parts, vtx, widths, Hex(head[2]), 0);
                 Assert.Equal(Dec(outp[1]), faces.Count);
                 var fl = lines.Where(l => l[0] == "F").ToList();
                 for (int i = 0; i < faces.Count; i++)

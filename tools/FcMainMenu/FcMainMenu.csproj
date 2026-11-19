@@ -7,6 +7,7 @@
     <LangVersion>10</LangVersion>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../../src/FutureCop.Audio/FutureCop.Audio.csproj" />
     <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
     <ProjectReference Include="../../src/FutureCop.View/FutureCop.View.csproj" />
   </ItemGroup>
