@@ -39,6 +39,53 @@ temperature reading was obtained. A CPU frequency observation of 1,350,000 does 
 establish thermal throttling. The app log showed rising generation-0 collection counts;
 this alone does not prove GC caused the crash.
 
+## Follow-up: unchanged probe, 2026-11-19
+
+Control logs, the monitor script, and the matching system CLR binary are kept in
+`~/hidrive/linux_sync/operations/future_cop/gpu_crash_20261119/`; `SHA256SUMS`
+verifies the saved files. The script contains local TV launch environment details.
+
+A separate 100-second continuous run of the unchanged shader/texture probe ended
+prematurely on the same TV. It started at 12:57:47.685 CET, PID 1153, and last
+logged 2,075 frames at 12:58:23.958; no normal `finished` line was recorded.
+The monitor observed the process gone at 12:58:27. The kernel reported SIGSEGV
+for `GlViewRenderer` TID 1252 and the process main thread around 12:58:25 CET.
+This is a single failure, not yet a demonstrated deterministic reproducer. Because
+this probe does not use the game scene or `GlEs2Api`, neither is required for this
+particular failure; that does not establish a common first fault with the scene.
+
+For the probe's `GlViewRenderer`, the recorded PC was `0xb4d7bcc2`, offset
+`0xebcc2` in the TV's system .NET 6.0.9 `libcoreclr.so`. The separate scene run
+had the same module offset at a different load address. The saved probe stack
+contains repeated signal-return frames and the same PC; the retrieved system CLR
+binary decodes that offset as a Thumb load from `[r5, #0x138]`. These are evidence
+of repeated faults in signal handling, not proof that this load triggered the
+original fault. The kernel dump starts after its earliest fault details were lost.
+The probe's main-thread PC `0xb0a0e100` was in an anonymous executable mapping;
+a subsequent read-only code and memory-dump comparison identifies that address as
+the mapper's `__tls_get_addr` replacement, specifically a thread-module array load
+at `NativeHooks.cs:187`. The recorded `r6`, slot index in `r5`, and fault address
+are consistent with that load. This establishes the observed fault site, not that
+the TLS hook triggered the original error. Two CoreCLR versions and callback/lifecycle
+or ABI interactions remain hypotheses, not diagnosed causes. `SIGABRT` remains separate.
+
+A TV-side `gdbserver` executable was copied into a temporary directory, but direct
+execution returned `Operation not permitted`; its ELF interpreter was also absent.
+Neither condition identifies the initial SIGSEGV. No TV security controls were
+changed. The available dump does not establish the initial `si_code`, fault address,
+first failing thread or a complete native backtrace. Original control logs and the
+matching system CLR binary are preserved outside the repository; paths and checksums
+are recorded in the operation notes. No renderer fix or new stability claim follows
+from this experiment.
+
+## Runtime comparison follow-up
+
+A subsequent same-assembly comparison on 2026-11-19 reproduced SIGSEGV both directly
+on system .NET 6 and through the mapper; a minimal GLView without application GLES
+calls also crashed once directly on .NET 6. See `gpu-runtime-ab-2026-11-19.md` for the
+individual results, evidence and limitations. These observations do not identify a
+root cause or prove that all crashes have the same cause.
+
 ## Changes included in this snapshot
 
 - OnDemand scheduling and an atomic 120-tick, non-accumulating render budget;

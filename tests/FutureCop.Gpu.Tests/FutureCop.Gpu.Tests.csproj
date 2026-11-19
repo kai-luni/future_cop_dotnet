@@ -13,6 +13,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../../tools/FcLevelGl.Tizen/RenderBurst.cs" Link="RenderBurst.cs" />
+    <Compile Include="../../tools/FcLevelGl.Tizen/AtspiStartEnvironment.cs" Link="AtspiStartEnvironment.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/FutureCop.Gpu/FutureCop.Gpu.csproj" />
