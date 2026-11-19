@@ -2,7 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Runtime.InteropServices;
+using System.Threading;
 using FutureCop.Gpu;
 using FutureCop.Gpu.SceneBridge;
 using FutureCop.View;
@@ -34,10 +34,11 @@ internal sealed class LevelGlApp : NUIApplication
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly CameraMotion _camera = new();
     private readonly SceneCommandEmitter _emitter = new();
+    private readonly RenderBurst _renderBurst = new();
 
+    private Tizen.NUI.Timer? _renderTimer;
     private Window? _window;
     private GLView? _view;
-    private TextLabel? _hud;
     private LevelScene? _scene;
     private GlEs2Api? _api;
     private GlEs2Renderer? _renderer;
@@ -48,8 +49,10 @@ internal sealed class LevelGlApp : NUIApplication
     private int _framesRendered;
     private bool _sceneReady;
     private bool _glReady;
+    private int _pendingTurns;
     private int _width = LevelScene.Width;
     private int _height = LevelScene.Height;
+    private long _pendingViewport = ((long)LevelScene.Width << 32) | LevelScene.Height;
     private double _emitMs, _renderMs, _uploadMs;
     private int _lastDrawCalls, _lastTriangles;
 
@@ -67,13 +70,9 @@ internal sealed class LevelGlApp : NUIApplication
             Log($"scene loaded mech={_scene.MechWorld} ground={_scene.GroundAttribute} " +
                 $"camera yaw={_camera.Yaw}");
 
-            // Resolve libGLESv2 and build every delegate stub on the main thread before the GL view
-            // exists. Doing it inside the first frame callback killed the render thread at random:
-            // dlopen and stub creation from that thread are not reliable under the ARM32 mapper, so
-            // the GL thread only ever *calls* functions that already resolved here.
+            // Resolve addresses only; GL commands run on the context-owning thread.
             _api = GlEs2Api.Create();
-            WarmUp(_api);
-            Log("gl api preloaded and warmed up on main thread");
+            Log("gl api preloaded on main thread");
 
             _window = Window.Instance;
             _window.BackgroundColor = new Color(0f, 0f, 0f, 1f);
@@ -85,21 +84,14 @@ internal sealed class LevelGlApp : NUIApplication
                 HeightResizePolicy = ResizePolicyType.Fixed,
             };
             bool configured = _view.SetGraphicsConfig(false, false, 0, GLESVersion.Version20);
-            _view.RenderingMode = GLRenderingMode.Continuous;
+            _view.RenderingMode = GLRenderingMode.OnDemand;
             _view.SetResizeCallback(OnResize);
             _view.RegisterGLCallbacks(GlInit, GlFrame, GlTerminate);
             Log($"glview created gles2={configured}");
 
             _window.GetDefaultLayer().Add(_view);
 
-            _hud = new TextLabel("GPU --")
-            {
-                Position2D = new Position2D(24, 16),
-                TextColor = new Color(0.95f, 0.95f, 0.95f, 1f),
-                PointSize = 18,
-                MultiLine = false,
-            };
-            _window.GetDefaultLayer().Add(_hud);
+            // FPS is logged from the render thread until a UI-thread-safe HUD is available.
 
             _window.Resized += (s, e) => Layout();
             _window.KeyEvent += OnKey;
@@ -108,6 +100,19 @@ internal sealed class LevelGlApp : NUIApplication
             Focus();
             _window.Show();
             _window.Activate();
+
+            // Both GLView and the window must be woken on this Tizen build.
+            _renderTimer = new Tizen.NUI.Timer(16);
+            _renderTimer.Tick += (sender, e) =>
+            {
+                if (_renderBurst.TryConsume())
+                {
+                    _view?.RenderOnce();
+                    _window?.RenderOnce();
+                }
+                return true;
+            };
+            _renderTimer.Start();
 
             _lastFrame = _fpsWindow = _clock.Elapsed.TotalSeconds;
             Log("window shown");
@@ -129,7 +134,7 @@ internal sealed class LevelGlApp : NUIApplication
     /// <summary>Keeps the 4:3 canvas centred; the renderer scales 320x240 onto the view size.</summary>
     private void Layout()
     {
-        if (_window is null || _view is null || _hud is null) return;
+        if (_window is null || _view is null) return;
         float w = _window.Size.Width, h = _window.Size.Height;
         if (w <= 0 || h <= 0) return;
         float scale = Math.Min(w / LevelScene.Width, h / LevelScene.Height);
@@ -137,16 +142,23 @@ internal sealed class LevelGlApp : NUIApplication
         int viewHeight = (int)(LevelScene.Height * scale);
         _view.Size2D = new Size2D(viewWidth, viewHeight);
         _view.Position2D = new Position2D((int)((w - viewWidth) / 2), (int)((h - viewHeight) / 2));
+        _renderBurst.Request();
         Log($"layout window={w}x{h} view={viewWidth}x{viewHeight}");
     }
 
     // ------------------------------------------------------------------ GL side
 
+    protected override void OnTerminate()
+    {
+        _renderTimer?.Stop();
+        base.OnTerminate();
+    }
+
     private void OnResize(int width, int height)
     {
-        _width = width;
-        _height = height;
-        if (_renderer is not null) _renderer.SetViewport(width, height);
+        if (width <= 0 || height <= 0) return;
+        Interlocked.Exchange(ref _pendingViewport, ((long)width << 32) | (uint)height);
+        _renderBurst.Request();
         Log($"resize {width}x{height}");
     }
 
@@ -221,11 +233,14 @@ internal sealed class LevelGlApp : NUIApplication
                 _api.Clear(GlEnums.DepthBufferBit);
                 Log("minimal: done");
             }
+            Log("renderer constructor BEGIN");
             _renderer = new GlEs2Renderer(_api);
-            Log("renderer constructed");
+            Log("renderer constructor OK");
             _renderer.SetViewport(_width, _height);
             _renderer.SetBackdropColor(0.04f, 0.05f, 0.09f);
+            _sceneReady = false;
             _glReady = true;
+            _renderBurst.Request();
             Log($"renderer ready triangles/frame budget={_renderer.VertexCapacity} textures={_renderer.TextureCount}");
         }
         catch (Exception e)
@@ -271,96 +286,49 @@ internal sealed class LevelGlApp : NUIApplication
         Log("selfcheck done");
     }
 
-    /// <summary>
-    /// Calls every GL entry point once on the main thread, without a current context. The purpose is
-    /// not the result but the JIT: a call that is compiled for the first time on DALi's render
-    /// thread terminates the process on this device (observed with glCreateShader). Here each method
-    /// gets its code and its marshalling generated on the roomy main-thread stack, and the errors the
-    /// driver returns without a context are irrelevant.
-    /// </summary>
-    private static void WarmUp(GlEs2Api gl)
-    {
-        try
-        {
-            IntPtr scratch = Marshal.AllocHGlobal(64);
-            int shader = gl.CreateShader(GlEnums.VertexShader);
-            gl.ShaderSource(shader, "void main(){}");
-            gl.CompileShader(shader);
-            gl.GetShaderParameter(shader, GlEnums.CompileStatus);
-            gl.GetShaderInfoLog(shader);
-            int program = gl.CreateProgram();
-            gl.AttachShader(program, shader);
-            gl.BindAttribLocation(program, 0, "aPosition");
-            gl.LinkProgram(program);
-            gl.GetProgramParameter(program, GlEnums.LinkStatus);
-            gl.GetProgramInfoLog(program);
-            gl.UseProgram(program);
-            int location = gl.GetUniformLocation(program, "uScreen");
-            gl.Uniform1i(location, 0);
-            gl.Uniform1fv(location, 1, scratch);
-            gl.Uniform4fv(location, 1, scratch);
-            gl.UniformMatrix4fv(location, 1, false, scratch);
-            int buffer = gl.GenBuffer();
-            gl.BindBuffer(GlEnums.ArrayBuffer, buffer);
-            gl.BufferData(GlEnums.ArrayBuffer, 64, IntPtr.Zero, GlEnums.DynamicDraw);
-            gl.BufferSubData(GlEnums.ArrayBuffer, 0, 64, scratch);
-            gl.EnableVertexAttribArray(0);
-            gl.VertexAttribPointer(0, 2, GlEnums.Float, false, 16, 0);
-            gl.DisableVertexAttribArray(0);
-            int texture = gl.GenTexture();
-            gl.ActiveTexture(GlEnums.Texture0);
-            gl.BindTexture(GlEnums.Texture2D, texture);
-            gl.TexParameteri(GlEnums.Texture2D, GlEnums.TextureMinFilter, GlEnums.Nearest);
-            gl.TexImage2D(GlEnums.Texture2D, 0, GlEnums.Rgba, 1, 1, 0, GlEnums.Rgba, GlEnums.UnsignedByte, scratch);
-            gl.Viewport(0, 0, 1, 1);
-            gl.Clear(GlEnums.DepthBufferBit);
-            gl.Enable(GlEnums.Blend);
-            gl.Disable(GlEnums.Blend);
-            gl.BlendFunc(GlEnums.One, GlEnums.Zero);
-            gl.BlendEquation(GlEnums.FuncAdd);
-            gl.DrawArrays(GlEnums.Triangles, 0, 0);
-            gl.DeleteTexture(texture);
-            gl.DeleteBuffer(buffer);
-            gl.DeleteShader(shader);
-            gl.DeleteProgram(program);
-            gl.GetError();
-            Marshal.FreeHGlobal(scratch);
-            Log("warmup done");
-        }
-        catch (Exception e)
-        {
-            Log("warmup failed (continuing) " + e.Message);
-        }
-    }
-
     private int GlFrame()
     {
         if (!_glReady || _renderer is null || _scene is null) return 1;
         try
         {
+            long viewport = Interlocked.Read(ref _pendingViewport);
+            int width = (int)(viewport >> 32), height = (int)viewport;
+            if (width != _width || height != _height)
+            {
+                _renderer.SetViewport(width, height);
+                _width = width;
+                _height = height;
+            }
+            for (int turns = Interlocked.Exchange(ref _pendingTurns, 0); turns != 0; turns -= Math.Sign(turns))
+                _camera.Turn(turns);
             double now = _clock.Elapsed.TotalSeconds;
             double dt = now - _lastFrame;
             _lastFrame = now;
             // Fixed-step camera motion keeps the view steady when a frame takes longer.
-            _camera.Advance(Math.Min(dt, 0.1));
+            bool moving = _camera.Advance(Math.Min(dt, 0.1));
+            if (moving) _renderBurst.Request();
 
             long t0 = Stopwatch.GetTimestamp();
             _emitter.BeginFrame();
             _scene.Render(new LevelCamera(_camera.Yaw));
             long t1 = Stopwatch.GetTimestamp();
+            long uploadStart = Stopwatch.GetTimestamp();
+            int uploaded = _emitter.UploadNewTextures(_renderer, _scene.Vram);
+            long uploadEnd = Stopwatch.GetTimestamp();
+            _uploadMs = (uploadEnd - uploadStart) * 1000.0 / Stopwatch.Frequency;
             if (!_sceneReady)
             {
-                _emitter.UploadNewTextures(_renderer, _scene.Vram);
                 _sceneReady = true;
                 Log($"first frame primitives={_emitter.TexturedCount} flat={_emitter.FlatCount} " +
                     $"semi={_emitter.SemiCount} textures={_renderer.TextureCount}");
             }
-            _uploadMs = 0;
+            if (uploaded > 0) Log($"uploaded={uploaded} upload={_uploadMs:0.00}ms");
+            long renderStart = Stopwatch.GetTimestamp();
             _renderer.Render(_emitter.Stream);
             long t2 = Stopwatch.GetTimestamp();
 
             _emitMs = (t1 - t0) * 1000.0 / Stopwatch.Frequency;
-            _renderMs = (t2 - t1) * 1000.0 / Stopwatch.Frequency;
+            _renderMs = (t2 - renderStart) * 1000.0 / Stopwatch.Frequency;
             _lastDrawCalls = _renderer.LastDrawCalls;
             _lastTriangles = _renderer.LastTriangleCount;
             _framesRendered++;
@@ -371,14 +339,10 @@ internal sealed class LevelGlApp : NUIApplication
                 double fps = _fpsFrames / (now - _fpsWindow);
                 _fpsFrames = 0;
                 _fpsWindow = now;
-                string text = string.Format(CultureInfo.InvariantCulture,
-                    "GPU {0:0.0} fps | {1} tris | {2} draws | emit {3:0.00} ms | gl {4:0.00} ms",
-                    fps, _lastTriangles, _lastDrawCalls, _emitMs, _renderMs);
                 Log(string.Format(CultureInfo.InvariantCulture,
-                    "fps={0:0.0} tris={1} draws={2} emit={3:0.00}ms render={4:0.00}ms textures={5} gc0={6} view={7}x{8}",
-                    fps, _lastTriangles, _lastDrawCalls, _emitMs, _renderMs, _renderer.TextureCount,
-                    GC.CollectionCount(0), _width, _height));
-                UpdateHud(text);
+                    "fps={0:0.0} tris={1} draws={2} emit={3:0.00}ms glCpu={4:0.00}ms upload={5:0.00}ms textures={6} gc0={7} view={8}x{9} yaw={10:0.0}",
+                    fps, _lastTriangles, _lastDrawCalls, _emitMs, _renderMs, _uploadMs, _renderer.TextureCount,
+                    GC.CollectionCount(0), _width, _height, _camera.Yaw));
             }
             return 1;
         }
@@ -396,17 +360,8 @@ internal sealed class LevelGlApp : NUIApplication
         _api?.Dispose();
         _renderer = null;
         _api = null;
+        _sceneReady = false;
         _glReady = false;
-    }
-
-    private void UpdateHud(string text)
-    {
-        try
-        {
-            if (_hud is null) return;
-            _hud.Text = text;
-        }
-        catch (Exception e) { Log("hud failed " + e.Message); }
     }
 
     // ------------------------------------------------------------------- input
@@ -418,9 +373,17 @@ internal sealed class LevelGlApp : NUIApplication
         {
             string name = e.Key.KeyPressedName;
             int code = e.Key.KeyCode;
-            Log($"key {name} ({code}) yaw={_camera.Yaw:0.0}");
-            if (name == "Left" || code == 113) _camera.Turn(-1);
-            else if (name == "Right" || code == 114) _camera.Turn(1);
+            Log($"key {name} ({code})");
+            if (name == "Left" || code == 113)
+            {
+                Interlocked.Decrement(ref _pendingTurns);
+                _renderBurst.Request();
+            }
+            else if (name == "Right" || code == 114)
+            {
+                Interlocked.Increment(ref _pendingTurns);
+                _renderBurst.Request();
+            }
             else if (name == "XF86Back" || name == "Escape" || code == 9 || code == 166) Exit();
         }
         catch (Exception ex) { Log("key failed " + ex); }

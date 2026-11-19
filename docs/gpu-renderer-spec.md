@@ -8,6 +8,34 @@ The behaviour below is verified against a real GL ES 2.0 implementation by `tool
 (EGL surfaceless, no X server). See [Verification](#verification) for the measured deviation
 against the software reference.
 
+## Tizen scene preview (2026-11-19)
+
+`tools/FcLevelGl.Tizen` renders the actual Precinct Assault `CONFT.MIS` scene using
+`SceneCommandEmitter` and `GlEs2Renderer`, without a CPU bitmap. The existing
+`FcLevelTv` CPU path and `FcGpuProbe.Tizen` reference remain separate and unchanged.
+The tested TV uses `Arm32ManualMapper.dll`, .NET 10, Tizen 9 and Mali-G52.
+
+This is a **static scene preview**, not the live game: camera input and resize wake
+an on-demand render burst; when still, the last frame remains visible and rendering
+stops. Dynamic game simulation or animations will need their own invalidation policy.
+On this TV both `GLView.RenderOnce()` and `Window.RenderOnce()` are needed to resume
+rendering. The integrated build stayed alive for 10 minutes 26 seconds including
+camera input and was restarted successfully. During active bursts sampled log windows
+showed roughly 43–58 FPS; idle means no continuously rendered FPS. This is not a
+sustained-load guarantee: long continuous input was not tested. The screenshot was
+saved outside the repository as `fc-gpu-integrated-final.png`.
+
+Earlier continuous runs reportedly ended with SIGABRT near `cpuUsageMonitor` messages,
+but the available app logs do not establish the sender or cause. A later continuous
+run produced kernel SIGSEGV reports for PID 2327; its cause is unknown. A separate
+cached-frame experiment also hit a native render-thread SIGSEGV and is **not** included.
+See [the investigation report](gpu-tv-investigation-2026-11-19.md) for the attempts,
+measurements, limitations and remaining risks. No TV system services were modified.
+Tests on this snapshot: 95 GPU tests, 137 asset tests and 141 host C level vectors passed.
+Context loss/recreation was covered at texture-upload level in a fake GPU test, not induced on
+the TV. The renderer is still experimental and its ordering-table and full visual
+fidelity limitations below continue to apply.
+
 ## ABI rule (hard requirement)
 
 The target is Samsung Tizen on ARMv7 with **softfp** system libraries while CoreCLR is **hardfp**,

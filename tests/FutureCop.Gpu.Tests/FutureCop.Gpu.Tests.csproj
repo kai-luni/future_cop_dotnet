@@ -12,7 +12,11 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.4" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="../../tools/FcLevelGl.Tizen/RenderBurst.cs" Link="RenderBurst.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../../src/FutureCop.Gpu/FutureCop.Gpu.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Gpu.SceneBridge/FutureCop.Gpu.SceneBridge.csproj" />
     <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
   </ItemGroup>
 </Project>

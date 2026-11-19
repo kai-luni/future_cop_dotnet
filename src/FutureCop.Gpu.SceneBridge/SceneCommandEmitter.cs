@@ -14,6 +14,7 @@ public sealed class SceneCommandEmitter : IPrimitiveSink
 {
     private readonly Ps1CommandStream _stream = new(1024);
     private readonly Dictionary<TextureKey, bool> _keys = new();
+    private readonly byte[] _textureBuffer = new byte[VramTextureCache.BytesPerTexture];
 
     /// <summary>Primitives in the order the software rasterizer would have drawn them.</summary>
     public Ps1CommandStream Stream => _stream;
@@ -79,12 +80,11 @@ public sealed class SceneCommandEmitter : IPrimitiveSink
         if (vram is null) throw new ArgumentNullException(nameof(vram));
 
         int uploaded = 0;
-        Span<byte> rgba = stackalloc byte[VramTextureCache.BytesPerTexture];
         foreach (TextureKey key in _keys.Keys)
         {
             if (renderer.HasTexture(key)) continue;
-            VramTextureCache.Decode(vram, key, rgba);
-            renderer.UploadTexture(key, rgba);
+            VramTextureCache.Decode(vram, key, _textureBuffer);
+            renderer.UploadTexture(key, _textureBuffer);
             uploaded++;
         }
         return uploaded;
