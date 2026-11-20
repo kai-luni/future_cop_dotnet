@@ -442,6 +442,40 @@ public class MechWalkVectorTests
         Assert.True(body.Z > startZ + 20000, "retail walker must actually advance");
     }
 
+    public static IEnumerable<object[]> JumpSequences() => Cases("JUMP_INIT");
+
+    [MechRetailTheory, MemberData(nameof(JumpSequences))]
+    public void JumpInputSequenceMatchesRetail(int line)
+    {
+        var initial = At(line);
+        var (body, world, sp) = Arrange(initial);
+        Assert_(initial, body, sp);
+        int floor = body.Y;
+        int peak = floor;
+        var steps = Vectors.Value.Lines.SkipWhile(v => v.Line <= line).TakeWhile(v => v.Kind == "JUMP_STEP").ToArray();
+        Assert.NotEmpty(steps);
+        uint[] padWords = new uint[2];
+        foreach (var step in steps)
+        {
+            MechInput.RefreshPadWords(padWords, (PadButtons)step.In[0], PadMapping.Default);
+            uint flags = MechInput.TranslatePadButtons(padWords[0], players: 1, secondWord: padWords[1]);
+            sp.Events.Clear();
+            sp.Messages.Clear();
+            sp.Frames.Clear();
+            int damage = MechWalker.Tick(body, world, I(step.In[1]), flags);
+            Expect(step, unchecked((int)flags), body.X, body.Y, body.Z, body.MotionY, body.State,
+                body.Bits, body.Timer, body.Track.ClipIndex, body.Track.Frame, body.Track.Elapsed,
+                damage, sp.Events.Count, sp.Events.FirstOrDefault(), body.BoundsHigh, body.BoundsLow);
+            peak = Math.Max(peak, body.Y);
+        }
+        Assert.True(peak > floor + 0x1000, "retail sequence must actually leave the ground");
+        Assert.Equal(floor, body.Y);
+        Assert.Equal(0, body.Bits & 1);
+        var random = Vectors.Value.Lines.First(v => v.Line > steps[^1].Line);
+        Assert.Equal("JUMP_RANDOM", random.Kind);
+        Expect(random, world.Random.Next(), world.Random.Next(), world.Random.Next());
+    }
+
     [MechRetailTheory, MemberData(nameof(Cases), "WALK")]
     public void WalkerTickMatchesRetail(int line)
     {
@@ -449,5 +483,33 @@ public class MechWalkVectorTests
         var (body, world, sp) = Arrange(v);
         sp.Ret = MechWalker.Tick(body, world, sp.Steps, unchecked((uint)sp.Flags));
         Assert_(v, body, sp);
+    }
+
+    [RetailFact]
+    public void WalkerKeepsItsNormalWhenTheTileHasNoGround()
+    {
+        var map = LevelMap.FromMisFile(FindMission()!);
+        var position = new Vec3(851968, 0x4000, 950272);
+        Assert.NotNull(MechGround.Probe(map, position).Normal);
+        var section = map.SectionAtWorld(position.X, position.Z)!;
+        int tile = ((position.X >> 13) & 15) * 16 + ((position.Z >> 13) & 15);
+        // An empty tile can occur inside the world clip rectangle, after the walker is clamped.
+        section.Data.AsSpan(section.Base + 0x3CC + tile * 2, 2).Clear();
+        Assert.Equal(new GroundProbe(0, null, 0, false), MechGround.Probe(map, position));
+        var normal = new Vec3(0x6000, 0xE000, -0x2000);
+        var body = new MechBody
+        {
+            X = position.X, Y = position.Y, Z = position.Z,
+            NormalX = normal.X, NormalY = normal.Y, NormalZ = normal.Z,
+            AxisZ = 0x10000,
+        };
+        body.Track.Clips = new AnimationClip[1];
+        body.Track.ClipIndex = 0;
+
+        Assert.Equal(0, MechWalker.Tick(body, new MechWorld(map), 1, 0));
+
+        Assert.Equal(normal, new Vec3(body.NormalX, body.NormalY, body.NormalZ));
+        Assert.NotEqual(0, body.Bits & 1);
+        Assert.InRange(body.Y, 1, position.Y);
     }
 }

@@ -2361,3 +2361,76 @@ WALK health=64 m0=-65536 m4=65536 m8=-65536 x=966656 y=-30976 z=978292 vz=-65536
 WALK health=64 m0=-65536 m4=65536 m8=-65536 x=966656 y=-30976 z=978292 vz=-65536 az=-65536 angle=2048 bits=16 clip=5 state=18 telapsed=60 tframe=221 ttarget=225 tstep=1 tindex=5 f0x=-80 f0y=174 f0z=80 f1x=80 f1y=174 f1z=80 f2x=80 f2y=174 f2z=-80 f3x=-80 f3y=174 f3z=-80 p0x=967936 p0y=-28192 p0z=977008 p1x=965376 p1y=-28192 p1z=977008 p2x=965376 p2y=-28192 p2z=979568 p3x=967936 p3y=-28192 p3z=979568 ny=65471 nz=-2235 tclip=5 flags=1073741824 steps=1 padtype=4 inv0=1 mode0=2 ->
 WALK health=64 m0=-65536 m4=65536 m8=-65536 x=966656 y=-30976 z=978292 vz=-65536 az=-65536 angle=2048 bits=16 clip=5 state=18 telapsed=20 tframe=223 ttarget=225 tstep=1 tindex=5 f0x=-80 f0y=174 f0z=80 f1x=80 f1y=174 f1z=80 f2x=80 f2y=174 f2z=-80 f3x=-80 f3y=174 f3z=-80 p0x=967936 p0y=-28192 p0z=977008 p1x=965376 p1y=-28192 p1z=977008 p2x=965376 p2y=-28192 p2z=979568 p3x=967936 p3y=-28192 p3z=979568 ny=65486 nz=-1677 tclip=5 flags=1073741824 steps=1 padtype=4 inv0=1 mode0=2 ->
 WALK health=64 m0=-65536 m4=65536 m8=-65536 x=966656 y=-30976 z=978292 vz=-65536 az=-65536 angle=2048 bits=16 clip=5 state=18 telapsed=80 tframe=224 ttarget=225 tstep=1 tindex=5 f0x=-80 f0y=174 f0z=80 f1x=80 f1y=174 f1z=80 f2x=80 f2y=174 f2z=-80 f3x=-80 f3y=174 f3z=-80 p0x=967936 p0y=-28192 p0z=977008 p1x=965376 p1y=-28192 p1z=977008 p2x=965376 p2y=-28192 p2z=979568 p3x=967936 p3y=-28192 p3z=979568 ny=65498 nz=-1258 tclip=5 flags=1073741824 steps=1 padtype=4 inv0=1 mode0=2 ->
+
+# stateful: standing jump: hold and release
+JUMP_INIT x=851968 y=-30976 z=950272 angle=0 ax=0 az=65536 ny=65534 health=64 f0x=-80 f0y=174 f0z=80 f1x=80 f1y=174 f1z=80 f2x=80 f2y=174 f2z=-80 f3x=-80 f3y=174 f3z=-80 p0x=850688 p0y=-28192 p0z=951552 p1x=853248 p1y=-28192 p1z=951552 p2x=853248 p2y=-28192 p2z=948992 p3x=850688 p3y=-28192 p3z=948992 padtype=4 seed=1111 ->
+JUMP_STEP 4096 1 ->
+JUMP_STEP 4096 1 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_RANDOM 3 ->
+# stateful: running jump: hold forward across takeoff, release all before landing
+JUMP_INIT x=851968 y=-30976 z=950272 angle=0 ax=0 az=65536 ny=65534 health=64 f0x=-80 f0y=174 f0z=80 f1x=80 f1y=174 f1z=80 f2x=80 f2y=174 f2z=-80 f3x=-80 f3y=174 f3z=-80 p0x=850688 p0y=-28192 p0z=951552 p1x=853248 p1y=-28192 p1z=951552 p2x=853248 p2y=-28192 p2z=948992 p3x=850688 p3y=-28192 p3z=948992 padtype=4 seed=9029 ->
+JUMP_STEP 16 1 ->
+JUMP_STEP 16 1 ->
+JUMP_STEP 16 1 ->
+JUMP_STEP 16 1 ->
+JUMP_STEP 16 1 ->
+JUMP_STEP 16 1 ->
+JUMP_STEP 16 1 ->
+JUMP_STEP 16 1 ->
+JUMP_STEP 16 1 ->
+JUMP_STEP 16 1 ->
+JUMP_STEP 4112 1 ->
+JUMP_STEP 4112 1 ->
+JUMP_STEP 16 2 ->
+JUMP_STEP 16 2 ->
+JUMP_STEP 16 2 ->
+JUMP_STEP 16 2 ->
+JUMP_STEP 16 2 ->
+JUMP_STEP 16 2 ->
+JUMP_STEP 16 2 ->
+JUMP_STEP 16 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_STEP 0 2 ->
+JUMP_RANDOM 3 ->

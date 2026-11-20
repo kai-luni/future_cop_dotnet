@@ -77,6 +77,36 @@ public class MenuFlowTests
         Assert.Equal(flow.FrontEnd.ModuleName.ToUpperInvariant() + ".MIS", Path.GetFileName(flow.Level.MissionPath));
     }
 
+    [RetailFact]
+    public void SpaceMakesTheWalkerJumpAndReleaseLetsItLand()
+    {
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var level = flow.Level!;
+        for (int i = 0; i < 30; i++) flow.Advance(0.033);
+        int ground = level.MechWorld.Y;
+        int peak = ground;
+
+        const uint space = 65;
+        flow.HandleKey(space);
+        for (int i = 0; i < 8; i++)
+        {
+            flow.Advance(0.033);
+            peak = Math.Max(peak, level.MechWorld.Y);
+        }
+        flow.HandleKeyRelease(space);
+        for (int i = 0; i < 90; i++)
+        {
+            flow.Advance(0.033);
+            peak = Math.Max(peak, level.MechWorld.Y);
+        }
+
+        Assert.True(peak > ground + 0x1000, $"jump peak {peak}, ground {ground}");
+        var (x, y, z) = level.MechWorld;
+        Assert.Equal(LevelGround.Height(level.Map, x, y + 0x0CCC, z, out _), y);
+    }
+
     [Fact]
     public void TheStartedLevelRendersTerrainAndTheWalker()
     {
@@ -92,6 +122,124 @@ public class MenuFlowTests
         int lit = 0;
         for (int i = 0; i < frame.Length; i += 4) if (frame[i] != 0 || frame[i + 1] != 0 || frame[i + 2] != 0) lit++;
         Assert.True(lit > 640 * 480 * 9 / 10, $"only {lit} lit pixels in the window frame");
+    }
+
+    [RetailFact]
+    public void RemoteOkMustBeReleasedAfterStartingBeforeItCanJump()
+    {
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        long now = 0;
+        var tv = new TvLevelControl(flow, () => now, frequency: 1000);
+        void Tick() { now += 33; Assert.True(tv.Tick()); }
+
+        Assert.Equal(TvKeyAction.Present, tv.Key(TvKeyState.Down, "Return", 0));
+        var level = flow.Level!;
+        for (int i = 0; i < 30; i++)
+        {
+            Assert.Equal(TvKeyAction.None, tv.Key(TvKeyState.Down, "Return", 0));
+            Tick();
+            var (x, y, z) = level.MechWorld;
+            Assert.True(y <= LevelGround.Height(level.Map, x, y + 0x0CCC, z, out _) + 0x200);
+        }
+
+        tv.Key(TvKeyState.Up, "Return", 0);
+        int ground = level.MechWorld.Y;
+        int peak = ground;
+        // The NUI aliases for OK must behave alike on a fresh press and its release.
+        tv.Key(TvKeyState.Down, "XF86Select", 0);
+        for (int i = 0; i < 8; i++)
+        {
+            Tick();
+            peak = Math.Max(peak, level.MechWorld.Y);
+        }
+        tv.Key(TvKeyState.Up, "XF86Select", 0);
+        for (int i = 0; i < 90; i++)
+        {
+            Tick();
+            peak = Math.Max(peak, level.MechWorld.Y);
+        }
+        Assert.True(peak > ground + 0x1000, $"jump peak {peak}, ground {ground}");
+    }
+
+    [RetailFact]
+    public void LinuxConfirmKeyMustBeReleasedAfterStartingBeforeItCanJump()
+    {
+        foreach (uint confirmKey in new[] { Enter, 65u })
+        {
+            var flow = NewFlow(FrontEndPath()!);
+            ToLoadout(flow);
+            flow.HandleKey(confirmKey);
+            var level = flow.Level!;
+            for (int i = 0; i < 30; i++)
+            {
+                flow.HandleKey(confirmKey);
+                flow.Advance(0.033);
+                var (x, y, z) = level.MechWorld;
+                Assert.True(y <= LevelGround.Height(level.Map, x, y + 0x0CCC, z, out _) + 0x200);
+            }
+
+            flow.HandleKeyRelease(confirmKey);
+            int ground = level.MechWorld.Y;
+            int peak = ground;
+            flow.HandleKey(confirmKey);
+            for (int i = 0; i < 8; i++)
+            {
+                flow.Advance(0.033);
+                peak = Math.Max(peak, level.MechWorld.Y);
+            }
+            flow.HandleKeyRelease(confirmKey);
+            for (int i = 0; i < 90; i++)
+            {
+                flow.Advance(0.033);
+                peak = Math.Max(peak, level.MechWorld.Y);
+            }
+
+            Assert.True(peak > ground + 0x1000, $"jump peak {peak}, ground {ground}");
+            var (fx, fy, fz) = level.MechWorld;
+            Assert.Equal(LevelGround.Height(level.Map, fx, fy + 0x0CCC, fz, out _), fy);
+        }
+    }
+
+    [RetailFact]
+    public void RunningWithSpaceTriggersRunningJumpAndMovesForward()
+    {
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var level = flow.Level!;
+        for (int i = 0; i < 5; i++) flow.Advance(0.033);
+
+        flow.HandleKey(Up);
+        for (int i = 0; i < 30; i++) flow.Advance(0.033);
+        var (beforeX, _, beforeZ) = level.MechWorld;
+        int ground = level.MechWorld.Y;
+        int peak = ground;
+
+        const uint space = 65;
+        flow.HandleKey(space);
+        for (int i = 0; i < 8; i++)
+        {
+            flow.Advance(0.033);
+            peak = Math.Max(peak, level.MechWorld.Y);
+        }
+        flow.HandleKeyRelease(space);
+        for (int i = 0; i < 15; i++)
+        {
+            flow.Advance(0.033);
+            peak = Math.Max(peak, level.MechWorld.Y);
+        }
+        flow.HandleKeyRelease(Up);
+        for (int i = 0; i < 75; i++)
+        {
+            flow.Advance(0.033);
+            peak = Math.Max(peak, level.MechWorld.Y);
+        }
+
+        Assert.True(peak > ground + 0x1000, $"running jump peak {peak}, ground {ground}");
+        var (x, y, z) = level.MechWorld;
+        Assert.True(Math.Abs(x - beforeX) + Math.Abs(z - beforeZ) > 0x1000, "running jump must advance horizontally");
+        Assert.Equal(LevelGround.Height(level.Map, x, y + 0x0CCC, z, out _), y);
     }
 
     [Fact]

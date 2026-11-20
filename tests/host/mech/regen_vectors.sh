@@ -42,6 +42,12 @@ cat <<'EOF'
 #   FOOT   func_80052708(self, a0)
 #   ANIM   func_80044B34(self, &track, a0 speed, a1 direction) -> ret
 #   WALK   func_800549F0(self, 0, steps, flags) -> ret (impact damage)
+# Stateful jump sequences (retail C entity, world and PRNG survive between calls):
+#   JUMP_INIT <named fields>  initialize once using the current CLIPS table -> all fields
+#   JUMP_STEP buttons steps  raw PS1 buttons, then default pad mapping and a WALK tick
+#                            -> flags x y z motionY state bits timer trackClip trackFrame
+#                               trackElapsed impactDamage eventCount firstEvent boundsHigh boundsLow
+#   JUMP_RANDOM 3            end the sequence -> three draws from the surviving primary PRNG
 # Record fields: evn/ev0..3 = func_80047088 events (sound, not executed), msgn/msgcode/msgid/
 # msgval/msgkind = func_8005908C messages, framen/frame = func_800175F8 calls, hudr/hudl =
 # record written by func_80051AC8. CLIPS = AnmD clip table (10 values per 16-byte record).

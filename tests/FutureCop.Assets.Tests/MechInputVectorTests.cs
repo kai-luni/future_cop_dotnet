@@ -41,4 +41,24 @@ public class MechInputVectorTests
         uint b = MechInput.MapPadButtons((ushort)v[1], PadMapping.Default);
         Assert.Equal(expected, new long[] { a, b, MechInput.TranslatePadButtons(a, (int)v[2], b), MechInput.TranslatePadButtons(b, (int)v[2], b) });
     }
+
+    [Fact]
+    public void RefreshPadWordsMatchesFunc80057864ForJumpInputs()
+    {
+        uint[] words = new uint[2];
+        MechInput.RefreshPadWords(words, PadButtons.Triangle, PadMapping.Default);
+        Assert.Equal(0x01000000u, words[0]);
+        Assert.Equal(0u, words[1]);
+        Assert.Equal(0x08000000u, MechInput.TranslatePadButtons(words[0], players: 1, words[1]));
+
+        MechInput.RefreshPadWords(words, PadButtons.Up | PadButtons.Triangle, PadMapping.Default);
+        Assert.Equal(0x41000000u, words[0]);
+        Assert.Equal(0x48000000u, MechInput.TranslatePadButtons(words[0], players: 1, words[1]));
+
+        MechInput.RefreshPadWords(words, PadButtons.None, PadMapping.Default);
+        Assert.Equal(new uint[] { 0u, 0u }, words);
+        Assert.Equal(0u, MechInput.TranslatePadButtons(words[0], players: 1, words[1]));
+
+        Assert.Throws<ArgumentException>(() => MechInput.RefreshPadWords(new uint[1], PadButtons.None, PadMapping.Default));
+    }
 }

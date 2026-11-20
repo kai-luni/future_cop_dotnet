@@ -452,7 +452,7 @@ public static partial class MechWalker
             var pad = world.Pads[self.Port];
             int status = (byte)MechInput.ReadStick(pad, self.Lock != 0, self.Frozen != 0, ref flags, ref magV, ref magH);
             var delta = new int[3];
-            Vec3 normal = default;
+            Vec3? normal = null;
             int state;
 
             if ((flags & 0x0A000000) == 0x08000000 && (state = self.State) != 3 && (uint)(state - 0x0D) >= 2
@@ -654,9 +654,9 @@ public static partial class MechWalker
                     }
 
                     var ground = MechGround.Probe(world.Map, new Vec3(self.X, self.Y + 0x0CCC, self.Z));
-                    if (ground.Normal is not Vec3 n)
-                        throw new InvalidOperationException("ground probe returned before writing the normal (outside the map grid)");
-                    normal = n;
+                    // Retail reuses the same output slot across substeps. If no probe has written
+                    // it yet, keep the body's existing normal and slope instead of using stack data.
+                    normal = ground.Normal ?? normal;
                     lane = ground.Height;
                     if (self.Grab != 0)
                     {
@@ -669,14 +669,17 @@ public static partial class MechWalker
                     int attribute = ground.Attribute & unchecked((int)0xFFFFFF3F);
                     if (attribute != 0) ApplySurfaceAttribute(self, world, attribute);
 
-                    var filtered = new[]
+                    if (normal is Vec3 measuredNormal)
                     {
-                        MechMath.EaseQuarter(self.NormalX, normal.X),
-                        MechMath.EaseQuarter(self.NormalY, normal.Y),
-                        MechMath.EaseQuarter(self.NormalZ, normal.Z),
-                    };
-                    MechMath.Normalize(filtered);
-                    (self.NormalX, self.NormalY, self.NormalZ) = (filtered[0], filtered[1], filtered[2]);
+                        var filtered = new[]
+                        {
+                            MechMath.EaseQuarter(self.NormalX, measuredNormal.X),
+                            MechMath.EaseQuarter(self.NormalY, measuredNormal.Y),
+                            MechMath.EaseQuarter(self.NormalZ, measuredNormal.Z),
+                        };
+                        MechMath.Normalize(filtered);
+                        (self.NormalX, self.NormalY, self.NormalZ) = (filtered[0], filtered[1], filtered[2]);
+                    }
 
                     bool snap = true;
                     if (self.Y < lane)
@@ -742,10 +745,13 @@ public static partial class MechWalker
                         else if (rate < 0x1E) rate = 0x1E;
                     }
 
-                    var planar = new[] { normal.X, normal.Z };
-                    int slope = MechMath.Length2(planar);
-                    self.Bits &= 0xBF;
-                    if (0xA000 < slope) self.Bits |= 0x40;
+                    if (normal is Vec3 slopeNormal)
+                    {
+                        var planar = new[] { slopeNormal.X, slopeNormal.Z };
+                        int slope = MechMath.Length2(planar);
+                        self.Bits &= 0xBF;
+                        if (0xA000 < slope) self.Bits |= 0x40;
+                    }
 
                     if (action == 2 && (self.Bits & 1) == 0)
                     {

@@ -49,6 +49,7 @@ extern void func_80052708(void *obj, s32 arg);
 extern u32 func_80044B34(void *script, void *track, s32 speed, s32 dir);
 extern void func_80019828(void);
 extern void func_800197A8(s32 seed);
+extern s32 func_80019668(void);
 extern void func_8001E588(u32 port);
 extern void func_80057864(void);
 extern void func_800576A8(u32 *out, s32 index);
@@ -498,6 +499,10 @@ static void prepare_world(void)
     g_padtype = special[4];
     for (i = 0; i < 2; i++) { D_800A78F0[i * 0x24 + 6] = (u8)special[5]; D_800A78F0[i * 0x24 + 7] = (u8)special[6]; }
     func_800197A8(special[3]);
+}
+static void reset_records(void)
+{
+    int i;
     rec_evn = 0; rec_msgn = 0; rec_msg_code = rec_msg_id = rec_msg_val = rec_msg_kind = 0;
     rec_framen = 0; rec_frame = 0;
     for (i = 0; i < 8; i++) rec_ev[i] = 0;
@@ -554,8 +559,10 @@ static s32 got[MAXV];
 static char gotname[MAXV][12];
 static int ngot;
 static const char *kinds[] = { "SQRT", "NORM", "NLEN", "LEN2", "SINCOS", "STICK", "PAD", "RAY",
-                               "GROUND", "DELTA", "IMPULSE", "SURF", "FOOT", "ANIM", "WALK", 0 };
-static int per_kind[16];
+                               "GROUND", "DELTA", "IMPULSE", "SURF", "FOOT", "ANIM", "WALK",
+                               "JUMP_INIT", "JUMP_STEP", "JUMP_RANDOM", 0 };
+static int per_kind[sizeof(kinds) / sizeof(kinds[0])];
+static int jump_active;
 
 static void put(s32 x) { gotname[ngot][0] = 0; got[ngot++] = x; }
 static void put_all_fields(void)
@@ -578,6 +585,7 @@ static void apply_named_inputs(void)
         set_field(f, v[i]);
     }
     prepare_world();
+    reset_records();
 }
 
 static void set_gp(void) { __asm__ volatile("lui $28,0x1009\n\tori $28,$28,0xF214"); }
@@ -678,6 +686,33 @@ static void run_case(const char *kind)
         special[11] = func_800549F0(SELF, 0, special[2], (u32)special[1]);
         g_walker_probe = 0;
         put_all_fields();
+    } else if (named && streq(kind, "JUMP_INIT")) {
+        if (jump_active) die("missing JUMP_RANDOM before next JUMP_INIT");
+        apply_named_inputs();
+        func_8001E588(0); func_8001E588(1);
+        jump_active = 1;
+        put_all_fields();
+    } else if (jump_active && streq(kind, "JUMP_STEP") && !named && nin == 2) {
+        static const char *observed[] = {
+            "x", "y", "z", "sy", "state", "bits", "timer", "tclip", "tframe", "telapsed",
+            "ret", "evn", "ev0", "hudr", "hudl"
+        };
+        u32 flags = 0;
+        reset_records();
+        *(u32 *)(D_800A78F0 + 0) = ~((u32)v[0] << 16);
+        *(u32 *)(D_800A78F0 + 0x24) = ~0u;
+        func_80057864();
+        func_800576A8(&flags, 0);
+        g_walker_probe = 1;
+        special[11] = func_800549F0(SELF, 0, v[1], flags);
+        g_walker_probe = 0;
+        collect_records();
+        put((s32)flags);
+        for (i = 0; i < (int)(sizeof(observed) / sizeof(observed[0])); i++)
+            put(get_field(find_field(observed[i])));
+    } else if (jump_active && streq(kind, "JUMP_RANDOM") && !named && nin == 1 && v[0] == 3) {
+        for (i = 0; i < v[0]; i++) put(func_80019668());
+        jump_active = 0;
     } else {
         say("mech: malformed vector line "); say_dec((u32)line_no); say("\n");
         sys4(4001, 2, 0, 0, 0);
@@ -819,6 +854,7 @@ int main(int argc, char **argv)
         nout = k - nin;
         run_case(kind);
     }
+    if (jump_active) die("missing JUMP_RANDOM at end of sequence");
     if (emit) return g_trap_error ? 1 : 0;
     for (i = 0; kinds[i]; i++) { say("mech: "); say(kinds[i]); say(" "); say_dec((u32)per_kind[i]); say(" cases\n"); }
     if (!ncase || failures || g_trap_error) { say("mech: FAIL ("); say_dec((u32)failures); say(" mismatches)\n"); return 1; }

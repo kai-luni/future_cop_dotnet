@@ -17,7 +17,7 @@ if (window == null) { Console.Error.WriteLine("Cannot open X11 display."); retur
 MenuAudio? audio = MenuAudio.TryStart(path);
 flow.SceneEntered += () => { audio?.Dispose(); audio = null; };
 flow.SceneLeft += () => audio = MenuAudio.TryStart(path);
-Console.WriteLine("Arrows: navigate / move and turn in the level; Enter: accept; Escape: back; Q: quit.");
+Console.WriteLine("Arrows: navigate / move and turn in the level; Space: jump; Enter: accept; Escape: back; Q: quit.");
 long lastFrame = Stopwatch.GetTimestamp();
 while (true) {
     long now = Stopwatch.GetTimestamp();

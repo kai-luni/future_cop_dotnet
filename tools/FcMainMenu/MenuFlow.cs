@@ -32,7 +32,7 @@ public enum SceneKind
 public sealed class MenuFlow
 {
     // X11 keycodes (evdev + 8) as the window delivers them.
-    private const uint KeyEscape = 9, KeyBackspace = 22, KeyQ = 24, KeyEnter = 36, KeyKpEnter = 65;
+    private const uint KeyEscape = 9, KeyBackspace = 22, KeyQ = 24, KeyEnter = 36, KeySpace = 65, KeyKpEnter = 104;
     private const uint KeyUp = 111, KeyLeft = 113, KeyRight = 114, KeyDown = 116;
 
     private readonly string _frontEndPath;
@@ -40,7 +40,9 @@ public sealed class MenuFlow
     private readonly SceneKind _kind;
     private readonly TextWriter _out, _err;
     private readonly bool _enableLevelMovement;
-    private PadButtons _heldDirections;
+    private readonly HashSet<uint> _heldKeys = new();
+    private readonly HashSet<uint> _suppressedUntilRelease = new();
+    private readonly uint[] _padWords = new uint[2];
     private double _pendingWalkerTicks;
 
     public MainMenu Menu { get; } = new MainMenu();
@@ -95,6 +97,8 @@ public sealed class MenuFlow
         "Left" => KeyLeft,
         "Right" => KeyRight,
         "Return" or "XF86Select" => KeyEnter,
+        "space" or "Space" => KeySpace,
+        "KP_Enter" => KeyKpEnter,
         "Escape" or "XF86Back" => KeyEscape,
         _ => code == KeyTizenBack ? KeyEscape : (uint)code,
     };
@@ -104,8 +108,8 @@ public sealed class MenuFlow
     public void HandleKey(uint key)
     {
         var pa = FrontEnd;
-        if (key == KeyQ && !(Screen == MenuScreen.Setup && Selected == 1)) { Screen = MenuScreen.Quit; return; }
-        bool accept = key == KeyEnter || key == KeyKpEnter, back = key == KeyEscape;
+        if (key == KeyQ && !(Screen == MenuScreen.Setup && Selected == 1)) { ClearHeldKeys(); _suppressedUntilRelease.Clear(); Screen = MenuScreen.Quit; return; }
+        bool accept = key == KeyEnter || key == KeyKpEnter || key == KeySpace, back = key == KeyEscape;
         int vertical = key == KeyUp ? -1 : key == KeyDown ? 1 : 0;
         int horizontal = key == KeyLeft ? -1 : key == KeyRight ? 1 : 0;
         switch (Screen)
@@ -175,13 +179,14 @@ public sealed class MenuFlow
                 else if (accept && Selected == 0)
                 {
                     pa.FinalizeMissionLoadout(3, 0);
-                    if (pa.ScreenState == 5) StartScene();
+                    if (pa.ScreenState == 5) StartScene(key);
                 }
                 break;
             case MenuScreen.Scene:
                 if (back)
                 {
                     ClearHeldKeys();
+                    _suppressedUntilRelease.Clear();
                     Screen = MenuScreen.Loadout; pa.ScreenState = 0; Preview = null; Level = null;
                     SceneLeft?.Invoke();
                 }
@@ -191,12 +196,16 @@ public sealed class MenuFlow
                     else if (accept) Preview.Fire();
                     else if (vertical != 0) Preview.CycleWeapon(vertical);
                 }
-                else if (_enableLevelMovement) _heldDirections |= DirectionButton(key);
+                else if (_enableLevelMovement && Level != null)
+                {
+                    if (_suppressedUntilRelease.Contains(key)) return;
+                    if (SceneButton(key) != PadButtons.None) _heldKeys.Add(key);
+                }
                 break;
         }
     }
 
-    private void StartScene()
+    private void StartScene(uint? confirmKey = null)
     {
         string mission = Path.Combine(_missionDir, FrontEnd.ModuleName.ToUpperInvariant() + ".MIS");
         try
@@ -210,6 +219,8 @@ public sealed class MenuFlow
                 Level = level;
                 _pendingWalkerTicks = 0;
                 ClearHeldKeys();
+                _suppressedUntilRelease.Clear();
+                if (confirmKey is uint suppressed) _suppressedUntilRelease.Add(suppressed);
             }
             Screen = MenuScreen.Scene;
             SceneEntered?.Invoke();
@@ -267,14 +278,33 @@ public sealed class MenuFlow
         }
     }
 
-    public void HandleKeyRelease(uint key) => _heldDirections &= ~DirectionButton(key);
-
-    public void ClearHeldKeys() => _heldDirections = PadButtons.None;
-
-    private static PadButtons DirectionButton(uint key) => key switch
+    public void HandleKeyRelease(uint key)
     {
-        KeyUp => PadButtons.Up, KeyDown => PadButtons.Down,
-        KeyLeft => PadButtons.Left, KeyRight => PadButtons.Right,
+        _heldKeys.Remove(key);
+        _suppressedUntilRelease.Remove(key);
+    }
+
+    public void ClearHeldKeys()
+    {
+        _heldKeys.Clear();
+        // Focus loss can hide a release; keep the start key suppressed until a release is observed.
+        Array.Clear(_padWords, 0, _padWords.Length);
+    }
+
+    private PadButtons HeldPadButtons()
+    {
+        PadButtons buttons = PadButtons.None;
+        foreach (uint key in _heldKeys) buttons |= SceneButton(key);
+        return buttons;
+    }
+
+    private static PadButtons SceneButton(uint key) => key switch
+    {
+        KeyUp => PadButtons.Up,
+        KeyDown => PadButtons.Down,
+        KeyLeft => PadButtons.Left,
+        KeyRight => PadButtons.Right,
+        KeySpace or KeyEnter or KeyKpEnter => PadButtons.Triangle,
         _ => PadButtons.None,
     };
 
@@ -291,8 +321,9 @@ public sealed class MenuFlow
         int steps = (int)(_pendingWalkerTicks / 8);
         if (steps == 0) return;
         _pendingWalkerTicks -= steps * 8;
-        uint mapped = MechInput.MapPadButtons((ushort)_heldDirections, PadMapping.Default);
-        uint flags = MechInput.TranslatePadButtons(mapped, players: 1, secondWord: 0);
+        PadButtons buttons = HeldPadButtons();
+        MechInput.RefreshPadWords(_padWords, buttons, PadMapping.Default);
+        uint flags = MechInput.TranslatePadButtons(_padWords[0], players: 1, _padWords[1]);
         Level.AdvanceWalker(steps, flags, AnalogPad.Digital);
     }
 

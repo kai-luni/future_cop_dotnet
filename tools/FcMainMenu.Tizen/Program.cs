@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -25,18 +24,18 @@ internal static class Program
 /// TV front end: the main menu stays the generated BMP set; Precinct Assault's single player entry
 /// continues through the shared <see cref="MenuFlow"/> (setup, zone list, loadout as NUI text panels)
 /// into the selected map as <see cref="LevelScene"/>, presented like tools/FcLevelTv (software
-/// frame written as BMP, shown by an ImageView). No GPU path is involved.
+/// frame written as BMP, shown by an ImageView). No GPU path is involved. Key presses, releases,
+/// focus loss and the frame timer go through <see cref="TvLevelControl"/>.
 /// </summary>
 internal sealed class MenuApp : NUIApplication
 {
     private MenuFlow flow;
+    private TvLevelControl control;
     private MainMenu menu;
     private FrontEndText text;
     private Window window;
     private ImageView image;
-    private View panel;
-    private TextLabel heading, hint;
-    private readonly List<TextLabel> rows = new List<TextLabel>();
+    private readonly byte[] panelRgb = new byte[BitmapPanel.Width * BitmapPanel.Height * 3];
     private Tizen.NUI.Timer timer;
     private MenuAudio audio;
     private int focusTicks = 100;
@@ -54,7 +53,8 @@ internal sealed class MenuApp : NUIApplication
             Log($"start clr={Environment.Version} pid={Environment.ProcessId}");
             var log = new LogWriter();
             string fe = Path.Combine(AssetDir, "FE.MIS");
-            flow = new MenuFlow(fe, SceneKind.Level, log, log, Path.Combine(AssetDir, "PA"));
+            flow = TvLevelControl.CreateFlow(fe, Path.Combine(AssetDir, "PA"), log, log);
+            control = new TvLevelControl(flow);
             menu = flow.Menu;
             flow.SceneEntered += () => { audio?.Dispose(); audio = null; };
             flow.SceneLeft += StartAudio;
@@ -64,15 +64,13 @@ internal sealed class MenuApp : NUIApplication
             window.BackgroundColor = new Color(0.02f, 0.03f, 0.06f, 1.0f);
             image = new ImageView { Name = "menu", FittingMode = FittingModeType.ScaleToFill };
             window.Add(image);
-            panel = new View { Name = "panel", BackgroundColor = new Color(0x10 / 255f, 0x18 / 255f, 0x2e / 255f, 1f) };
-            heading = Label(new Color(0x73 / 255f, 0xc5 / 255f, 1f, 1f));
-            hint = Label(new Color(0.75f, 0.75f, 0.75f, 1f));
-            panel.Add(heading);
-            panel.Add(hint);
-            window.Add(panel);
             window.Resized += (sender, e) => { Layout(); Present(); };
             window.KeyEvent += OnKey;
-            window.FocusChanged += (sender, e) => Focus();
+            window.FocusChanged += (sender, e) =>
+            {
+                if (!e.FocusGained) { control.FocusChanged(false); Log("focus lost, held keys cleared"); }
+                Focus();
+            };
             Layout();
             Present();
             window.SetAcceptFocus(true);
@@ -93,13 +91,6 @@ internal sealed class MenuApp : NUIApplication
         audio.Start();
     }
 
-    private static TextLabel Label(Color color) => new TextLabel
-    {
-        TextColor = color,
-        HorizontalAlignment = HorizontalAlignment.Center,
-        VerticalAlignment = VerticalAlignment.Center,
-    };
-
     private void Focus()
     {
         window.SetAcceptFocus(true);
@@ -114,18 +105,6 @@ internal sealed class MenuApp : NUIApplication
         int iw = (int)(640f * scale), ih = (int)(480f * scale);
         image.Size2D = new Size2D(iw, ih);
         image.Position2D = new Position2D((int)((w - iw) / 2), (int)((h - ih) / 2));
-        panel.Size2D = new Size2D(iw, ih);
-        panel.Position2D = new Position2D((int)((w - iw) / 2), (int)((h - ih) / 2));
-    }
-
-    /// <summary>Places a text row centred on the X11 prototype's row y (menu units, 0..240).</summary>
-    private void Place(TextLabel label, int y)
-    {
-        float scale = Scale;
-        int lineHeight = (int)(22 * scale);
-        label.PixelSize = 15f * scale;
-        label.Size2D = new Size2D((int)(640 * scale), lineHeight);
-        label.Position2D = new Position2D(0, (int)((y * 2 + 9) * scale) - lineHeight / 2);
     }
 
     private void Tick()
@@ -133,7 +112,7 @@ internal sealed class MenuApp : NUIApplication
         try
         {
             if (focusTicks-- > 0) Focus();
-            if (flow.Screen == MenuScreen.Scene) Present();
+            if (control.Tick()) Present();
         }
         catch (Exception ex) { Log("tick failed " + ex); }
     }
@@ -145,7 +124,6 @@ internal sealed class MenuApp : NUIApplication
         var screen = flow.Screen;
         if (screen == MenuScreen.Main)
         {
-            panel.Hide(); image.Show();
             string path = Path.Combine(AssetDir, "menu-" + menu.SelectedIndex.ToString(CultureInfo.InvariantCulture) + ".bmp");
             if (!File.Exists(path)) throw new FileNotFoundException("Menu image missing", path);
             image.ResourceUrl = path;
@@ -153,7 +131,6 @@ internal sealed class MenuApp : NUIApplication
         }
         else if (screen == MenuScreen.Scene && flow.Level != null)
         {
-            panel.Hide(); image.Show();
             flow.Level.Render(flow.Camera);
             Directory.CreateDirectory(FrameDir);
             string path = Path.Combine(FrameDir, "frame" + (++frame % 6).ToString(CultureInfo.InvariantCulture) + ".bmp");
@@ -163,19 +140,11 @@ internal sealed class MenuApp : NUIApplication
         }
         else if (flow.Panel(Text) is MenuPanel p)
         {
-            image.Hide(); panel.Show();
-            while (rows.Count < p.Entries.Count) { var row = Label(new Color(1f, 1f, 1f, 1f)); rows.Add(row); panel.Add(row); }
-            heading.Text = p.Heading; Place(heading, 50);
-            hint.Text = p.Hint; Place(hint, 218);
-            for (int i = 0; i < rows.Count; i++)
-            {
-                var row = rows[i];
-                if (i >= p.Entries.Count) { row.Hide(); continue; }
-                row.Text = p.Entries[i];
-                row.TextColor = i == p.Selected ? new Color(1f, 1f, 0.5f, 1f) : new Color(1f, 1f, 1f, 1f);
-                Place(row, 84 + i * 16);
-                row.Show();
-            }
+            BitmapPanel.Render(panelRgb, p);
+            Directory.CreateDirectory(FrameDir);
+            string path = Path.Combine(FrameDir, "frame" + (++frame % 6).ToString(CultureInfo.InvariantCulture) + ".bmp");
+            TextureBank.WriteBmp24(path, BitmapPanel.Width, BitmapPanel.Height, panelRgb);
+            image.ResourceUrl = path;
             Log($"panel {screen}: {p.Heading} | {string.Join(" | ", p.Entries)} | selected {p.Selected}");
         }
         shown = screen;
@@ -183,17 +152,21 @@ internal sealed class MenuApp : NUIApplication
 
     private void OnKey(object sender, Window.KeyEventArgs e)
     {
-        if (e.Key.State != Key.StateType.Down) return;
+        TvKeyState state;
+        if (e.Key.State == Key.StateType.Down) state = TvKeyState.Down;
+        else if (e.Key.State == Key.StateType.Up) state = TvKeyState.Up;
+        else return;
         try
         {
             string name = e.Key.KeyPressedName;
             int code = e.Key.KeyCode;
-            Log($"key {name} ({code})");
-            var before = flow.Screen;
-            flow.HandleKey(MenuFlow.KeyFromTizen(name, code));
-            if (flow.Screen == MenuScreen.Quit) { Exit(); return; }
+            Log($"key {(state == TvKeyState.Down ? "down" : "up")} {name} ({code})");
             // In the level the timer presents every frame; everything else redraws on input.
-            if (flow.Screen != MenuScreen.Scene || before != MenuScreen.Scene) Present();
+            switch (control.Key(state, name, code))
+            {
+                case TvKeyAction.Quit: Exit(); return;
+                case TvKeyAction.Present: Present(); break;
+            }
         }
         catch (Exception ex) { Log("key failed " + ex); }
     }

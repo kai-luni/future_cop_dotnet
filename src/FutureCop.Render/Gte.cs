@@ -109,9 +109,10 @@ public static class Gte
         else
         {
             int w = widthMode == 1 ? 0x140 : 0xA0;
+            // The retail batch compares the zero-extended halves of SXY2.
             clip = (byte)((sz3 < 0x400 ? 1 : 0) |
-                          ((short)(sxy & 0xFFFF) < w ? 0x40 : 0) |
-                          ((short)(sxy >> 16) < 0xF0 ? 0x80 : 0));
+                          ((sxy & 0xFFFF) < w ? 0x40 : 0) |
+                          (((uint)sxy >> 16) < 0xF0 ? 0x80 : 0));
         }
         return (sxy, sz3, clip, flag, written);
     }

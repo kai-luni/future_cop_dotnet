@@ -64,7 +64,7 @@ locomotion substeps (`func_800588D4`, `func_80055988`). The viewer orbit follows
 the position, not the retail chase camera. The main body uses the WALK track;
 the companion uses its rest clip. This is not full gameplay or parity: no hover,
 weapons, dynamic ground objects, multiplayer, mission logic, damage/respawn, or
-in-level sound. The separate static viewers and TV path do not enable movement.
+in-level sound. The separate static viewers do not enable movement.
 
 Menu music is decoded from FE.MIS and played in a loop using PipeWire `pw-play`;
 if audio is unavailable, the menu still runs. The Linux frontend uses a placeholder
@@ -75,7 +75,10 @@ streams decoded music through the TV's PulseAudio socket. OK on Precinct Assault
 Single Player continues through the same `MenuFlow` (setup, zone and loadout as NUI
 text panels) into the selected map, rendered by the CPU `LevelScene` and shown as BMP
 frames like `tools/FcLevelTv`; it expects the maps under `assets/PA/` next to
-`assets/FE.MIS`. This TV path is built on the host but has not yet been run on the device. It is a manually
+`assets/FE.MIS`. The level enables the same limited walker movement as Linux;
+`TvLevelControl` forwards key presses, releases, focus loss and measured timer time.
+A device smoke test covered level entry and return with injected keys; holding and
+releasing the physical remote has not yet been verified. It is a manually
 deployed prototype, not an installed TV app. The TV background was reconstructed
 from the original FE.MIS Cmdc 3 and 4; the font, static selection highlight and
 bottom instruction are still placeholders. Its asset-generation script takes a

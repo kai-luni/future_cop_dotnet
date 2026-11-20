@@ -73,6 +73,18 @@ public static class MechInput
     }
 
     /// <summary>
+    /// func_80057864: refreshes the two mapped controller words D_8009F7C0[0..1] via
+    /// func_8001E620 (<see cref="MapPadButtons"/>).
+    /// </summary>
+    public static void RefreshPadWords(Span<uint> padWords, PadButtons player0, PadMapping map0,
+        PadButtons player1 = PadButtons.None, PadMapping? map1 = null)
+    {
+        if (padWords.Length < 2) throw new ArgumentException("D_8009F7C0 stores two pad words", nameof(padWords));
+        padWords[0] = MapPadButtons((ushort)player0, map0);
+        padWords[1] = MapPadButtons((ushort)player1, map1 ?? map0);
+    }
+
+    /// <summary>
     /// func_800576A8 gTranslatePadButtons: the mask gUpdatePlayerEntity stores at state + 0x30.
     /// With one player the three permuted bits of the second pad word are OR-ed in as well.
     /// </summary>

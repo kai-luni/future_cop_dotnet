@@ -16,6 +16,8 @@
     <Compile Include="../../tools/FcLevelTv/BitmapHud.cs" Link="BitmapHud.cs" />
     <Compile Include="../../tools/FcMainMenu/MenuFlow.cs" Link="MenuFlow.cs" />
     <Compile Include="../../tools/FcMainMenu/FrameBlit.cs" Link="FrameBlit.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/BitmapPanel.cs" Link="BitmapPanel.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/TvLevelControl.cs" Link="TvLevelControl.cs" />
     <ProjectReference Include="../../src/FutureCop.Audio/FutureCop.Audio.csproj" />
     <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
     <ProjectReference Include="../../src/FutureCop.Game/FutureCop.Game.csproj" />
@@ -30,6 +32,7 @@
     <None Include="../golden/level.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/level.vectors" />
     <None Include="../golden/3dtl.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/3dtl.vectors" />
     <None Include="../golden/render.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/render.vectors" />
+    <None Include="../golden/env.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/env.vectors" />
     <None Include="../golden/rotation.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/rotation.vectors" />
     <None Include="../golden/compose.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/compose.vectors" />
     <None Include="../golden/joints.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/joints.vectors" />
