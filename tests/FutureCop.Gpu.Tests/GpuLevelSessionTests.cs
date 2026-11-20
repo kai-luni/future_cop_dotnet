@@ -430,8 +430,10 @@ public sealed class GpuLevelSessionTests
         metrics.RecordTick(second / 50, simulation: null, steps: 0);
         metrics.RecordSubmission(8, 3, 2, sceneLockWait: second / 1000, publishLockWait: second / 500,
             snapshotReset: second / 250, emit: second / 1000, submit: second / 500, upload: second / 1000);
+        Assert.Equal("SUB FPS: --", metrics.SubmittedFpsText);
         Assert.Null(metrics.Report(second / 2));
         var active = Assert.IsType<string>(metrics.Report(second));
+        Assert.Equal("SUB FPS: 1.0", metrics.SubmittedFpsText);
         Assert.Contains("submittedFps=1.0", active);
         Assert.Contains("presentedFps=unavailable", active);
         Assert.Contains("windowPresentedSamples=0", active);
@@ -449,6 +451,7 @@ public sealed class GpuLevelSessionTests
         metrics.RecordWindowPresentation();
         metrics.RecordWindowPresentation();
         var idle = Assert.IsType<string>(metrics.Report(second * 2));
+        Assert.Equal("SUB FPS: 0.0", metrics.SubmittedFpsText);
         Assert.Contains("submittedFps=0.0", idle);
         Assert.Contains("presentedFps=unavailable", idle);
         Assert.Contains("windowPresentedSamples=2", idle);

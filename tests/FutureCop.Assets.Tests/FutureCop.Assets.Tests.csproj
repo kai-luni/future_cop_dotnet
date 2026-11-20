@@ -18,6 +18,9 @@
     <Compile Include="../../tools/FcMainMenu/FrameBlit.cs" Link="FrameBlit.cs" />
     <Compile Include="../../tools/FcMainMenu.Tizen/BitmapPanel.cs" Link="BitmapPanel.cs" />
     <Compile Include="../../tools/FcMainMenu.Tizen/TvLevelControl.cs" Link="TvLevelControl.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/LinuxEvdevInterop.cs" Link="LinuxEvdevInterop.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/EvdevGamepadProfile.cs" Link="EvdevGamepadProfile.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/EvdevGamepadAdapter.cs" Link="EvdevGamepadAdapter.cs" />
     <ProjectReference Include="../../src/FutureCop.Audio/FutureCop.Audio.csproj" />
     <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
     <ProjectReference Include="../../src/FutureCop.Game/FutureCop.Game.csproj" />

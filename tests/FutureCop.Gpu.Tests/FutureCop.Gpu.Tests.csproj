@@ -17,8 +17,12 @@
     <Compile Include="../../tools/FcMainMenu/MenuFlow.cs" Link="MenuFlow.cs" />
     <Compile Include="../../tools/FcMainMenu/FrameBlit.cs" Link="FrameBlit.cs" />
     <Compile Include="../../tools/FcMainMenu.Tizen/TvLevelControl.cs" Link="TvLevelControl.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/LinuxEvdevInterop.cs" Link="LinuxEvdevInterop.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/EvdevGamepadProfile.cs" Link="EvdevGamepadProfile.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/EvdevGamepadAdapter.cs" Link="EvdevGamepadAdapter.cs" />
     <Compile Include="../../tools/FcMainMenu.Tizen/GpuLevelSession.cs" Link="GpuLevelSession.cs" />
     <Compile Include="../../tools/FcMainMenu.Tizen/GpuLevelMetrics.cs" Link="GpuLevelMetrics.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/FpsHudLayout.cs" Link="FpsHudLayout.cs" />
     <Compile Include="../../tools/FcMainMenu.Tizen/WindowPresentationObserver.cs" Link="WindowPresentationObserver.cs" />
   </ItemGroup>
   <ItemGroup>

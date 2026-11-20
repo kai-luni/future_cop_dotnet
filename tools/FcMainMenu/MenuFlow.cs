@@ -313,6 +313,12 @@ public sealed class MenuFlow
         return buttons;
     }
 
+    /// <summary>
+    /// True for keys the level scene holds as pad buttons (arrows, Enter/Space/KP_Enter). Escape/Back and
+    /// all other keys are not pad buttons; Escape leaves the scene.
+    /// </summary>
+    internal static bool IsScenePadKey(uint key) => SceneButton(key) != PadButtons.None;
+
     private static PadButtons SceneButton(uint key) => key switch
     {
         KeyUp => PadButtons.Up,
@@ -324,7 +330,13 @@ public sealed class MenuFlow
     };
 
     /// <summary>Advances the running scene by elapsed seconds.</summary>
-    public void Advance(double seconds)
+    public void Advance(double seconds) => Advance(seconds, PadButtons.None, AnalogPad.Digital);
+
+    /// <summary>
+    /// Advances the running scene by elapsed seconds, merging external hardware pad buttons with
+    /// the key-driven pad state and passing <paramref name="externalPad"/> into the PS1 input path.
+    /// </summary>
+    public void Advance(double seconds, PadButtons externalButtons, AnalogPad externalPad)
     {
         if (Screen != MenuScreen.Scene || !double.IsFinite(seconds) || seconds <= 0) return;
         Preview?.Advance(seconds);
@@ -336,10 +348,10 @@ public sealed class MenuFlow
         int steps = (int)(_pendingWalkerTicks / 8);
         if (steps == 0) return;
         _pendingWalkerTicks -= steps * 8;
-        PadButtons buttons = HeldPadButtons();
+        PadButtons buttons = HeldPadButtons() | externalButtons;
         MechInput.RefreshPadWords(_padWords, buttons, PadMapping.Default);
         uint flags = MechInput.TranslatePadButtons(_padWords[0], players: 1, _padWords[1]);
-        Level.AdvanceWalker(steps, flags, AnalogPad.Digital);
+        Level.AdvanceWalker(steps, flags, externalPad);
     }
 
     /// <summary>Renders the running scene into a BGRX window buffer, scaled by <paramref name="scale"/>.</summary>

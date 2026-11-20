@@ -20,6 +20,8 @@ internal sealed class GpuLevelMetrics
         public int Triangles, DrawCalls, Uploads;
     }
 
+    internal string SubmittedFpsText { get; private set; } = "SUB FPS: --";
+
     internal GpuLevelMetrics(long start) => since = start;
 
     internal void RecordTick(long lockWait, long? simulation, long steps)
@@ -74,6 +76,7 @@ internal sealed class GpuLevelMetrics
             sample = default;
         }
         double seconds = (double)elapsed / Stopwatch.Frequency;
+        SubmittedFpsText = string.Create(CultureInfo.InvariantCulture, $"SUB FPS: {window.Submissions / seconds:0.0}");
         int next0 = GC.CollectionCount(0), next1 = GC.CollectionCount(1), next2 = GC.CollectionCount(2);
         string presentation = windowPresentationUnavailable
             ? "windowPresentationCallbacks=unavailable"

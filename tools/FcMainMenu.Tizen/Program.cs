@@ -33,11 +33,13 @@ internal sealed class MenuApp : NUIApplication
 {
     private MenuFlow flow;
     private TvLevelControl control;
+    private EvdevGamepadAdapter gamepad;
     private MainMenu menu;
     private FrontEndText text;
     private Window window;
     private ImageView image;
     private GpuLevelView game;
+    private FpsHud fpsHud;
     private readonly WindowPresentationObserver presentation = new();
     private Action<Action> registerPresentation;
     private readonly byte[] panelRgb = new byte[BitmapPanel.Width * BitmapPanel.Height * 3];
@@ -60,7 +62,8 @@ internal sealed class MenuApp : NUIApplication
             var log = new LogWriter();
             string fe = Path.Combine(AssetDir, "FE.MIS");
             flow = TvLevelControl.CreateFlow(fe, Path.Combine(AssetDir, "PA"), log, log);
-            control = new TvLevelControl(flow);
+            gamepad = new EvdevGamepadAdapter(new LinuxEvdevSystem(), Stopwatch.GetTimestamp, Stopwatch.Frequency, Log);
+            control = new TvLevelControl(flow, gamepad: gamepad, log: Log);
             menu = flow.Menu;
             flow.SceneEntered += StopAudio;
             flow.SceneLeft += StartAudio;
@@ -123,6 +126,8 @@ internal sealed class MenuApp : NUIApplication
         {
             game.View.Size2D = size;
             game.View.Position2D = position;
+            fpsHud?.Layout((int)((w - iw) / 2), (int)((h - ih) / 2), iw, scale);
+            fpsHud?.SetText(game.Session.Metrics.SubmittedFpsText);
             game.Session.RequestFrame();
         }
     }
@@ -140,11 +145,13 @@ internal sealed class MenuApp : NUIApplication
             if (game != null) game.Session.FocusLost();
             else control.FocusChanged(false);
             Log("focus lost, held keys cleared");
+            // Do not re-activate here: a real focus loss (Home, Source, another app) must keep native
+            // input neutralized instead of stealing focus back. Startup retries use focusTimer.
+            return;
         }
-        else
-        {
-            game?.Session.RequestFrame();
-        }
+        if (game != null) game.Session.FocusGained();
+        else control.FocusChanged(true);
+        game?.Session.RequestFrame();
         Focus();
     }
 
@@ -172,7 +179,11 @@ internal sealed class MenuApp : NUIApplication
                 activeGame.View.RenderOnce();
                 window.RenderOnce();
             }
-            if (activeGame.Session.Metrics.Report(Stopwatch.GetTimestamp(), presentation.Unavailable) is string report) Log(report);
+            if (activeGame.Session.Metrics.Report(Stopwatch.GetTimestamp(), presentation.Unavailable) is string report)
+            {
+                Log(report);
+                fpsHud?.SetText(activeGame.Session.Metrics.SubmittedFpsText);
+            }
         }
         catch (Exception ex) { Log("tick failed " + ex); }
     }
@@ -195,6 +206,7 @@ internal sealed class MenuApp : NUIApplication
             {
                 game = new GpuLevelView(control);
                 window.GetDefaultLayer().Add(game.View);
+                fpsHud = new FpsHud(window);
                 Layout();
                 image.Hide();
                 Log($"scene {flow.Level.MissionPath}: OpenGL ES 2.0");
@@ -245,8 +257,9 @@ internal sealed class MenuApp : NUIApplication
         {
             string name = e.Key.KeyPressedName;
             int code = e.Key.KeyCode;
-            Log($"key {(state == TvKeyState.Down ? "down" : "up")} {name} ({code})");
-            var action = game != null ? game.Session.Key(state, name, code) : control.Key(state, name, code);
+            string deviceName = e.Key.DeviceName;
+            Log($"key {(state == TvKeyState.Down ? "down" : "up")} {name} ({code}) device='{deviceName}'");
+            var action = game != null ? game.Session.Key(state, name, code, deviceName) : control.Key(state, name, code, deviceName);
             switch (action)
             {
                 case TvKeyAction.Quit: Exit(); return;
@@ -260,6 +273,10 @@ internal sealed class MenuApp : NUIApplication
     {
         var previous = game;
         game = null;
+        var previousHud = fpsHud;
+        fpsHud = null;
+        try { previousHud?.Dispose(); }
+        catch (Exception ex) { Log("FPS HUD disposal failed " + ex); }
         try { previous?.Dispose(); }
         catch (Exception ex) { Log("mission view disposal failed " + ex); }
     }
@@ -280,6 +297,7 @@ internal sealed class MenuApp : NUIApplication
                 window.FocusChanged -= OnFocusChanged;
             }
             CloseGame();
+            gamepad?.Dispose();
             image?.Dispose();
             StopAudio();
         }

@@ -43,24 +43,28 @@ internal sealed class GpuLevelSession
         scene.Sink = emitter;
     }
 
-    internal TvKeyAction Key(TvKeyState state, string name, int code)
+    internal TvKeyAction Key(TvKeyState state, string name, int code, string? deviceName = null)
     {
         lock (sceneLock)
         {
             if (scene is null) return TvKeyAction.None;
-            var action = control.Key(state, name, code);
+            var action = control.Key(state, name, code, deviceName);
             if (control.Flow.Screen != MenuScreen.Scene || !ReferenceEquals(scene, control.Flow.Level))
                 DetachScene();
             return action;
         }
     }
 
+    // Focus is forwarded even after the scene was detached (Back, graphics fault) but before the view
+    // is closed: the native gamepad and MenuFlow must still be neutralized or reconciled.
     internal void FocusLost()
     {
-        lock (sceneLock)
-        {
-            if (scene is not null) control.FocusChanged(false);
-        }
+        lock (sceneLock) control.FocusChanged(false);
+    }
+
+    internal void FocusGained()
+    {
+        lock (sceneLock) control.FocusChanged(true);
     }
 
     internal bool Tick()
