@@ -13,9 +13,16 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../../tools/FcLevelGl.Tizen/RenderBurst.cs" Link="RenderBurst.cs" />
-    <Compile Include="../../tools/FcLevelGl.Tizen/AtspiStartEnvironment.cs" Link="AtspiStartEnvironment.cs" />
+    <Compile Include="../../tools/Tizen.Shared/AtspiStartEnvironment.cs" Link="AtspiStartEnvironment.cs" />
+    <Compile Include="../../tools/FcMainMenu/MenuFlow.cs" Link="MenuFlow.cs" />
+    <Compile Include="../../tools/FcMainMenu/FrameBlit.cs" Link="FrameBlit.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/TvLevelControl.cs" Link="TvLevelControl.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/GpuLevelSession.cs" Link="GpuLevelSession.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/GpuLevelMetrics.cs" Link="GpuLevelMetrics.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/WindowPresentationObserver.cs" Link="WindowPresentationObserver.cs" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="../AtspiNativeProbe/AtspiNativeProbe.csproj" />
     <ProjectReference Include="../../src/FutureCop.Gpu/FutureCop.Gpu.csproj" />
     <ProjectReference Include="../../src/FutureCop.Gpu.SceneBridge/FutureCop.Gpu.SceneBridge.csproj" />
     <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />

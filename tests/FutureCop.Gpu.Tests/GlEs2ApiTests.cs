@@ -76,6 +76,7 @@ public class GlEs2ApiTests
     [Fact]
     public void MissingExportNamesTheEntryPointAndTheLibrary()
     {
+        IntPtr released = IntPtr.Zero;
         var exception = Assert.Throws<EntryPointNotFoundException>(() =>
             GlEs2Api.Create(
                 (string name, out IntPtr handle) =>
@@ -83,8 +84,10 @@ public class GlEs2ApiTests
                     handle = (IntPtr)42;
                     return true;
                 },
-                (IntPtr handle, string name) => name == "glBlendEquation" ? IntPtr.Zero : (IntPtr)7));
+                (IntPtr handle, string name) => name == "glBlendEquation" ? IntPtr.Zero : (IntPtr)7,
+                handle => released = handle));
 
+        Assert.Equal((IntPtr)42, released);
         Assert.Contains("glBlendEquation", exception.Message, StringComparison.Ordinal);
         Assert.Contains("libGLESv2.so.2", exception.Message, StringComparison.Ordinal);
 

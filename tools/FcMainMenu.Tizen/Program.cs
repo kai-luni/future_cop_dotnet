@@ -1,8 +1,10 @@
 using System;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
 using FcMainMenu;
+using FcLevelGlTizen;
 using FutureCop.Assets;
 using FutureCop.View;
 using Tizen.NUI;
@@ -13,6 +15,9 @@ internal static class Program
 {
     private static void Main(string[] args)
     {
+        // Configure and verify the native environment before constructing NUIApplication.
+        var atspi = AtspiStartEnvironment.Apply(out string diagnostic);
+        AtspiStartEnvironment.Report(atspi, "start environment " + diagnostic, MenuApp.Log);
         AppDomain.CurrentDomain.UnhandledException += (sender, e) => MenuApp.Log("unhandled " + e.ExceptionObject);
         var app = new MenuApp();
         try { app.Run(args); }
@@ -21,11 +26,8 @@ internal static class Program
 }
 
 /// <summary>
-/// TV front end: the main menu stays the generated BMP set; Precinct Assault's single player entry
-/// continues through the shared <see cref="MenuFlow"/> (setup, zone list, loadout as NUI text panels)
-/// into the selected map as <see cref="LevelScene"/>, presented like tools/FcLevelTv (software
-/// frame written as BMP, shown by an ImageView). No GPU path is involved. Key presses, releases,
-/// focus loss and the frame timer go through <see cref="TvLevelControl"/>.
+/// TV front end. MenuFlow handles the menu and mission transitions. TvLevelControl drives the
+/// walker on the UI timer, and GLView draws the mission's PS1 commands on its context thread.
 /// </summary>
 internal sealed class MenuApp : NUIApplication
 {
@@ -35,15 +37,19 @@ internal sealed class MenuApp : NUIApplication
     private FrontEndText text;
     private Window window;
     private ImageView image;
+    private GpuLevelView game;
+    private readonly WindowPresentationObserver presentation = new();
+    private Action<Action> registerPresentation;
     private readonly byte[] panelRgb = new byte[BitmapPanel.Width * BitmapPanel.Height * 3];
     private Tizen.NUI.Timer timer;
+    private Tizen.NUI.Timer focusTimer;
     private MenuAudio audio;
     private int focusTicks = 100;
     private int frame;
-    private MenuScreen shown = MenuScreen.Quit;
     private static readonly string AssetDir = Path.Combine(AppContext.BaseDirectory, "assets");
     private static readonly string FrameDir = Path.Combine(AppContext.BaseDirectory, "frames");
     private static readonly string LogPath = Environment.GetEnvironmentVariable("FC_MENU_LOGFILE") ?? "/tmp/fcmenu-app.log";
+    private static readonly object LogLock = new();
 
     protected override void OnCreate()
     {
@@ -56,7 +62,7 @@ internal sealed class MenuApp : NUIApplication
             flow = TvLevelControl.CreateFlow(fe, Path.Combine(AssetDir, "PA"), log, log);
             control = new TvLevelControl(flow);
             menu = flow.Menu;
-            flow.SceneEntered += () => { audio?.Dispose(); audio = null; };
+            flow.SceneEntered += StopAudio;
             flow.SceneLeft += StartAudio;
             try { text = FrontEndText.FromMisFile(fe); }
             catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException) { Log("menu text unavailable " + ex.Message); }
@@ -64,21 +70,27 @@ internal sealed class MenuApp : NUIApplication
             window.BackgroundColor = new Color(0.02f, 0.03f, 0.06f, 1.0f);
             image = new ImageView { Name = "menu", FittingMode = FittingModeType.ScaleToFill };
             window.Add(image);
-            window.Resized += (sender, e) => { Layout(); Present(); };
+            window.Resized += OnResize;
             window.KeyEvent += OnKey;
-            window.FocusChanged += (sender, e) =>
-            {
-                if (!e.FocusGained) { control.FocusChanged(false); Log("focus lost, held keys cleared"); }
-                Focus();
-            };
+            window.FocusChanged += OnFocusChanged;
+            registerPresentation = presented => window.AddFramePresentedCallback(_ => presented(), 0);
             Layout();
             Present();
             window.SetAcceptFocus(true);
             window.Show();
             window.Activate();
-            timer = new Tizen.NUI.Timer(33);
+            timer = new Tizen.NUI.Timer(16);
             timer.Tick += (sender, e) => { Tick(); return true; };
             timer.Start();
+            // Keep startup focus retries on their original cadence.
+            focusTimer = new Tizen.NUI.Timer(33);
+            focusTimer.Tick += (sender, e) =>
+            {
+                try { Focus(); }
+                catch (Exception ex) { Log("focus retry failed " + ex); }
+                return --focusTicks > 0;
+            };
+            focusTimer.Start();
             Log("window shown, timer started");
             StartAudio();
         }
@@ -103,18 +115,72 @@ internal sealed class MenuApp : NUIApplication
     {
         float w = window.Size.Width, h = window.Size.Height, scale = Scale;
         int iw = (int)(640f * scale), ih = (int)(480f * scale);
-        image.Size2D = new Size2D(iw, ih);
-        image.Position2D = new Position2D((int)((w - iw) / 2), (int)((h - ih) / 2));
+        var size = new Size2D(iw, ih);
+        var position = new Position2D((int)((w - iw) / 2), (int)((h - ih) / 2));
+        image.Size2D = size;
+        image.Position2D = position;
+        if (game != null)
+        {
+            game.View.Size2D = size;
+            game.View.Position2D = position;
+            game.Session.RequestFrame();
+        }
+    }
+
+    private void OnResize(object sender, Window.ResizedEventArgs e)
+    {
+        Layout();
+        Present();
+    }
+
+    private void OnFocusChanged(object sender, Window.FocusChangedEventArgs e)
+    {
+        if (!e.FocusGained)
+        {
+            if (game != null) game.Session.FocusLost();
+            else control.FocusChanged(false);
+            Log("focus lost, held keys cleared");
+        }
+        else
+        {
+            game?.Session.RequestFrame();
+        }
+        Focus();
     }
 
     private void Tick()
     {
         try
         {
-            if (focusTicks-- > 0) Focus();
-            if (control.Tick()) Present();
+            var activeGame = game;
+            if (activeGame == null)
+            {
+                control.Tick();
+                return;
+            }
+            if (activeGame.Session.ReturnToLoadoutAfterGraphicsFault() is Exception fault)
+            {
+                ShowMissionGraphicsError(fault);
+                Present();
+                return;
+            }
+            if (activeGame.Session.Tick())
+            {
+                ObserveNextWindowPresentation(activeGame.Session.Metrics);
+                // Both requests wake their own render paths. NUI exposes no GLView buffer-swap
+                // notification to sequence the window request after this specific GL draw.
+                activeGame.View.RenderOnce();
+                window.RenderOnce();
+            }
+            if (activeGame.Session.Metrics.Report(Stopwatch.GetTimestamp(), presentation.Unavailable) is string report) Log(report);
         }
         catch (Exception ex) { Log("tick failed " + ex); }
+    }
+
+    private void ObserveNextWindowPresentation(GpuLevelMetrics metrics)
+    {
+        try { presentation.Observe(metrics, registerPresentation); }
+        catch (Exception ex) { Log("window presentation callback unavailable " + ex.Message); }
     }
 
     private string Text(ushort id, string fallback) => (text?.Lookup(id) ?? fallback).Replace('\n', ' ');
@@ -122,6 +188,29 @@ internal sealed class MenuApp : NUIApplication
     private void Present()
     {
         var screen = flow.Screen;
+        if (screen == MenuScreen.Scene)
+        {
+            if (game != null) return;
+            try
+            {
+                game = new GpuLevelView(control);
+                window.GetDefaultLayer().Add(game.View);
+                Layout();
+                image.Hide();
+                Log($"scene {flow.Level.MissionPath}: OpenGL ES 2.0");
+                return;
+            }
+            catch (Exception ex)
+            {
+                CloseGame();
+                flow.LeaveScene();
+                ShowMissionGraphicsError(ex);
+                screen = flow.Screen;
+            }
+        }
+
+        CloseGame();
+        image.Show();
         if (screen == MenuScreen.Main)
         {
             string path = Path.Combine(AssetDir, "menu-" + menu.SelectedIndex.ToString(CultureInfo.InvariantCulture) + ".bmp");
@@ -129,25 +218,21 @@ internal sealed class MenuApp : NUIApplication
             image.ResourceUrl = path;
             Log($"selected {menu.SelectedIndex}: {menu.Entries[menu.SelectedIndex].Text}");
         }
-        else if (screen == MenuScreen.Scene && flow.Level != null)
-        {
-            flow.Level.Render(flow.Camera);
-            Directory.CreateDirectory(FrameDir);
-            string path = Path.Combine(FrameDir, "frame" + (++frame % 6).ToString(CultureInfo.InvariantCulture) + ".bmp");
-            TextureBank.WriteBmp24(path, LevelScene.Width, LevelScene.Height, flow.Level.Rgb);
-            image.ResourceUrl = path;
-            if (shown != screen) Log($"scene {flow.Level.MissionPath}: {flow.Level.TilePackets} terrain packets, {flow.Level.MechFaces} mech faces");
-        }
         else if (flow.Panel(Text) is MenuPanel p)
         {
-            BitmapPanel.Render(panelRgb, p);
+            BitmapPanel.Render(panelRgb, p, control.LoadoutStatus);
             Directory.CreateDirectory(FrameDir);
             string path = Path.Combine(FrameDir, "frame" + (++frame % 6).ToString(CultureInfo.InvariantCulture) + ".bmp");
             TextureBank.WriteBmp24(path, BitmapPanel.Width, BitmapPanel.Height, panelRgb);
             image.ResourceUrl = path;
             Log($"panel {screen}: {p.Heading} | {string.Join(" | ", p.Entries)} | selected {p.Selected}");
         }
-        shown = screen;
+    }
+
+    private void ShowMissionGraphicsError(Exception fault)
+    {
+        control.RecordGraphicsFault();
+        Log("mission graphics failed " + fault);
     }
 
     private void OnKey(object sender, Window.KeyEventArgs e)
@@ -161,8 +246,8 @@ internal sealed class MenuApp : NUIApplication
             string name = e.Key.KeyPressedName;
             int code = e.Key.KeyCode;
             Log($"key {(state == TvKeyState.Down ? "down" : "up")} {name} ({code})");
-            // In the level the timer presents every frame; everything else redraws on input.
-            switch (control.Key(state, name, code))
+            var action = game != null ? game.Session.Key(state, name, code) : control.Key(state, name, code);
+            switch (action)
             {
                 case TvKeyAction.Quit: Exit(); return;
                 case TvKeyAction.Present: Present(); break;
@@ -171,11 +256,49 @@ internal sealed class MenuApp : NUIApplication
         catch (Exception ex) { Log("key failed " + ex); }
     }
 
-    internal void StopAudio() { audio?.Dispose(); }
+    private void CloseGame()
+    {
+        var previous = game;
+        game = null;
+        try { previous?.Dispose(); }
+        catch (Exception ex) { Log("mission view disposal failed " + ex); }
+    }
+
+    protected override void OnTerminate()
+    {
+        try
+        {
+            timer?.Stop();
+            focusTimer?.Stop();
+            timer?.Dispose();
+            focusTimer?.Dispose();
+            presentation.Cancel();
+            if (window != null)
+            {
+                window.Resized -= OnResize;
+                window.KeyEvent -= OnKey;
+                window.FocusChanged -= OnFocusChanged;
+            }
+            CloseGame();
+            image?.Dispose();
+            StopAudio();
+        }
+        finally { base.OnTerminate(); }
+    }
+
+    internal void StopAudio()
+    {
+        audio?.Dispose();
+        audio = null;
+    }
 
     internal static void Log(string message)
     {
-        try { File.AppendAllText(LogPath, DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture) + " [fcmenu] " + message + "\n"); }
+        try
+        {
+            lock (LogLock)
+                File.AppendAllText(LogPath, DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture) + " [fcmenu] " + message + "\n");
+        }
         catch (Exception) { }
     }
 

@@ -247,7 +247,7 @@ public sealed class GlEs2Api : IGpuApi, IDisposable
     /// <exception cref="DllNotFoundException">No candidate library could be loaded.</exception>
     /// <exception cref="EntryPointNotFoundException">The library loaded but lacks a required export.</exception>
     public static GlEs2Api Create() =>
-        Create(LoadWithNativeLibrary, GetExportWithNativeLibrary);
+        Create(LoadWithNativeLibrary, GetExportWithNativeLibrary, NativeLibrary.Free);
 
     private static bool LoadWithNativeLibrary(string name, out IntPtr handle) =>
         NativeLibrary.TryLoad(name, out handle);
@@ -259,7 +259,8 @@ public sealed class GlEs2Api : IGpuApi, IDisposable
     /// Factory with an injectable loader. Tests use it to prove the failure paths without touching
     /// a real GL implementation; the device path is <see cref="Create()"/>.
     /// </summary>
-    internal static GlEs2Api Create(TryLoadLibraryFunc tryLoad, GetExportFunc getExport)
+    internal static GlEs2Api Create(TryLoadLibraryFunc tryLoad, GetExportFunc getExport,
+        Action<IntPtr>? releaseOnFailure = null)
     {
         if (tryLoad is null) throw new ArgumentNullException(nameof(tryLoad));
         if (getExport is null) throw new ArgumentNullException(nameof(getExport));
@@ -311,9 +312,7 @@ public sealed class GlEs2Api : IGpuApi, IDisposable
         }
         catch
         {
-            // Deliberately no NativeLibrary.Free here: the handle may come from an injected loader
-            // (tests) and a failed construction is a fatal startup error anyway, so leaking one
-            // handle is safer than calling dlclose on a pointer this class did not obtain natively.
+            releaseOnFailure?.Invoke(library);
             throw;
         }
     }

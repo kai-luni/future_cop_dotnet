@@ -72,6 +72,7 @@ public sealed class LevelScene
         if (_walker is null || _walkerWorld is null) throw new InvalidOperationException("Attach a walker first");
         _walkerWorld.Pads[0] = pad;
         int result = MechWalker.Tick(_walker, _walkerWorld, steps, flags);
+        WalkerSteps += steps;
         MechWorld = (_walker.X, _walker.Y, _walker.Z);
         UpdateWalkerPose();
         return result;
@@ -82,6 +83,13 @@ public sealed class LevelScene
         if (_animateWalker && _walker is { } walker && _parts[0].Frame != walker.Track.Frame)
             _parts = PlayerAssembly.Build(Actor, _file.Models, mainFrame: walker.Track.Frame);
     }
+
+    /// <summary>Cumulative retail locomotion substeps supplied to the walker.</summary>
+    public long WalkerSteps { get; private set; }
+
+    /// <summary>Walker state that affects the projected geometry and camera.</summary>
+    public ((int X, int Y, int Z) Position, int Angle, int Frame) WalkerRenderPose =>
+        (MechWorld, _animateWalker ? _walker!.Angle : 0, _parts[0].Frame);
 
     /// <summary>Ground attribute at the scene's initial placement.</summary>
     public int GroundAttribute { get; private set; }
@@ -162,7 +170,7 @@ public sealed class LevelScene
     /// <summary>Renders one frame. Returns the number of drawn primitives.</summary>
     public int Render(LevelCamera camera)
     {
-        Array.Clear(Rgb);
+        if (Sink is null) Array.Clear(Rgb);
         // View of the mech-local frame (model units, pivot = walker centre). Viewer camera, not the
         // retail chase camera func_800569EC.
         var view = ViewTransform.Turn(camera.Yaw, camera.Elevation, _mechCx, _mechCy, _mechCz, camera.Distance);

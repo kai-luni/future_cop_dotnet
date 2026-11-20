@@ -36,6 +36,11 @@ public sealed class FakeGpuApi : IGpuApi
 
     public List<string> Calls { get; } = new();
     public List<DrawRecord> Draws { get; } = new();
+    internal Action? BeforeBufferUpload { get; set; }
+    internal Action? BeforeDraw { get; set; }
+    internal Action? BeforeTextureUpload { get; set; }
+    internal int NextBufferAllocationError { get; set; }
+    internal int NextTextureUploadError { get; set; }
     public List<(int X, int Y, int Width, int Height)> Viewports { get; } = new();
     public Dictionary<int, string> UniformNames { get; } = new();
     public Dictionary<string, float[]> UniformValues { get; } = new();
@@ -169,6 +174,12 @@ public sealed class FakeGpuApi : IGpuApi
     public void BufferData(int target, int size, IntPtr data, int usage)
     {
         Calls.Add($"BufferData({target},{size},{usage})");
+        if (NextBufferAllocationError != 0)
+        {
+            PendingError = NextBufferAllocationError;
+            NextBufferAllocationError = 0;
+            return;
+        }
         BufferDataBytes = size;
         _vertexData = new float[size / 4];
         VertexFloatCount = 0;
@@ -176,6 +187,7 @@ public sealed class FakeGpuApi : IGpuApi
 
     public void BufferSubData(int target, int offset, int size, IntPtr data)
     {
+        BeforeBufferUpload?.Invoke();
         Calls.Add($"BufferSubData({target},{offset},{size})");
         BufferSubDataCalls++;
         int floats = size / 4;
@@ -226,8 +238,14 @@ public sealed class FakeGpuApi : IGpuApi
     public void ActiveTexture(int unit) => Calls.Add($"ActiveTexture({unit})");
 
     public void TexImage2D(int target, int level, int internalFormat, int width, int height, int border,
-        int format, int type, IntPtr pixels) =>
+        int format, int type, IntPtr pixels)
+    {
+        BeforeTextureUpload?.Invoke();
         Calls.Add($"TexImage2D({target},{level},{internalFormat},{width},{height},{border},{format},{type},{pixels == IntPtr.Zero})");
+        if (NextTextureUploadError == 0) return;
+        PendingError = NextTextureUploadError;
+        NextTextureUploadError = 0;
+    }
 
     public void TexParameteri(int target, int pname, int param) => Calls.Add($"TexParameteri({target},{pname},{param})");
 
@@ -282,6 +300,7 @@ public sealed class FakeGpuApi : IGpuApi
 
     public void DrawArrays(int mode, int first, int count)
     {
+        BeforeDraw?.Invoke();
         Calls.Add($"DrawArrays({mode},{first},{count})");
         Draws.Add(new DrawRecord
         {

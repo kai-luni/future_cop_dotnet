@@ -12,6 +12,25 @@ public sealed class Vram
 
     private readonly ushort[] _cells = new ushort[Width * Height];
 
+    /// <summary>Changes after a successful upload so texture consumers can invalidate their caches.</summary>
+    public long Revision { get; private set; }
+
+    /// <summary>Copies the cells for a consumer that must outlive access to the source.</summary>
+    public Vram Copy()
+    {
+        var copy = new Vram();
+        CopyTo(copy);
+        return copy;
+    }
+
+    /// <summary>Copies the cells and revision to an existing snapshot buffer.</summary>
+    public void CopyTo(Vram destination)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        _cells.CopyTo(destination._cells, 0);
+        destination.Revision = Revision;
+    }
+
     /// <summary>Reads a 16-bit little-endian cell at VRAM coordinates (<paramref name="x"/>, <paramref name="y"/>).</summary>
     public ushort ReadCell(int x, int y)
     {
@@ -42,6 +61,7 @@ public sealed class Vram
                 srcOffset += 2;
             }
         }
+        if (requiredBytes > 0) Revision++;
     }
 
     /// <summary>Decodes a packed PS1 texture page word into VRAM base coordinates and bit-depth code.</summary>

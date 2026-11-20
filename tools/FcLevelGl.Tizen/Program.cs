@@ -22,9 +22,9 @@ internal static class Program
     private static void Main(string[] args)
     {
         // Before any NUI call: DALi reads this once when it creates its accessibility bridge.
-        AtspiStartEnvironment.Result atspi = AtspiStartEnvironment.Apply();
+        AtspiStartEnvironment.Result atspi = AtspiStartEnvironment.Apply(out string diagnostic);
+        AtspiStartEnvironment.Report(atspi, "start environment " + diagnostic, LevelGlApp.Log);
         AppDomain.CurrentDomain.UnhandledException += (s, e) => LevelGlApp.Log("UNHANDLED " + e.ExceptionObject);
-        LevelGlApp.Log($"start environment {AtspiStartEnvironment.Variable}: {atspi}");
         new LevelGlApp().Run(args);
     }
 }

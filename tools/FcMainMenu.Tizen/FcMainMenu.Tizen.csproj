@@ -17,7 +17,10 @@
     <ProjectReference Include="../../src/FutureCop.Audio/FutureCop.Audio.csproj" />
     <ProjectReference Include="../../src/FutureCop.Game/FutureCop.Game.csproj" />
     <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Gpu/FutureCop.Gpu.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Gpu.SceneBridge/FutureCop.Gpu.SceneBridge.csproj" />
     <ProjectReference Include="../../src/FutureCop.View/FutureCop.View.csproj" />
+    <Compile Include="../Tizen.Shared/AtspiStartEnvironment.cs" Link="AtspiStartEnvironment.cs" />
     <Compile Include="../FcMainMenu/MenuFlow.cs" Link="MenuFlow.cs" />
     <Compile Include="../FcMainMenu/FrameBlit.cs" Link="FrameBlit.cs" />
   </ItemGroup>

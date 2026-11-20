@@ -9,6 +9,7 @@
     <TizenFrameworkDir Condition="'$(TizenFrameworkDir)' == ''">$(MSBuildThisFileDirectory)../../tizen/framework</TizenFrameworkDir>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Tizen.Shared/AtspiStartEnvironment.cs" Link="AtspiStartEnvironment.cs" />
     <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
     <ProjectReference Include="../../src/FutureCop.View/FutureCop.View.csproj" />
     <ProjectReference Include="../../src/FutureCop.Gpu/FutureCop.Gpu.csproj" />

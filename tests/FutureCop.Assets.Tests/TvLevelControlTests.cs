@@ -299,4 +299,171 @@ public class TvLevelControlTests
         Assert.True(Math.Abs(x - beforeX) + Math.Abs(z - beforeZ) > 0x1000, "TV running jump must advance horizontally");
         Assert.Equal(FutureCop.Assets.LevelGround.Height(level.Map, x, y + 0x0CCC, z, out _), y);
     }
+
+    [Fact]
+    public void RemoteSelectingMissingSlimKeepsLoadoutWithoutCrashing()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "fc-tv-noslim-" + Guid.NewGuid().ToString("N"));
+        var err = new StringWriter();
+        var clock = new FakeClock();
+        var flow = TvLevelControl.CreateFlow(Path.Combine(root, "CW", "FE.MIS"), Path.Combine(root, "PA"), TextWriter.Null, err);
+        var tv = new TvLevelControl(flow, () => clock.Now, FakeClock.Frequency);
+
+        Click(tv, "Down"); Click(tv, "Down");
+        Click(tv, "Return"); // Main -> Setup
+        Assert.Equal(MenuScreen.Setup, flow.Screen);
+        Click(tv, "Return"); // Setup -> Hub
+        Assert.Equal(MenuScreen.Hub, flow.Screen);
+        Click(tv, "Return"); // Activate zone list
+        Assert.Equal(1, flow.FrontEnd.MenuDepth[0]);
+        Click(tv, "Down");   // Select SLIM (Proving Ground)
+        Click(tv, "Return"); // Loadout
+        Assert.Equal(MenuScreen.Loadout, flow.Screen);
+        Assert.Equal("slim", flow.FrontEnd.ModuleName);
+        Assert.Equal(TvKeyAction.Present, Press(tv, "Return"));
+        Release(tv, "Return");
+
+        Assert.Equal(MenuScreen.Loadout, flow.Screen);
+        Assert.Null(flow.Level);
+        Assert.Equal("Cannot load SLIM.MIS.", flow.LastLoadError);
+        Assert.Equal("Cannot load SLIM.MIS.", tv.LoadoutStatus);
+        Assert.Contains("SLIM.MIS", err.ToString());
+        Assert.False(tv.Tick());
+    }
+
+    [Fact]
+    public void RemoteOldGraphicsErrorDoesNotMaskNewMissionLoadErrorOnRetry()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "fc-tv-status-" + Guid.NewGuid().ToString("N"));
+        var err = new StringWriter();
+        var clock = new FakeClock();
+        var flow = TvLevelControl.CreateFlow(Path.Combine(root, "CW", "FE.MIS"), Path.Combine(root, "PA"), TextWriter.Null, err);
+        var tv = new TvLevelControl(flow, () => clock.Now, FakeClock.Frequency);
+
+        Click(tv, "Down"); Click(tv, "Down");
+        Click(tv, "Return"); // Setup
+        Click(tv, "Return"); // Hub
+        Click(tv, "Return"); // Activate zone list
+        Click(tv, "Down");   // SLIM
+        Click(tv, "Return"); // Loadout
+
+        tv.RecordGraphicsFault();
+        Assert.Equal("Mission closed. OpenGL ES graphics failed.", tv.LoadoutStatus);
+
+        Assert.Equal(TvKeyAction.Present, Press(tv, "Return"));
+        Release(tv, "Return");
+        Assert.Equal(MenuScreen.Loadout, flow.Screen);
+        Assert.Equal("Cannot load SLIM.MIS.", tv.LoadoutStatus);
+
+        Assert.Equal(TvKeyAction.Present, Press(tv, "XF86Back"));
+        Release(tv, "XF86Back");
+        Assert.Equal(MenuScreen.Hub, flow.Screen);
+        Assert.Null(tv.LoadoutStatus);
+    }
+
+    [Fact]
+    public void RemoteWeaponNavigationClearsStaleLoadErrorAndKeepsLoadoutClean()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "fc-tv-weapon-clear-" + Guid.NewGuid().ToString("N"));
+        var err = new StringWriter();
+        var clock = new FakeClock();
+        var flow = TvLevelControl.CreateFlow(Path.Combine(root, "CW", "FE.MIS"), Path.Combine(root, "PA"), TextWriter.Null, err);
+        var tv = new TvLevelControl(flow, () => clock.Now, FakeClock.Frequency);
+
+        Click(tv, "Down"); Click(tv, "Down");
+        Click(tv, "Return"); // Setup
+        Click(tv, "Return"); // Hub
+        Click(tv, "Return"); // Activate zone list
+        Click(tv, "Down");   // SLIM
+        Click(tv, "Return"); // Loadout
+        Assert.Null(tv.LoadoutStatus);
+
+        Assert.Equal(TvKeyAction.Present, Press(tv, "Return"));
+        Release(tv, "Return");
+        Assert.Equal(MenuScreen.Loadout, flow.Screen);
+        Assert.Equal("Cannot load SLIM.MIS.", tv.LoadoutStatus);
+
+        // Changing weapon in Loadout clears the stale load error so the status does not linger.
+        Assert.Equal(TvKeyAction.Present, Press(tv, "Down"));
+        Release(tv, "Down");
+        Assert.Equal(MenuScreen.Loadout, flow.Screen);
+        Assert.Null(flow.LastLoadError);
+        Assert.Null(tv.LoadoutStatus);
+    }
+
+    [Fact]
+    public void RemoteGraphicsFaultSurvivesWeaponChangeInLoadoutUntilClearedByLoadRetryOrBack()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "fc-tv-gfx-persist-" + Guid.NewGuid().ToString("N"));
+        var err = new StringWriter();
+        var clock = new FakeClock();
+        var flow = TvLevelControl.CreateFlow(Path.Combine(root, "CW", "FE.MIS"), Path.Combine(root, "PA"), TextWriter.Null, err);
+        var tv = new TvLevelControl(flow, () => clock.Now, FakeClock.Frequency);
+
+        Click(tv, "Down"); Click(tv, "Down");
+        Click(tv, "Return"); // Setup
+        Click(tv, "Return"); // Hub
+        Click(tv, "Return"); // Activate zone list
+        Click(tv, "Down");   // SLIM
+        Click(tv, "Return"); // Loadout
+
+        tv.RecordGraphicsFault();
+        Assert.Equal("Mission closed. OpenGL ES graphics failed.", tv.LoadoutStatus);
+
+        // Browsing weapons while still on Loadout keeps the standalone graphics fault visible.
+        Assert.Equal(TvKeyAction.Present, Press(tv, "Down"));
+        Release(tv, "Down");
+        Assert.Equal(MenuScreen.Loadout, flow.Screen);
+        Assert.Equal("Mission closed. OpenGL ES graphics failed.", tv.LoadoutStatus);
+
+        // Return to the start row before retrying the mission load.
+        Click(tv, "Up");
+        // A failed retry replaces the older graphics fault and clears it, so subsequent weapon navigation leaves no status.
+        Assert.Equal(TvKeyAction.Present, Press(tv, "Return"));
+        Release(tv, "Return");
+        Assert.Equal("Cannot load SLIM.MIS.", tv.LoadoutStatus);
+
+        Assert.Equal(TvKeyAction.Present, Press(tv, "Down"));
+        Release(tv, "Down");
+        Assert.Null(tv.LoadoutStatus);
+    }
+
+    [Fact]
+    public void RemoteStartsSecondLevelSlimAfterLeavingFirstLevel()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        string slim = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(fe)!)!, "PA", "SLIM.MIS");
+        if (!File.Exists(slim))
+        {
+            Assert.NotEqual("1", Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL"));
+            return;
+        }
+
+        var (tv, clock) = NewTv(fe);
+        ToLevel(tv, clock);
+        Assert.Equal("CONFT.MIS", Path.GetFileName(tv.Flow.Level!.MissionPath));
+
+        Assert.Equal(TvKeyAction.Present, Press(tv, "XF86Back"));
+        Release(tv, "XF86Back");
+        Assert.Equal(TvKeyAction.Present, Press(tv, "XF86Back"));
+        Release(tv, "XF86Back");
+        Click(tv, "Down");
+        Click(tv, "Return");
+        Assert.Equal("slim", tv.Flow.FrontEnd.ModuleName);
+        Assert.Equal(TvKeyAction.Present, Press(tv, "Return"));
+        Release(tv, "Return");
+
+        Assert.Equal(MenuScreen.Scene, tv.Flow.Screen);
+        var level = tv.Flow.Level!;
+        Assert.Equal("SLIM.MIS", Path.GetFileName(level.MissionPath));
+        Run(tv, clock, 1);
+        Assert.True(level.TilePackets > 100);
+        Assert.True(level.MechFaces > 0);
+        var start = level.MechWorld;
+        Press(tv, "Up");
+        Run(tv, clock, 30);
+        Release(tv, "Up");
+        Assert.NotEqual((start.X, start.Z), (level.MechWorld.X, level.MechWorld.Z));
+    }
 }

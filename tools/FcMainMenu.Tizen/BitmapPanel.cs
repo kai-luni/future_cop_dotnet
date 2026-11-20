@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 
@@ -117,7 +118,7 @@ internal static class BitmapPanel
         0x00,0x00,0x08,0x15,0x02,0x00,0x00, // '~'
     };
 
-    public static void Render(byte[] rgb, MenuPanel panel)
+    public static void Render(byte[] rgb, MenuPanel panel, string? status = null)
     {
         if (rgb == null) throw new ArgumentNullException(nameof(rgb));
         if (panel == null) throw new ArgumentNullException(nameof(panel));
@@ -136,10 +137,11 @@ internal static class BitmapPanel
             bool selected = i == panel.Selected;
             DrawCentered(rgb, panel.Entries[i], 84 + i * 16, 0xff, 0xff, selected ? (byte)0x80 : (byte)0xff);
         }
+        DrawCentered(rgb, status, 190, 0xff, 0xb0, 0x80);
         DrawCentered(rgb, panel.Hint, 218, 0xc0, 0xc0, 0xc0);
     }
 
-    private static void DrawCentered(byte[] rgb, string text, int menuY, byte r, byte g, byte b)
+    private static void DrawCentered(byte[] rgb, string? text, int menuY, byte r, byte g, byte b)
     {
         if (string.IsNullOrEmpty(text)) return;
         int scale = text.Length * GlyphAdvance * 2 <= Width - 16 ? 2 : 1;

@@ -197,8 +197,8 @@ void main()
     // and must NOT be clamped - LevelScene.Tri computes min(255, texel * cm / 128), i.e. it
     // saturates the result. Clamping the factor caps every bright texel at its raw value.
     vec3 modulate = vColor * (1.0 / 128.0);
-    vec3 rgb = min(texel.rgb * modulate * uColorScale, vec3(1.0));
-    gl_FragColor = vec4(rgb, texel.a);
+    vec3 rgb = min(texel.rgb * modulate, vec3(1.0));
+    gl_FragColor = vec4(rgb * uColorScale, texel.a);
 }
 ```
 
@@ -208,8 +208,8 @@ coordinate of 255 an fp16 varying has a step of 0.125 texel, which flips samples
 texels along every texture edge. Measured on llvmpipe, `mediump` varyings change 721 of 76,800
 pixels, 350 of them by more than 2 LSB; `highp` costs nothing and removes that class of error.
 
-The alpha tail of 0.5 is what makes ABR0 a half blend with `SRC_ALPHA`, and ABR3 pre-multiplies by
-0.25 so the blend stays `ONE/ONE` — no `glBlendColor` anywhere.
+The alpha tail of 0.5 makes ABR0 a half blend with `SRC_ALPHA`. ABR3 multiplies the
+saturated foreground by 0.25 so the blend stays `ONE/ONE`.
 
 ## Alpha and blending mapping
 
@@ -247,13 +247,15 @@ never uploaded draws with a built-in 1x1 white texture instead of throwing.
 
 ## Error paths
 
-The renderer fails loudly while it is setting up, never while drawing a frame:
+The renderer throws on setup and frame errors:
 
 - Shader compile and program link failures throw with the driver's info log; a link failure also
   carries the `glGetError` value, because some drivers report the reason only there.
 - A missing uniform (`glGetUniformLocation` returning -1) throws and names the uniform instead of
   silently rendering black.
 - Every texture upload checks `glGetError` and names the `(tpage, clut)` pair.
+- Vertex buffer growth, vertex uploads, and the completed draw batch check `glGetError` before a
+  frame is counted as submitted.
 
 ## Deliberate deviations from PS1 hardware
 
@@ -288,11 +290,12 @@ cd tools/FcGpuProbe
 dotnet run -- all --out /tmp/probe               # hardware GL, ES3.2 context
 dotnet run -- all --out /tmp/probe --gles2       # force a GL ES 2.0 context
 dotnet run -- all --out /tmp/probe --software    # force llvmpipe
+dotnet run -- abr3 --software --gles2           # check saturated foreground against the CPU
 ```
 
 Modes: `shaders` (triangle + textured quad, shader logs, `glGetError` after every stage),
 `ps1` (the fixed primitive list through `GlEs2Renderer`), `ref` (the `Tri` rules on the same
-primitives), `diff`, `uvmap` (texture-coordinate probe), `all`.
+primitives), `diff`, `uvmap` (texture-coordinate probe), `abr3` (saturated modulation pixel), `all`.
 
 Each `Render` call is one frame and therefore includes the backdrop quad, so the probe draws the
 whole scene in a single call. The reported `draws` count includes that one extra draw call; the

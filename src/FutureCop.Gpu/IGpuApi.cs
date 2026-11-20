@@ -113,7 +113,7 @@ public interface IGpuApi
 
     /// <summary>
     /// glGetError. Returns 0 (<see cref="GlEnums.NoError"/>) when nothing is pending; the renderer
-    /// only calls it while setting up (shader, program, buffer, texture upload), never per draw.
+    /// checks setup, texture and vertex uploads, and the frame's draw batch.
     /// </summary>
     int GetError();
 }

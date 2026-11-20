@@ -70,50 +70,59 @@ public sealed class GlEs2Renderer : IDisposable
     {
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
 
-        int vertexShader = CompileShader(GlEnums.VertexShader, Ps1Shaders.Vertex);
-        int fragmentShader = CompileShader(GlEnums.FragmentShader, Ps1Shaders.Fragment);
-        _program = gl.CreateProgram();
-        gl.AttachShader(_program, vertexShader);
-        gl.AttachShader(_program, fragmentShader);
-        gl.BindAttribLocation(_program, AttribPosition, "aPosition");
-        gl.BindAttribLocation(_program, AttribTexCoord, "aTexCoord");
-        gl.BindAttribLocation(_program, AttribColor, "aColor");
-        gl.LinkProgram(_program);
-        if (gl.GetProgramParameter(_program, GlEnums.LinkStatus) == 0)
-            throw new InvalidOperationException(
-                $"PS1 shader program failed to link: {gl.GetProgramInfoLog(_program)}{GlErrorSuffix(gl, "link")}");
-        gl.DeleteShader(vertexShader);
-        gl.DeleteShader(fragmentShader);
+        int vertexShader = 0, fragmentShader = 0;
+        try
+        {
+            vertexShader = CompileShader(GlEnums.VertexShader, Ps1Shaders.Vertex);
+            fragmentShader = CompileShader(GlEnums.FragmentShader, Ps1Shaders.Fragment);
+            _program = gl.CreateProgram();
+            gl.AttachShader(_program, vertexShader);
+            gl.AttachShader(_program, fragmentShader);
+            gl.BindAttribLocation(_program, AttribPosition, "aPosition");
+            gl.BindAttribLocation(_program, AttribTexCoord, "aTexCoord");
+            gl.BindAttribLocation(_program, AttribColor, "aColor");
+            gl.LinkProgram(_program);
+            if (gl.GetProgramParameter(_program, GlEnums.LinkStatus) == 0)
+                throw new InvalidOperationException(
+                    $"PS1 shader program failed to link: {gl.GetProgramInfoLog(_program)}{GlErrorSuffix(gl, "link")}");
 
-        // A -1 location means the shader source and this class have drifted apart. Failing here is
-        // the only way to notice: glUniform* with -1 is a silent no-op, i.e. a black screen on the TV.
-        _uScreen = RequireUniform(gl, _program, "uScreen");
-        _uAlphaMode = RequireUniform(gl, _program, "uAlphaMode");
-        _uColorScale = RequireUniform(gl, _program, "uColorScale");
-        _uTexture = RequireUniform(gl, _program, "uTexture");
-        _uBackdrop = RequireUniform(gl, _program, "uBackdrop");
+            _uScreen = RequireUniform(gl, _program, "uScreen");
+            _uAlphaMode = RequireUniform(gl, _program, "uAlphaMode");
+            _uColorScale = RequireUniform(gl, _program, "uColorScale");
+            _uTexture = RequireUniform(gl, _program, "uTexture");
+            _uBackdrop = RequireUniform(gl, _program, "uBackdrop");
 
-        _buffer = gl.GenBuffer();
-        gl.BindBuffer(GlEnums.ArrayBuffer, _buffer);
-        gl.BufferData(GlEnums.ArrayBuffer, _vertices.Length * sizeof(float), IntPtr.Zero, GlEnums.DynamicDraw);
-        BindAttributePointers();
+            _buffer = gl.GenBuffer();
+            gl.BindBuffer(GlEnums.ArrayBuffer, _buffer);
+            gl.BufferData(GlEnums.ArrayBuffer, _vertices.Length * sizeof(float), IntPtr.Zero, GlEnums.DynamicDraw);
+            BindAttributePointers();
 
-        gl.UseProgram(_program);
-        gl.Uniform1i(_uTexture, 0);
-        SetScreenUniform();
-        gl.ActiveTexture(GlEnums.Texture0);
-        gl.Disable(GlEnums.DepthTest);
-        gl.Disable(GlEnums.CullFace);
-        gl.Disable(GlEnums.Blend);
-        // Dithering would turn the exact 8-bit modulation result into ordered noise, and a scissor
-        // rectangle inherited from the host would clip the frame. GL ES 2.0 enables neither by
-        // default, but the context is not exclusively ours on every integration.
-        gl.Disable(GlEnums.Dither);
-        gl.Disable(GlEnums.ScissorTest);
+            gl.UseProgram(_program);
+            gl.Uniform1i(_uTexture, 0);
+            SetScreenUniform();
+            gl.ActiveTexture(GlEnums.Texture0);
+            gl.Disable(GlEnums.DepthTest);
+            gl.Disable(GlEnums.CullFace);
+            gl.Disable(GlEnums.Blend);
+            // Dither changes the 8-bit modulation result. An inherited scissor clips the frame.
+            gl.Disable(GlEnums.Dither);
+            gl.Disable(GlEnums.ScissorTest);
 
-        _defaultTexture = CreateSolidTexture();
-        ThrowOnGlError("renderer setup");
-        gl.Viewport(0, 0, _viewportWidth, _viewportHeight);
+            _defaultTexture = gl.GenTexture();
+            UploadPixels(_defaultTexture, 1, stackalloc byte[] { 255, 255, 255, 255 });
+            gl.Viewport(0, 0, _viewportWidth, _viewportHeight);
+            ThrowOnGlError("renderer setup");
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
+        finally
+        {
+            if (vertexShader != 0) gl.DeleteShader(vertexShader);
+            if (fragmentShader != 0) gl.DeleteShader(fragmentShader);
+        }
     }
 
     private static int RequireUniform(IGpuApi gl, int program, string name)
@@ -138,11 +147,11 @@ public sealed class GlEs2Renderer : IDisposable
             throw new InvalidOperationException($"GL error 0x{error:X4} during {stage}.");
     }
 
-    /// <summary>Draw calls (glDrawArrays) issued by the last <see cref="Render(ReadOnlySpan{Ps1Primitive})"/>.</summary>
+    /// <summary>Draw calls (glDrawArrays) issued by the last successful <see cref="Render(ReadOnlySpan{Ps1Primitive})"/>.</summary>
     public int LastDrawCalls { get; private set; }
 
     /// <summary>
-    /// Scene triangles submitted by the last <see cref="Render(ReadOnlySpan{Ps1Primitive})"/>; the
+    /// Scene triangles submitted by the last successful <see cref="Render(ReadOnlySpan{Ps1Primitive})"/>; the
     /// two backdrop triangles are not counted.
     /// </summary>
     public int LastTriangleCount { get; private set; }
@@ -187,7 +196,8 @@ public sealed class GlEs2Renderer : IDisposable
 
     /// <summary>
     /// Uploads a decoded 256x256 RGBA8 texture. Calling it again for the same key replaces the
-    /// pixels of the existing texture object (used after a VRAM invalidation).
+    /// pixels of the existing texture object. If the upload fails, the page is removed so callers
+    /// can retry and no longer sample pixels from a page whose contents may be stale.
     /// </summary>
     public void UploadTexture(TextureKey key, ReadOnlySpan<byte> rgba256x256)
     {
@@ -198,35 +208,51 @@ public sealed class GlEs2Renderer : IDisposable
                 nameof(rgba256x256));
 
         TextureKey identity = TextureIdentity(key);
-        if (!_textures.TryGetValue(identity, out int texture))
+        bool existing = _textures.TryGetValue(identity, out int texture);
+        if (!existing) texture = _gl.GenTexture();
+        try
         {
-            texture = _gl.GenTexture();
-            _textures.Add(identity, texture);
+            UploadPixels(texture, VramTextureCache.TextureSize, rgba256x256);
+            int error = _gl.GetError();
+            if (error != GlEnums.NoError)
+                throw new InvalidOperationException(
+                    $"GL error 0x{error:X4} while uploading texture {key.Tpage:X4}/{key.Clut:X4}.");
+            if (!existing) _textures.Add(identity, texture);
         }
+        catch
+        {
+            _textures.Remove(identity);
+            _boundTexture = -1;
+            if (texture != 0) _gl.DeleteTexture(texture);
+            throw;
+        }
+    }
 
+    private unsafe void UploadPixels(int texture, int size, ReadOnlySpan<byte> rgba)
+    {
         _gl.BindTexture(GlEnums.Texture2D, texture);
         _boundTexture = texture;
         _gl.TexParameteri(GlEnums.Texture2D, GlEnums.TextureMinFilter, GlEnums.Nearest);
         _gl.TexParameteri(GlEnums.Texture2D, GlEnums.TextureMagFilter, GlEnums.Nearest);
         _gl.TexParameteri(GlEnums.Texture2D, GlEnums.TextureWrapS, GlEnums.ClampToEdge);
         _gl.TexParameteri(GlEnums.Texture2D, GlEnums.TextureWrapT, GlEnums.ClampToEdge);
-        unsafe
+        fixed (byte* pixels = rgba)
         {
-            fixed (byte* pixels = rgba256x256)
-            {
-                _gl.TexImage2D(GlEnums.Texture2D, 0, GlEnums.Rgba, VramTextureCache.TextureSize,
-                    VramTextureCache.TextureSize, 0, GlEnums.Rgba, GlEnums.UnsignedByte, (IntPtr)pixels);
-            }
+            _gl.TexImage2D(GlEnums.Texture2D, 0, GlEnums.Rgba, size, size, 0, GlEnums.Rgba,
+                GlEnums.UnsignedByte, (IntPtr)pixels);
         }
-        // A failed upload is invisible at draw time (the primitive silently samples the fallback or
-        // a stale page), so report it while the key is still known.
-        int error = _gl.GetError();
-        if (error != GlEnums.NoError)
-            throw new InvalidOperationException(
-                $"GL error 0x{error:X4} while uploading texture {key.Tpage:X4}/{key.Clut:X4}.");
     }
 
     public bool HasTexture(TextureKey key) => _textures.ContainsKey(TextureIdentity(key));
+
+    /// <summary>Discards the decoded VRAM pages while retaining the shader and vertex buffer.</summary>
+    public void ClearTextures()
+    {
+        ThrowIfDisposed();
+        foreach (int texture in _textures.Values) _gl.DeleteTexture(texture);
+        _textures.Clear();
+        _boundTexture = -1;
+    }
 
     /// <summary>
     /// Texture identity without the blend mode. tpage bits 5..6 (ABR) select how a texel is blended
@@ -280,7 +306,10 @@ public sealed class GlEs2Renderer : IDisposable
         }
 
         UploadVertices();
-        LastDrawCalls = DrawRuns();
+        int drawCalls = DrawRuns();
+        // Check the whole batch once, before publishing the frame's counters.
+        ThrowOnGlError("frame draw (glDrawArrays)");
+        LastDrawCalls = drawCalls;
         LastTriangleCount = triangleCount;
     }
 
@@ -304,15 +333,17 @@ public sealed class GlEs2Renderer : IDisposable
     public void Dispose()
     {
         if (_disposed) return;
+        ClearTextures();
         _disposed = true;
-
-        foreach (int texture in _textures.Values) _gl.DeleteTexture(texture);
-        _textures.Clear();
         if (_defaultTexture != 0) _gl.DeleteTexture(_defaultTexture);
         _defaultTexture = 0;
-        _boundTexture = -1;
-        _gl.DeleteBuffer(_buffer);
-        _gl.DeleteProgram(_program);
+        if (_buffer != 0) _gl.DeleteBuffer(_buffer);
+        if (_program != 0)
+        {
+            // A current program stays live after glDeleteProgram until it is unbound.
+            _gl.UseProgram(0);
+            _gl.DeleteProgram(_program);
+        }
     }
 
     // ------------------------------------------------------------------ setup
@@ -320,15 +351,19 @@ public sealed class GlEs2Renderer : IDisposable
     private int CompileShader(int type, string source)
     {
         int shader = _gl.CreateShader(type);
-        _gl.ShaderSource(shader, source);
-        _gl.CompileShader(shader);
-        if (_gl.GetShaderParameter(shader, GlEnums.CompileStatus) == 0)
+        try
         {
-            string log = _gl.GetShaderInfoLog(shader);
-            _gl.DeleteShader(shader);
-            throw new InvalidOperationException($"PS1 shader failed to compile: {log}");
+            _gl.ShaderSource(shader, source);
+            _gl.CompileShader(shader);
+            if (_gl.GetShaderParameter(shader, GlEnums.CompileStatus) == 0)
+                throw new InvalidOperationException($"PS1 shader failed to compile: {_gl.GetShaderInfoLog(shader)}");
+            return shader;
         }
-        return shader;
+        catch
+        {
+            if (shader != 0) _gl.DeleteShader(shader);
+            throw;
+        }
     }
 
     private void BindAttributePointers()
@@ -339,27 +374,6 @@ public sealed class GlEs2Renderer : IDisposable
         _gl.VertexAttribPointer(AttribTexCoord, 2, GlEnums.Float, false, StrideBytes, 2 * sizeof(float));
         _gl.EnableVertexAttribArray(AttribColor);
         _gl.VertexAttribPointer(AttribColor, 3, GlEnums.Float, false, StrideBytes, 4 * sizeof(float));
-    }
-
-    private int CreateSolidTexture()
-    {
-        byte[] white = { 255, 255, 255, 255 };
-        int texture = _gl.GenTexture();
-        _gl.BindTexture(GlEnums.Texture2D, texture);
-        _boundTexture = texture;
-        _gl.TexParameteri(GlEnums.Texture2D, GlEnums.TextureMinFilter, GlEnums.Nearest);
-        _gl.TexParameteri(GlEnums.Texture2D, GlEnums.TextureMagFilter, GlEnums.Nearest);
-        _gl.TexParameteri(GlEnums.Texture2D, GlEnums.TextureWrapS, GlEnums.ClampToEdge);
-        _gl.TexParameteri(GlEnums.Texture2D, GlEnums.TextureWrapT, GlEnums.ClampToEdge);
-        unsafe
-        {
-            fixed (byte* pixels = white)
-            {
-                _gl.TexImage2D(GlEnums.Texture2D, 0, GlEnums.Rgba, 1, 1, 0, GlEnums.Rgba,
-                    GlEnums.UnsignedByte, (IntPtr)pixels);
-            }
-        }
-        return texture;
     }
 
     private unsafe void SetScreenUniform()
@@ -455,12 +469,13 @@ public sealed class GlEs2Renderer : IDisposable
 
         int capacity = _capacityVertices * 2;
         if (capacity < vertices) capacity = vertices;
-        _capacityVertices = capacity;
         Array.Resize(ref _vertices, capacity * FloatsPerVertex);
 
         _gl.BindBuffer(GlEnums.ArrayBuffer, _buffer);
         _gl.BufferData(GlEnums.ArrayBuffer, _vertices.Length * sizeof(float), IntPtr.Zero, GlEnums.DynamicDraw);
+        ThrowOnGlError("glBufferData (vertex buffer growth)");
         BindAttributePointers();
+        _capacityVertices = capacity;
     }
 
     private unsafe void UploadVertices()
@@ -472,6 +487,7 @@ public sealed class GlEs2Renderer : IDisposable
         {
             _gl.BufferSubData(GlEnums.ArrayBuffer, 0, bytes, (IntPtr)vertices);
         }
+        ThrowOnGlError("glBufferSubData (vertex upload)");
     }
 
     private int DrawRuns()

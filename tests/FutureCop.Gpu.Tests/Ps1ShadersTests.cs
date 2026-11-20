@@ -30,7 +30,8 @@ public class Ps1ShadersTests
         // min(255, texel * cm / 128): the factor reaches 2.0, only the result saturates.
         Assert.DoesNotContain("clamp(vColor", Ps1Shaders.Fragment);
         Assert.Contains("vColor * (1.0 / 128.0)", Ps1Shaders.Fragment);
-        Assert.Contains("min(texel.rgb * modulate * uColorScale, vec3(1.0))", Ps1Shaders.Fragment);
+        Assert.Contains("vec3 rgb = min(texel.rgb * modulate, vec3(1.0))", Ps1Shaders.Fragment);
+        Assert.Contains("gl_FragColor = vec4(rgb * uColorScale, texel.a)", Ps1Shaders.Fragment);
     }
 
     [Theory]

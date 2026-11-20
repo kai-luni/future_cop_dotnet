@@ -73,13 +73,35 @@ The experimental Samsung TV frontend lives in `tools/FcMainMenu.Tizen`: it
 presents generated BMPs via NUI, accepts Up/Down/OK/Back on the remote, and
 streams decoded music through the TV's PulseAudio socket. OK on Precinct Assault's
 Single Player continues through the same `MenuFlow` (setup, zone and loadout as NUI
-text panels) into the selected map, rendered by the CPU `LevelScene` and shown as BMP
-frames like `tools/FcLevelTv`; it expects the maps under `assets/PA/` next to
-`assets/FE.MIS`. The level enables the same limited walker movement as Linux;
-`TvLevelControl` forwards key presses, releases, focus loss and measured timer time.
-A device smoke test covered level entry and return with injected keys; holding and
-releasing the physical remote has not yet been verified. It is a manually
-deployed prototype, not an installed TV app. The TV background was reconstructed
+text panels) into the selected map. `LevelScene` emits the mission's PS1 primitives
+through `SceneCommandEmitter`, and `GlEs2Renderer` draws them in a 4:3 GLView.
+It expects the maps under `assets/PA/` next to `assets/FE.MIS`.
+`TvLevelControl` still forwards key presses, releases, focus loss and measured
+timer time, and each mission can return to the loadout on Back. A graphics
+initialization failure returns to the loadout with an error message.
+The application uses a 16 ms UI timer and requests rendering when the camera,
+mech pose, textures or viewport change. The software reference is
+`tools/FcLevelTv`, and the standalone GPU preview is `tools/FcLevelGl.Tizen`.
+
+During missions, `FC_MENU_LOGFILE` (default `/tmp/fcmenu-app.log`) records
+successful GL frame submissions per second, sampled window presentation
+notifications and separate timing for scene lock waits, simulation, VRAM
+snapshot and texture-key reset, command emission, texture uploads and CPU-side
+GL calls. Window notifications apply to the composited window. Per-mission-buffer
+presentation FPS remains unavailable. If window callback registration fails,
+the log reports that the window notifications are unavailable for that app run.
+The log also records scene triangles, draw calls, GC collections and process memory.
+
+The available NUI callbacks do not identify a completed GLView buffer swap. The
+ordering of the GLView and window render requests still requires device testing,
+particularly for a final frame before the scene goes idle. Scene emission still
+shares a lock with simulation. A UI tick delayed past the existing 200 ms
+`MenuFlow` cap advances only the capped interval.
+
+A short device smoke test reached the first and second missions and submitted GL
+frames. With the second mission file missing, the error was logged without a crash.
+Visible gameplay, controls and long-term stability of this GPU path remain unverified.
+The TV background was reconstructed
 from the original FE.MIS Cmdc 3 and 4; the font, static selection highlight and
 bottom instruction are still placeholders. Its asset-generation script takes a
 640x480 background image as its first argument and optionally an output directory;

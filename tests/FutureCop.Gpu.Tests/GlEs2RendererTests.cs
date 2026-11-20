@@ -362,6 +362,28 @@ public class GlEs2RendererTests
     }
 
     [Fact]
+    public void FailedVertexBufferGrowthLeavesCapacityUnchangedAndSkipsUploadAndDraw()
+    {
+        var gl = new FakeGpuApi();
+        using var renderer = new GlEs2Renderer(gl);
+        int initialCapacity = renderer.VertexCapacity;
+        var primitives = Enumerable.Repeat(Tri(KeyA), initialCapacity / 3).ToArray();
+        gl.NextBufferAllocationError = 0x0505; // GL_OUT_OF_MEMORY
+
+        var exception = Assert.Throws<InvalidOperationException>(() => renderer.Render(primitives));
+        Assert.Contains("0x0505", exception.Message);
+        Assert.Contains("glBufferData", exception.Message);
+        Assert.Equal(initialCapacity, renderer.VertexCapacity);
+        Assert.Equal(0, gl.BufferSubDataCalls);
+        Assert.Empty(gl.Draws);
+
+        renderer.Render(primitives);
+        Assert.True(renderer.VertexCapacity > initialCapacity);
+        Assert.Equal(1, gl.BufferSubDataCalls);
+        Assert.Single(gl.SceneDraws);
+    }
+
+    [Fact]
     public void SetViewportForwardsToGl()
     {
         var (renderer, gl) = Create();
@@ -477,14 +499,55 @@ public class GlEs2RendererTests
     }
 
     [Fact]
-    public void FailedTextureUpload_SurfacesTheGlError()
+    public void FailedTextureUpload_DeletesUnpublishedTextureAndCanRetry()
     {
         var (renderer, gl) = Create();
         using (renderer)
         {
-            gl.PendingError = 0x0502; // GL_INVALID_OPERATION
+            gl.NextTextureUploadError = 0x0502; // GL_INVALID_OPERATION
             var exception = Assert.Throws<InvalidOperationException>(() => Upload(renderer, KeyA));
             Assert.Contains("0x0502", exception.Message);
+            Assert.False(renderer.HasTexture(KeyA));
+            Assert.Equal(0, renderer.TextureCount);
+            int failed = Assert.Single(gl.DeletedTextures);
+            Assert.NotEqual(gl.FirstTextureId, failed);
+            renderer.Render(new[] { Tri(KeyA) });
+            Assert.Equal(gl.FirstTextureId, Assert.Single(gl.SceneDraws).Texture);
+
+            Upload(renderer, KeyA);
+            Assert.True(renderer.HasTexture(KeyA));
+            Assert.Equal(1, renderer.TextureCount);
+            Assert.Equal(3, gl.GeneratedTextures);
+            Assert.NotEqual(failed, gl.BoundTexture);
+            Assert.Equal(3, gl.CountCalls("TexImage2D("));
+        }
+    }
+
+    [Fact]
+    public void FailedTextureUpdate_InvalidatesThePageAndCanRetryThroughAnAlias()
+    {
+        var (renderer, gl) = Create();
+        using (renderer)
+        {
+            var alias = KeyA with { Tpage = 0x0060 };
+            Upload(renderer, KeyA);
+            int original = gl.BoundTexture;
+            Upload(renderer, alias, 128);
+            Assert.Equal(original, gl.BoundTexture);
+            Assert.Equal(2, gl.GeneratedTextures);
+            Assert.Equal(3, gl.CountCalls("TexImage2D("));
+
+            gl.NextTextureUploadError = 0x0505; // GL_OUT_OF_MEMORY
+            Assert.Throws<InvalidOperationException>(() => Upload(renderer, alias, 64));
+            Assert.Equal(original, Assert.Single(gl.DeletedTextures));
+            Assert.False(renderer.HasTexture(KeyA));
+            Assert.False(renderer.HasTexture(alias));
+
+            Upload(renderer, alias, 64);
+            Assert.True(renderer.HasTexture(KeyA));
+            Assert.True(renderer.HasTexture(alias));
+            Assert.NotEqual(original, gl.BoundTexture);
+            Assert.Equal(1, renderer.TextureCount);
         }
     }
 

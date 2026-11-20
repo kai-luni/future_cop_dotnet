@@ -4,10 +4,8 @@ using Xunit;
 namespace FutureCop.Gpu.Tests;
 
 /// <summary>
-/// The TV start path must give DALi the same <c>DALI_DISABLE_ATSPI=1</c> that launchpad gives every
-/// regular Tizen app. Without it, DALi's AT-SPI bridge retries the session bus about twice a second;
-/// as root every retry fails inside libdbus' kdbus transport, whose cleanup unmaps uninitialised
-/// pool fields. The environment is faked here; the device path uses the process environment.
+/// Checks process-local DALi startup configuration. The environment is faked here;
+/// the device path uses libc's native process environment.
 /// </summary>
 public class AtspiStartEnvironmentTests
 {
@@ -26,6 +24,46 @@ public class AtspiStartEnvironmentTests
             Values[name] = value;
             return true;
         }
+    }
+
+    [Fact]
+    public void SuccessfulVerificationDoesNotClaimSetenvWasTheWriter()
+    {
+        var env = new FakeEnvironment();
+        var result = AtspiStartEnvironment.Apply(env.Get, env.Set, out string diagnostic);
+        Assert.Equal(AtspiStartEnvironment.Result.Disabled, result);
+        Assert.Contains("verified", diagnostic);
+        Assert.DoesNotContain("set and", diagnostic);
+    }
+
+    [Fact]
+    public void FailedStartupSetsExitCodeBeforeSchedulingIndependentFaultTolerantDiagnostics()
+    {
+        int exitCode = 0;
+        var pending = new List<Action>();
+        var calls = new List<string>();
+        AtspiStartEnvironment.Report(AtspiStartEnvironment.Result.Failed, "bad", x => exitCode = x,
+            action => { Assert.Equal(1, exitCode); pending.Add(action); },
+            message => { calls.Add("stderr:" + message); throw new IOException("closed"); },
+            message => calls.Add("log:" + message));
+        Assert.Equal(1, exitCode);
+        Assert.Equal(2, pending.Count);
+        pending[0]();
+        pending[1]();
+        Assert.Equal(new[] { "stderr:bad", "log:bad" }, calls);
+    }
+
+    [Fact]
+    public void DiagnosticSchedulerFailureDoesNotPreventOtherSink()
+    {
+        var pending = new List<Action>();
+        int calls = 0, code = 0;
+        AtspiStartEnvironment.Report(AtspiStartEnvironment.Result.Failed, "bad", x => code = x,
+            action => { if (calls++ == 0) throw new InvalidOperationException(); pending.Add(action); },
+            _ => throw new Exception("must not run"), _ => calls++);
+        Assert.Equal(1, code);
+        Assert.Single(pending)();
+        Assert.Equal(3, calls);
     }
 
     [Fact]
@@ -48,7 +86,6 @@ public class AtspiStartEnvironmentTests
 
     [Theory]
     [InlineData("1")]
-    [InlineData("0")]
     public void ExplicitLauncherValueIsKept(string launcherValue)
     {
         var env = new FakeEnvironment();
@@ -59,6 +96,47 @@ public class AtspiStartEnvironmentTests
         Assert.Equal(AtspiStartEnvironment.Result.KeptExisting, result);
         Assert.Equal(launcherValue, env.Values["DALI_DISABLE_ATSPI"]);
         Assert.Equal(0, env.SetCalls);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("")]
+    [InlineData("other")]
+    public void IncompatibleLauncherValueIsReportedAndNotOverwritten(string value)
+    {
+        var env = new FakeEnvironment();
+        env.Values[AtspiStartEnvironment.Variable] = value;
+
+        var result = AtspiStartEnvironment.Apply(env.Get, env.Set);
+
+        Assert.Equal(AtspiStartEnvironment.Result.Failed, result);
+        Assert.Equal(value, env.Values[AtspiStartEnvironment.Variable]);
+        Assert.Equal(0, env.SetCalls);
+    }
+
+    [Fact]
+    public void IncompatibleValueHasAnExplicitDiagnostic()
+    {
+        var env = new FakeEnvironment();
+        env.Values[AtspiStartEnvironment.Variable] = "0";
+        var result = AtspiStartEnvironment.Apply(env.Get, env.Set, out string diagnostic);
+        Assert.Equal(AtspiStartEnvironment.Result.Failed, result);
+        Assert.Contains("0", diagnostic);
+        Assert.Contains("expected", diagnostic);
+    }
+
+    [Fact]
+    public void ConcurrentLauncherValueIsNotOverwrittenAndIsReported()
+    {
+        var env = new FakeEnvironment();
+        var result = AtspiStartEnvironment.Apply(env.Get, (name, value) =>
+        {
+            env.Values[name] = "0"; // Another native writer won before setenv(overwrite=0).
+            return true;
+        }, out string diagnostic);
+        Assert.Equal(AtspiStartEnvironment.Result.Failed, result);
+        Assert.Equal("0", env.Values[AtspiStartEnvironment.Variable]);
+        Assert.Contains("'0'", diagnostic);
     }
 
     [Fact]

@@ -104,6 +104,14 @@ internal static class Program
                     return RunDiff(args[1], args[2]);
                 }
 
+                case "abr3":
+                {
+                    using HeadlessGlContext ctx = HeadlessGlContext.Create(Width, Height);
+                    PrintContext(ctx);
+                    CheckAbr3Saturation(ctx);
+                    return 0;
+                }
+
                 case "all":
                     return RunAll(outDir);
 
@@ -207,7 +215,49 @@ internal static class Program
                           $"-> {(background == 0 && shaders[1] == 0 && shaders[2] == 0 ? "OK" : "MISMATCH")}");
         Console.WriteLine($"triangle interior (70,110): {Pixel(shaders, 70, 110)}");
         Console.WriteLine($"quad interior (250,120):    {Pixel(shaders, 250, 120)}");
+        CheckAbr3Saturation(ctx);
         return 0;
+    }
+
+    private static void CheckAbr3Saturation(HeadlessGlContext ctx)
+    {
+        // STP texel with one channel above saturation after modulation and one below it.
+        var vram = new Vram();
+        vram.LoadRect(0, 0, 1, 1, new byte[] { 0x9f, 0x81 });
+        TextureKey key = SyntheticScene.QuarterAddKey;
+        var a = new Ps1Vertex(8, 8, 0, 0, 255, 255, 255);
+        var b = new Ps1Vertex(56, 8, 0, 0, 255, 255, 255);
+        var c = new Ps1Vertex(8, 56, 0, 0, 255, 255, 255);
+        var primitives = new[] { new Ps1Primitive(key, true, in a, in b, in c, 0) };
+        const byte red = 32, green = 48, blue = 64;
+        var reference = new byte[Width * Height * 3];
+        for (int i = 0; i < reference.Length; i += 3)
+        {
+            reference[i] = red;
+            reference[i + 1] = green;
+            reference[i + 2] = blue;
+        }
+        SoftwareReference.Render(vram, primitives, Width, Height, reference, ReferenceRounding.Truncate);
+
+        using var renderer = new GlEs2Renderer(ctx.Gl);
+        renderer.SetBackdropColor(red / 255f, green / 255f, blue / 255f);
+        var decoded = new byte[VramTextureCache.BytesPerTexture];
+        VramTextureCache.Decode(vram, key, decoded);
+        renderer.UploadTexture(key, decoded);
+        renderer.Render(primitives);
+        int error = ctx.Gl.GetError();
+        if (error != 0) throw new InvalidOperationException($"ABR3 draw returned GL error 0x{error:X4}.");
+
+        byte[] gpu = ctx.ReadRgb();
+        const int x = 24, y = 24;
+        int offset = (y * Width + x) * 3;
+        string result = $"ABR3 saturated pixel ({x},{y}): GPU {Pixel(gpu, x, y)}, CPU {Pixel(reference, x, y)}";
+        for (int ch = offset; ch < offset + 3; ch++)
+        {
+            // An RGBA8 target rounds the quarter contribution while the CPU shifts it down.
+            if (Math.Abs(gpu[ch] - reference[ch]) > 1) throw new InvalidOperationException(result);
+        }
+        Console.WriteLine(result + " (within 1 LSB)");
     }
 
     private static int RunDiff(string firstPath, string secondPath)
@@ -398,6 +448,7 @@ internal static class Program
         "                                                  fixed Ps1Primitive list through the renderer\n" +
         "  FcGpuProbe ref     [--out DIR]                  same list through the LevelScene.Tri rules\n" +
         "  FcGpuProbe diff    A.ppm B.ppm                  pixel metrics between two images\n" +
+        "  FcGpuProbe abr3    [--software] [--gles2]      saturated ABR3 pixel regression\n" +
         "  FcGpuProbe all     [--out DIR] [--software]     everything above plus the comparison\n\n" +
         "Runs without X/Wayland: surfaceless EGL, pbuffer or FBO.\n" +
         "--software renders on llvmpipe, --gles2 caps Mesa at GL ES 2.0 (GLSL ES 1.00).");

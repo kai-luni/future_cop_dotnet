@@ -30,10 +30,12 @@ public enum TvKeyAction
 /// </summary>
 public sealed class TvLevelControl
 {
+    private const string GraphicsFaultMessage = "Mission closed. OpenGL ES graphics failed.";
     private readonly Func<long> _clock;
     private readonly long _frequency;
     private long _lastTick;
     private object? _tickedScene;
+    private bool _hasGraphicsFault;
 
     /// <param name="clock">Monotonic timestamp source; default <see cref="Stopwatch.GetTimestamp"/>.</param>
     /// <param name="frequency">Timestamp units per second; default <see cref="Stopwatch.Frequency"/>.</param>
@@ -47,12 +49,20 @@ public sealed class TvLevelControl
 
     public MenuFlow Flow { get; }
 
+    /// <summary>Latest Loadout status message (failed mission load or graphics fault); cleared when no longer relevant.</summary>
+    public string? LoadoutStatus => Flow.Screen != MenuScreen.Loadout
+        ? null
+        : Flow.LastLoadError ?? (_hasGraphicsFault ? GraphicsFaultMessage : null);
+
     /// <summary>Seconds passed to <see cref="MenuFlow.Advance"/> by the last tick; 0 when it did not advance.</summary>
     public double LastAdvanceSeconds { get; private set; }
 
     /// <summary>The TV menu flow: Precinct Assault level scene with walker movement, as on Linux.</summary>
     public static MenuFlow CreateFlow(string frontEndPath, string missionDirectory, TextWriter output, TextWriter error) =>
         new MenuFlow(frontEndPath, SceneKind.Level, output, error, missionDirectory, enableLevelMovement: true);
+
+    /// <summary>Records an OpenGL ES initialization/draw fault for display on the Loadout panel.</summary>
+    public void RecordGraphicsFault() => _hasGraphicsFault = true;
 
     /// <summary>Forwards one NUI key event (name from KeyPressedName, numeric KeyCode).</summary>
     public TvKeyAction Key(TvKeyState state, string name, int code)
@@ -65,6 +75,8 @@ public sealed class TvLevelControl
         }
         var before = Flow.Screen;
         Flow.HandleKey(key);
+        if (Flow.Screen != MenuScreen.Loadout || Flow.LastLoadError is not null)
+            _hasGraphicsFault = false;
         if (Flow.Screen == MenuScreen.Quit) return TvKeyAction.Quit;
         return Flow.Screen != MenuScreen.Scene || before != MenuScreen.Scene ? TvKeyAction.Present : TvKeyAction.None;
     }

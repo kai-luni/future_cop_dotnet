@@ -527,4 +527,116 @@ public class MenuFlowTests
         Assert.Equal(SceneKind.Wireframe, MenuFlow.SceneKindFrom("wireframe"));
         Assert.Equal(SceneKind.Wireframe, MenuFlow.SceneKindFrom("WIREFRAME"));
     }
+
+    [Fact]
+    public void SelectingMissingSecondLevelSlimKeepsLoadoutAndReportsError()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "fc-menuflow-slim-" + Guid.NewGuid().ToString("N"));
+        var err = new StringWriter();
+        var flow = new MenuFlow(Path.Combine(root, "CW", "FE.MIS"), SceneKind.Level, TextWriter.Null, err);
+        int entered = 0;
+        flow.SceneEntered += () => entered++;
+        ToLoadout(flow, zoneSteps: 1);
+        Assert.Equal("slim", flow.FrontEnd.ModuleName);
+        flow.HandleKey(Enter);
+        Assert.Equal(MenuScreen.Loadout, flow.Screen);
+        Assert.Equal(0, flow.FrontEnd.ScreenState);
+        Assert.Null(flow.Level);
+        Assert.Equal(0, entered);
+        Assert.Equal("Cannot load SLIM.MIS.", flow.LastLoadError);
+        Assert.Contains($"Cannot load mission {Path.Combine(root, "PA", "SLIM.MIS")}", err.ToString());
+
+        flow.HandleKey(Escape);
+        Assert.Equal(MenuScreen.Hub, flow.Screen);
+        Assert.Null(flow.LastLoadError);
+    }
+
+    private static bool RequireRetailFile(string path)
+    {
+        if (File.Exists(path)) return true;
+        Assert.NotEqual("1", Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL"));
+        return false;
+    }
+
+    [Fact]
+    public void MissingSecondLevelAfterFirstLevelKeepsLoadoutAndAllowsReturningToFirstLevel()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        string disc = Path.GetDirectoryName(Path.GetDirectoryName(fe)!)!;
+        string conft = Path.Combine(disc, "PA", "CONFT.MIS");
+        if (!RequireRetailFile(conft)) return;
+
+        string root = Path.Combine(Path.GetTempPath(), "fc-menuflow-noslim-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "CW"));
+        Directory.CreateDirectory(Path.Combine(root, "PA"));
+        try
+        {
+            File.Copy(fe, Path.Combine(root, "CW", "FE.MIS"));
+            File.Copy(conft, Path.Combine(root, "PA", "CONFT.MIS"));
+
+            var err = new StringWriter();
+            var flow = new MenuFlow(Path.Combine(root, "CW", "FE.MIS"), SceneKind.Level, TextWriter.Null, err, enableLevelMovement: true);
+            ToLoadout(flow);
+            flow.HandleKey(Enter);
+            Assert.Equal(MenuScreen.Scene, flow.Screen);
+            Assert.Equal("CONFT.MIS", Path.GetFileName(flow.Level!.MissionPath));
+
+            flow.HandleKey(Escape); // Loadout
+            flow.HandleKey(Escape); // Hub
+            flow.HandleKey(Right);  // SLIM
+            flow.HandleKey(Enter);  // Loadout
+            Assert.Equal("slim", flow.FrontEnd.ModuleName);
+            flow.HandleKey(Enter);  // Attempt SLIM.MIS (missing)
+
+            Assert.Equal(MenuScreen.Loadout, flow.Screen);
+            Assert.Equal(0, flow.FrontEnd.ScreenState);
+            Assert.Null(flow.Level);
+            Assert.Equal("Cannot load SLIM.MIS.", flow.LastLoadError);
+            Assert.Contains("SLIM.MIS", err.ToString());
+
+            flow.HandleKey(Escape); // Hub
+            flow.HandleKey(Left);   // CONFT
+            flow.HandleKey(Enter);  // Loadout
+            flow.HandleKey(Enter);  // Re-enter CONFT.MIS
+            Assert.Equal(MenuScreen.Scene, flow.Screen);
+            Assert.Null(flow.LastLoadError);
+            Assert.Equal("CONFT.MIS", Path.GetFileName(flow.Level!.MissionPath));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void SecondLevelSlimStartsAndRendersAfterLeavingFirstLevel()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        string slim = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(fe)!)!, "PA", "SLIM.MIS");
+        if (!RequireRetailFile(slim)) return;
+
+        var flow = NewFlow(fe);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        Assert.Equal("CONFT.MIS", Path.GetFileName(flow.Level!.MissionPath));
+
+        flow.HandleKey(Escape);
+        flow.HandleKey(Escape);
+        flow.HandleKey(Right);
+        flow.HandleKey(Enter);
+        flow.HandleKey(Enter);
+
+        Assert.Equal(MenuScreen.Scene, flow.Screen);
+        Assert.Null(flow.LastLoadError);
+        Assert.Equal("SLIM.MIS", Path.GetFileName(flow.Level!.MissionPath));
+        var frame = new byte[640 * 480 * 4];
+        flow.RenderScene(frame, 2);
+        Assert.True(flow.Level.TilePackets > 100, $"{flow.Level.TilePackets} terrain packets");
+        Assert.True(flow.Level.MechFaces > 0, "walker not drawn");
+        int lit = 0;
+        for (int i = 0; i < frame.Length; i += 4) if (frame[i] != 0 || frame[i + 1] != 0 || frame[i + 2] != 0) lit++;
+        Assert.True(lit > 640 * 480 * 9 / 10, $"only {lit} lit pixels in the SLIM window frame");
+    }
 }

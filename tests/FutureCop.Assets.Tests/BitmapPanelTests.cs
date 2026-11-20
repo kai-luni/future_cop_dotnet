@@ -16,6 +16,19 @@ public sealed class BitmapPanelTests
     }
 
     [Fact]
+    public void StatusAppearsAboveTheControlsWithoutReplacingThem()
+    {
+        var rgb = new byte[BitmapPanel.Width * BitmapPanel.Height * 3];
+        var panel = new MenuPanel("Weapons", new[] { "Ready" }, 0, "ENTER: START   ESC: BACK");
+        BitmapPanel.Render(rgb, panel, "Mission closed. OpenGL ES graphics failed.");
+
+        Assert.True(HasColorInBand(rgb, 382, 396, 0xff, 0xb0, 0x80));
+        Assert.True(HasColorInBand(rgb, 430, 460, 0xc0, 0xc0, 0xc0));
+        BitmapPanel.Render(rgb, panel);
+        Assert.False(HasColorInBand(rgb, 382, 396, 0xff, 0xb0, 0x80));
+    }
+
+    [Fact]
     public void RenderDrawsHeadingEntriesSelectionAndHintInExpectedColors()
     {
         var rgb = new byte[BitmapPanel.Width * BitmapPanel.Height * 3];

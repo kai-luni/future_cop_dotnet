@@ -55,6 +55,8 @@ public sealed class MenuFlow
     public WireframeScene? Preview { get; private set; }
     /// <summary>The running level when <see cref="SceneKind.Level"/> was chosen.</summary>
     public LevelScene? Level { get; private set; }
+    /// <summary>Short diagnostic from the last failed mission load, cleared on menu change or load start.</summary>
+    public string? LastLoadError { get; private set; }
 
     /// <summary>Raised after a scene replaced the menu (the window stops the menu music).</summary>
     public event Action? SceneEntered;
@@ -167,10 +169,11 @@ public sealed class MenuFlow
                 }
                 break;
             case MenuScreen.Loadout:
-                if (back) { Screen = MenuScreen.Hub; pa.ActiveMenu = PrecinctAssaultMenus.Hub1P; pa.MenuDepth[0] = 1; Selected = 0; }
-                else if (vertical != 0) Selected = (Selected + vertical + 4) % 4;
+                if (back) { LastLoadError = null; Screen = MenuScreen.Hub; pa.ActiveMenu = PrecinctAssaultMenus.Hub1P; pa.MenuDepth[0] = 1; Selected = 0; }
+                else if (vertical != 0) { LastLoadError = null; Selected = (Selected + vertical + 4) % 4; }
                 else if (horizontal != 0 && Selected > 0)
                 {
+                    LastLoadError = null;
                     int col = Selected - 1; var c = pa.LoadoutTable[col];
                     int value = pa.LoadoutSelection[col, 0] + horizontal;
                     if (value < c.Min) value = c.Count - 1; else if (value >= c.Count) value = c.Min;
@@ -185,10 +188,7 @@ public sealed class MenuFlow
             case MenuScreen.Scene:
                 if (back)
                 {
-                    ClearHeldKeys();
-                    _suppressedUntilRelease.Clear();
-                    Screen = MenuScreen.Loadout; pa.ScreenState = 0; Preview = null; Level = null;
-                    SceneLeft?.Invoke();
+                    LeaveScene();
                 }
                 else if (Preview != null)
                 {
@@ -205,8 +205,22 @@ public sealed class MenuFlow
         }
     }
 
+    internal void LeaveScene()
+    {
+        if (Screen != MenuScreen.Scene) return;
+        ClearHeldKeys();
+        _suppressedUntilRelease.Clear();
+        LastLoadError = null;
+        Screen = MenuScreen.Loadout;
+        FrontEnd.ScreenState = 0;
+        Preview = null;
+        Level = null;
+        SceneLeft?.Invoke();
+    }
+
     private void StartScene(uint? confirmKey = null)
     {
+        LastLoadError = null;
         string mission = Path.Combine(_missionDir, FrontEnd.ModuleName.ToUpperInvariant() + ".MIS");
         try
         {
@@ -229,6 +243,7 @@ public sealed class MenuFlow
         }
         catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException)
         {
+            LastLoadError = $"Cannot load {Path.GetFileName(mission)}.";
             _err.WriteLine($"Cannot load mission {mission}: {ex.Message}"); FrontEnd.ScreenState = 0;
         }
     }

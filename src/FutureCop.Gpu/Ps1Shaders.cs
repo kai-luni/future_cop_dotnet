@@ -105,8 +105,9 @@ void main()
     // and must NOT be clamped - LevelScene.Tri computes min(255, texel * cm / 128), i.e. it
     // saturates the result. Clamping the factor here would cap every bright texel at its raw value.
     vec3 modulate = vColor * (1.0 / 128.0);
-    vec3 rgb = min(texel.rgb * modulate * uColorScale, vec3(1.0));
-    gl_FragColor = vec4(rgb, texel.a);
+    // ABR3 quarters the saturated foreground colour before adding it to the background.
+    vec3 rgb = min(texel.rgb * modulate, vec3(1.0));
+    gl_FragColor = vec4(rgb * uColorScale, texel.a);
 }
 ";
 }
