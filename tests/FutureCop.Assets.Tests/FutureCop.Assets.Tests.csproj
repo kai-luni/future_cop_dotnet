@@ -50,5 +50,6 @@
     <None Include="../golden/hud.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/hud.vectors" />
     <None Include="../golden/hud-radar.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/hud-radar.vectors" />
     <None Include="../golden/hud-draw.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/hud-draw.vectors" />
+    <None Include="../golden/slots-bar.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/slots-bar.vectors" />
   </ItemGroup>
 </Project>

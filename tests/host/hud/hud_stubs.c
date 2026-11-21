@@ -53,7 +53,11 @@ void gDrawTargetMarker(void) { put("MARKER"); }
 void gDrawThreeSlotStatusBar(void *g) { (void)g; put("SLOTSBAR"); }
 void gEmitHudGouraudBar(s32 x, s32 y, s32 z, s32 p3, s32 p4, s32 p5, s32 flag)
 { put("BAR %d %d %d %d %d %d %d", (int)x, (int)y, (int)z, (int)p3, (int)p4, (int)p5, (int)flag); }
-void func_8005AB8C(void *g, void *a, void *b) { (void)g; (void)a; (void)b; put("TARGETPASS"); }
+/* The decomp repo renames functions as it identifies them; func_8005AB8C now carries the
+   descriptive name gDrawRadarBackgroundAndMarkers. Both spellings are stubbed so the harness
+   links against either revision of 80047F30.c. */
+void gDrawRadarBackgroundAndMarkers(void *g, void *a, void *b) { (void)g; (void)a; (void)b; put("TARGETPASS"); }
+void func_8005AB8C(void *g, void *a, void *b) { gDrawRadarBackgroundAndMarkers(g, a, b); }
 void gDrawTargetMarkers(void *g) { (void)g; put("MARKERS"); }
 /* func_80049340 sums the per-character advance and returns total * 2 (80049340.c:51).
    The retail advances live in the VRAM glyph atlas and are not decoded. The harness therefore uses

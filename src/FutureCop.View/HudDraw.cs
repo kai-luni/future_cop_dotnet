@@ -33,6 +33,12 @@ public sealed record HudPlayerBlock
     public int Value5C { get; init; }
     /// <summary>Player +0x64: the gauge fill state; below 2 means the gauge is not full.</summary>
     public int Value64 { get; init; }
+    /// <summary>Player +0x84: three signed 16-bit slot counts (<c>field84[3]</c>).</summary>
+    public IReadOnlyList<int> Value84 { get; init; } = new int[3];
+    /// <summary>Player +0x8A: three signed 16-bit slot counts (<c>field8A[3]</c>).</summary>
+    public IReadOnlyList<int> Value8A { get; init; } = new int[3];
+    /// <summary>Player +0x90: three unsigned 8-bit slot registry ids (<c>field90[3]</c>).</summary>
+    public IReadOnlyList<int> Value90 { get; init; } = new int[3];
     /// <summary>
     /// Player +0xA4: the objective label index. Player command 0x61 stores its argument here and 900
     /// in +0xAE (800585B8.c:87-92), so both are a "show this label" pair.
@@ -111,10 +117,19 @@ public sealed record HudGlobals
     public int ScreenState { get; init; } = 4;
     /// <summary>D_8009FA0C.</summary>
     public int PlayerCount { get; init; } = 1;
-    /// <summary>D_8009FAA4: only bit 0x80 is HUD relevant (blink phase, and the gauge dimming).</summary>
+    /// <summary>D_8009FAA4: bit 0x80 drives the blink phase and gauge dimming; bit 0x40 drives status-bar highlights.</summary>
     public int FrameTime { get; init; }
     /// <summary>D_8009F348: objective label pointers, indexed by the player block's +0xA4.</summary>
     public IReadOnlyList<string> Labels { get; init; } = HudDraw.DefaultLabels;
+    /// <summary>
+    /// <c>gPlayerInvulnerable</c>: per-player byte flags indexed by <see cref="HudPlayerBlock.ValueC1"/>.
+    /// </summary>
+    public IReadOnlyList<byte> PlayerInvulnerable { get; init; } = Array.Empty<byte>();
+    /// <summary>
+    /// <c>D_800A8EA4[0]</c> (<c>gEnvMapTexpageWord</c>): texpage (low 16 bits) and CLUT (high 16 bits)
+    /// word read by <c>func_8006BF44</c>.
+    /// </summary>
+    public uint EnvMapTexpageWord { get; init; }
     /// <summary>
     /// The second game block (<c>D_8009F9EC</c>). Null in most missions; when it is set the HUD draws
     /// the stage line and that block's gauge.
@@ -174,9 +189,9 @@ public static class HudDraw
         if (globals.ScreenState != 4) return;
 
         device.Marker();
-        device.SlotsBar();
 
         var player = game.Player;
+        device.SlotsBar(player, globals);
         DrawPlayerGauge(device, player, game.Health, game.MaxHealth, globals);
 
         device.TargetPass();

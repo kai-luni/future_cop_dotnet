@@ -133,7 +133,7 @@ public sealed class HudDrawVectorTests
         public List<string> Calls { get; } = new();
 
         public void Marker() => Calls.Add("MARKER");
-        public void SlotsBar() => Calls.Add("SLOTSBAR");
+        public void SlotsBar(HudPlayerBlock player, HudGlobals globals) => Calls.Add("SLOTSBAR");
         public void TargetPass() => Calls.Add("TARGETPASS");
         public void Markers() => Calls.Add("MARKERS");
 

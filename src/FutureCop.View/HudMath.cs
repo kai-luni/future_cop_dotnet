@@ -139,6 +139,13 @@ public static class HudMath
     }
 
     /// <summary>
+    /// D_8009F368: the slot-count format string of <c>func_800491F8</c>, <c>"%ld"</c>. A PS1
+    /// <c>long</c> is 32 bits wide, so this is an ordinary signed 32-bit conversion: -1 prints as
+    /// <c>"-1"</c>. The host harness rewrites the conversion to its int form for the same reason.
+    /// </summary>
+    public static string FormatSlotCount(int value) => value.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
     /// func_80047F30: colour 9 replaces the base colour (1 or 3) while the score is at least 30, the
     /// frame stamp blinks and both totals are below 4.
     /// </summary>

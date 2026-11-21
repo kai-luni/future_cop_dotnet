@@ -16,6 +16,12 @@ namespace FutureCop.View;
 /// is not decoded yet, so letter shapes and advances are an approximation. Only digits, '/', '-' and
 /// the 'L' of the stage line exist.
 /// </para>
+/// <para>
+/// <see cref="SlotsBar"/> runs <c>func_8006C080</c>, <c>func_8006BF44</c> and <c>func_800491F8</c>:
+/// the texpage state packet (<c>0xE1</c>) produces no pixels, and each <c>0x66</c> sprite packet is
+/// painted as a solid 16x16 block at <c>(x, y)</c> in the packet's highlight colour because the
+/// retail VRAM sprite atlas is not decoded yet.
+/// </para>
 /// </remarks>
 public sealed class InGameHud : IHudDevice
 {
@@ -27,19 +33,29 @@ public sealed class InGameHud : IHudDevice
 
     private readonly byte[] _rgb;
     private readonly int _frameTime;
+    private readonly ISlotRegistry _registry;
+    private readonly SlotRasterSink _slotSink;
 
     /// <summary>Creates a device that paints into <paramref name="rgb"/> (320x240, 3 bytes per pixel).</summary>
     /// <param name="rgb">Frame buffer, 3 bytes per pixel, top row first.</param>
     /// <param name="frameTime">
     /// D_8009FAA4. The gauge reads it directly: at 0x80 and above the "busy" flag halves the colours.
     /// </param>
-    public InGameHud(byte[] rgb, int frameTime = 0)
+    public InGameHud(byte[] rgb, int frameTime = 0) : this(rgb, frameTime, null) { }
+
+    /// <summary>
+    /// Creates a device that paints into <paramref name="rgb"/> (320x240, 3 bytes per pixel) using
+    /// <paramref name="registry"/> for slot icon lookups.
+    /// </summary>
+    public InGameHud(byte[] rgb, int frameTime, ISlotRegistry? registry)
     {
         ArgumentNullException.ThrowIfNull(rgb);
         if (rgb.Length < LevelScene.Width * LevelScene.Height * 3)
             throw new ArgumentException("frame buffer is smaller than 320x240x3", nameof(rgb));
         _rgb = rgb;
         _frameTime = frameTime;
+        _registry = registry ?? NullSlotRegistry.Instance;
+        _slotSink = new SlotRasterSink(this);
     }
 
     /// <summary>Draws the HUD of <paramref name="game"/> over the finished frame.</summary>
@@ -49,8 +65,25 @@ public sealed class InGameHud : IHudDevice
     /// <inheritdoc/>
     public void Marker() { }
 
-    /// <inheritdoc/>
-    public void SlotsBar() { }
+    /// <summary>
+    /// <c>func_8006C080</c>: draws the slot numbers and paints each emitted <c>0x66</c> sprite
+    /// packet as a solid 16x16 block in the packet's colour (the <c>0xE1</c> texpage packet is a
+    /// state-only no-op and the sprite atlas itself is not decoded yet).
+    /// </summary>
+    public void SlotsBar(HudPlayerBlock player, HudGlobals globals) =>
+        SlotsBarDraw.Draw(this, _registry, _slotSink, player, globals);
+
+    private sealed class SlotRasterSink : ISlotPacketSink
+    {
+        private readonly InGameHud _owner;
+        public SlotRasterSink(InGameHud owner) => _owner = owner;
+
+        public void Emit(SlotPacket packet)
+        {
+            if (packet.Code != 0x66) return;
+            _owner.Fill(packet.X, packet.Y, packet.W, packet.H, packet.R, packet.G, packet.B, opaque: true);
+        }
+    }
 
     /// <inheritdoc/>
     public void TargetPass() { }

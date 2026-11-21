@@ -19,7 +19,7 @@ public interface IHudDevice
     void Marker();
 
     /// <summary><c>func_8006C080</c>: the three slot status bar.</summary>
-    void SlotsBar();
+    void SlotsBar(HudPlayerBlock player, HudGlobals globals);
 
     /// <summary>
     /// <c>func_80047BE8</c>: one gauge at screen position (x, y). The intensity is the height before

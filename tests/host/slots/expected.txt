@@ -1,0 +1,169 @@
+CASE c1=0 frame=0x0 inv=0 second=0 counts84=1,2,3 counts8A=4,5,6 ids=7,8,9
+REGISTRY 7
+TEXT "4" 51 206 12
+TEXT "1" 51 216 8
+REGISTRY 8
+TEXT "5" 92 206 12
+TEXT "2" 92 216 8
+REGISTRY 9
+TEXT "6" 133 206 12
+TEXT "3" 133 216 8
+  packet0 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet1 code=66 len=4 rgb=606060 xy=34,208 uv=166,156 clut=1234 wh=16,16 addr=0
+  packet2 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet3 code=66 len=4 rgb=606060 xy=75,208 uv=166,172 clut=1234 wh=16,16 addr=0
+  packet4 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet5 code=66 len=4 rgb=606060 xy=116,208 uv=166,188 clut=1234 wh=16,16 addr=0
+  packet6 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet7 code=66 len=4 rgb=606060 xy=12,208 uv=150,188 clut=1234 wh=16,16 addr=0
+CASE c1=0 frame=0x40 inv=0 second=0 counts84=0,0,0 counts8A=10,20,30 ids=0,1,2
+REGISTRY 0
+TEXT "10" 51 206 9
+TEXT "0" 51 216 8
+REGISTRY 1
+TEXT "20" 92 206 9
+TEXT "0" 92 216 8
+REGISTRY 2
+TEXT "30" 133 206 9
+TEXT "0" 133 216 8
+  packet0 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet1 code=66 len=4 rgb=C0A0A0 xy=34,208 uv=166,156 clut=1234 wh=16,16 addr=0
+  packet2 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet3 code=66 len=4 rgb=C0A0A0 xy=75,208 uv=166,172 clut=1234 wh=16,16 addr=0
+  packet4 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet5 code=66 len=4 rgb=C0A0A0 xy=116,208 uv=166,188 clut=1234 wh=16,16 addr=0
+  packet6 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet7 code=66 len=4 rgb=606060 xy=12,208 uv=150,188 clut=1234 wh=16,16 addr=0
+CASE c1=1 frame=0x40 inv=0 second=0 counts84=5,5,5 counts8A=0,0,0 ids=3,4,5
+REGISTRY 3
+TEXT "5" 51 216 8
+REGISTRY 4
+TEXT "5" 92 216 8
+REGISTRY 5
+TEXT "5" 133 216 8
+  packet0 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet1 code=66 len=4 rgb=606060 xy=34,208 uv=166,156 clut=1234 wh=16,16 addr=0
+  packet2 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet3 code=66 len=4 rgb=606060 xy=75,208 uv=166,172 clut=1234 wh=16,16 addr=0
+  packet4 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet5 code=66 len=4 rgb=606060 xy=116,208 uv=166,188 clut=1234 wh=16,16 addr=0
+  packet6 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet7 code=66 len=4 rgb=606060 xy=12,208 uv=150,188 clut=1234 wh=16,16 addr=0
+CASE c1=0 frame=0x40 inv=1 second=1 counts84=0,0,0 counts8A=7,8,9 ids=0,0,0
+REGISTRY 0
+TEXT "7" 51 216 8
+REGISTRY 0
+TEXT "8" 92 216 8
+REGISTRY 0
+TEXT "9" 133 216 8
+  packet0 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet1 code=66 len=4 rgb=C0A0A0 xy=34,208 uv=166,156 clut=1234 wh=16,16 addr=0
+  packet2 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet3 code=66 len=4 rgb=C0A0A0 xy=75,208 uv=166,172 clut=1234 wh=16,16 addr=0
+  packet4 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet5 code=66 len=4 rgb=C0A0A0 xy=116,208 uv=166,188 clut=1234 wh=16,16 addr=0
+  packet6 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet7 code=66 len=4 rgb=C0A0A0 xy=12,208 uv=150,188 clut=1234 wh=16,16 addr=0
+  packet8 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet9 code=66 len=4 rgb=606060 xy=292,208 uv=150,188 clut=1234 wh=16,16 addr=0
+CASE c1=0 frame=0x0 inv=0 second=0 counts84=2,0,0 counts8A=100,0,0 ids=0,0,0
+REGISTRY 0
+TEXT "100" 51 206 12
+TEXT "2" 51 216 8
+REGISTRY 0
+TEXT "0" 92 216 8
+REGISTRY 0
+TEXT "0" 133 216 8
+  packet0 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet1 code=66 len=4 rgb=606060 xy=34,208 uv=166,156 clut=1234 wh=16,16 addr=0
+  packet2 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet3 code=66 len=4 rgb=606060 xy=75,208 uv=166,172 clut=1234 wh=16,16 addr=0
+  packet4 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet5 code=66 len=4 rgb=606060 xy=116,208 uv=166,188 clut=1234 wh=16,16 addr=0
+  packet6 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet7 code=66 len=4 rgb=606060 xy=12,208 uv=150,188 clut=1234 wh=16,16 addr=0
+CASE c1=0 frame=0x40 inv=0 second=0 counts84=0,0,0 counts8A=0,0,0 ids=0,0,0
+REGISTRY 0
+TEXT "0" 51 216 8
+REGISTRY 0
+TEXT "0" 92 216 8
+REGISTRY 0
+TEXT "0" 133 216 8
+  packet0 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet1 code=66 len=4 rgb=606060 xy=34,208 uv=166,156 clut=1234 wh=16,16 addr=0
+  packet2 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet3 code=66 len=4 rgb=606060 xy=75,208 uv=166,172 clut=1234 wh=16,16 addr=0
+  packet4 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet5 code=66 len=4 rgb=606060 xy=116,208 uv=166,188 clut=1234 wh=16,16 addr=0
+  packet6 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet7 code=66 len=4 rgb=606060 xy=12,208 uv=150,188 clut=1234 wh=16,16 addr=0
+CASE c1=0 frame=0x40 inv=0 second=1 counts84=0,0,0 counts8A=1,1,1 ids=0,0,0
+REGISTRY 0
+TEXT "1" 51 206 9
+TEXT "0" 51 216 8
+REGISTRY 0
+TEXT "1" 92 206 9
+TEXT "0" 92 216 8
+REGISTRY 0
+TEXT "1" 133 206 9
+TEXT "0" 133 216 8
+  packet0 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet1 code=66 len=4 rgb=C0A0A0 xy=34,208 uv=166,156 clut=1234 wh=16,16 addr=0
+  packet2 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet3 code=66 len=4 rgb=C0A0A0 xy=75,208 uv=166,172 clut=1234 wh=16,16 addr=0
+  packet4 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet5 code=66 len=4 rgb=C0A0A0 xy=116,208 uv=166,188 clut=1234 wh=16,16 addr=0
+  packet6 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet7 code=66 len=4 rgb=606060 xy=12,208 uv=150,188 clut=1234 wh=16,16 addr=0
+  packet8 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet9 code=66 len=4 rgb=606060 xy=292,208 uv=150,188 clut=1234 wh=16,16 addr=0
+CASE c1=0 frame=0xFF inv=0 second=1 counts84=9,9,9 counts8A=9,9,9 ids=9,9,9
+REGISTRY 9
+TEXT "9" 51 206 9
+TEXT "9" 51 216 8
+REGISTRY 9
+TEXT "9" 92 206 9
+TEXT "9" 92 216 8
+REGISTRY 9
+TEXT "9" 133 206 9
+TEXT "9" 133 216 8
+  packet0 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet1 code=66 len=4 rgb=C0A0A0 xy=34,208 uv=166,156 clut=1234 wh=16,16 addr=0
+  packet2 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet3 code=66 len=4 rgb=C0A0A0 xy=75,208 uv=166,172 clut=1234 wh=16,16 addr=0
+  packet4 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet5 code=66 len=4 rgb=C0A0A0 xy=116,208 uv=166,188 clut=1234 wh=16,16 addr=0
+  packet6 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet7 code=66 len=4 rgb=606060 xy=12,208 uv=150,188 clut=1234 wh=16,16 addr=0
+  packet8 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet9 code=66 len=4 rgb=606060 xy=292,208 uv=150,188 clut=1234 wh=16,16 addr=0
+CASE c1=1 frame=0x40 inv=1 second=0 counts84=0,0,0 counts8A=0,0,0 ids=0,0,0
+REGISTRY 0
+TEXT "0" 51 216 8
+REGISTRY 0
+TEXT "0" 92 216 8
+REGISTRY 0
+TEXT "0" 133 216 8
+  packet0 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet1 code=66 len=4 rgb=C0A0A0 xy=34,208 uv=166,156 clut=1234 wh=16,16 addr=0
+  packet2 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet3 code=66 len=4 rgb=C0A0A0 xy=75,208 uv=166,172 clut=1234 wh=16,16 addr=0
+  packet4 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet5 code=66 len=4 rgb=C0A0A0 xy=116,208 uv=166,188 clut=1234 wh=16,16 addr=0
+  packet6 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet7 code=66 len=4 rgb=C0A0A0 xy=12,208 uv=150,188 clut=1234 wh=16,16 addr=0
+CASE c1=0 frame=0x40 inv=0 second=0 counts84=-1,-1,-1 counts8A=-1,-1,-1 ids=0,0,0
+REGISTRY 0
+TEXT "-1" 51 216 8
+REGISTRY 0
+TEXT "-1" 92 216 8
+REGISTRY 0
+TEXT "-1" 133 216 8
+  packet0 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet1 code=66 len=4 rgb=606060 xy=34,208 uv=166,156 clut=1234 wh=16,16 addr=0
+  packet2 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet3 code=66 len=4 rgb=606060 xy=75,208 uv=166,172 clut=1234 wh=16,16 addr=0
+  packet4 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet5 code=66 len=4 rgb=606060 xy=116,208 uv=166,188 clut=1234 wh=16,16 addr=0
+  packet6 code=E1 len=1 rgb=000E00 xy=0,0 uv=0,0 clut=0000 wh=0,0 addr=0
+  packet7 code=66 len=4 rgb=606060 xy=12,208 uv=150,188 clut=1234 wh=16,16 addr=0
