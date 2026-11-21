@@ -387,14 +387,15 @@ public sealed class MenuFlow
         var walker = Level?.Walker;
         int health = walker?.Health ?? 0;
         int max = _maxHealth > 0 ? _maxHealth : Math.Max(health, 1);
-        int intensity = Math.Clamp(health * 127 / Math.Max(max, 1), 0, 127);
-        // BarIntensity takes the low byte of (a * b) >> 16, so 0x10000 * intensity yields exactly the
-        // wanted height. The retail meaning of the two words is still unknown; the height is right.
+        // The gauge record scales its value onto 0..0x60: value * (0x600000 / divisor) >> 16. Feeding the
+        // health and the reciprocal of max health reproduces the retail height, so the port uses the
+        // same two words instead of inventing a third quantity.
+        int reciprocal = max > 0 ? 0x600000 / max : 0;
         return new HudGameBlock
         {
             Health = health,
             MaxHealth = max,
-            Player = Player with { Value58 = 0x10000, Value5C = intensity },
+            Player = Player with { Value58 = health, Value5C = reciprocal },
         };
     }
 

@@ -38,13 +38,13 @@ int scale = int.Parse(Arg(args, "--scale") ?? "2", CultureInfo.InvariantCulture)
 var scene = new LevelScene(mis) { DrawMech = !args.Contains("--no-mech") };
 
 // Sample state for the --hud preview: the plates and numbers are drawn with placeholder values
-// because the port has no match scoring yet. func_80047F30 takes the low byte of (a * b) >> 16, so
-// 0x10000 * 0x7F gives the full 127 intensity.
+// because the port has no match scoring yet. The gauge words are the retail pair - the value and the
+// Q16 reciprocal 0x600000 / divisor (func_8005A0C4.c:44-48) - so full health gives the full height.
 var hudGame = new HudGameBlock
 {
     Health = 100,
     MaxHealth = 100,
-    Player = new HudPlayerBlock { Value58 = 0x10000, Value5C = 0x7F, Value64 = 2 },
+    Player = new HudPlayerBlock { Value58 = 100, Value5C = 0x600000 / 100, Value64 = 2 },
 };
 var hudSession = new HudSession
 {

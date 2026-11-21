@@ -142,14 +142,15 @@ public sealed class HudDrawVectorTests
 
         /// <summary>
         /// The harness records what <c>func_8001C214</c> hands to the tile emitter: the widened colour
-        /// channels and the halved rectangle. This does the same, so the numbers are comparable.
+        /// channels and the rectangle halved by an arithmetic shift. This does the same, so the numbers
+        /// are comparable.
         /// </summary>
         public void Rect(uint colour, int x, int y, int w, int h, int blend)
         {
             int red = (int)((colour >> 8) & 0x7C);
             int green = (int)((colour >> 3) & 0x7C);
             int blue = (int)((colour & 0x1F) << 2);
-            Calls.Add($"RECT {red} {green} {blue} x={x / 2} y={y / 2} w={w / 2} h={h / 2} blend={blend}");
+            Calls.Add($"RECT {red} {green} {blue} x={x >> 1} y={y >> 1} w={w >> 1} h={h >> 1} blend={blend}");
         }
 
         public void Text(string text, int x, int y, int colour) =>

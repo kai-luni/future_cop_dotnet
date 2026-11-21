@@ -25,13 +25,22 @@ public static class HudMath
     /// <summary>func_80047BE8: a bar of intensity <paramref name="intensity"/> is drawn (z+1)/2 high.</summary>
     public static int BarHeight(int intensity) => (intensity + 1) / 2;
 
-    /// <summary>func_80047F30: Q16 product of the two bar fields with rounding, clamped at zero.</summary>
+    /// <summary>
+    /// func_80047F30 (player gauge, :192-193): Q16 product of the two bar fields with rounding, and
+    /// the caller itself clamps a negative result to zero.
+    /// </summary>
     public static int BarIntensity(int a, int b)
     {
-        int product = unchecked(a * b + 0x8000) >> 16;
-        int value = (sbyte)product;                 // the retail code takes the low byte, sign extended
+        int value = BarIntensityRaw(a, b);
         return value < 0 ? 0 : value;
     }
+
+    /// <summary>
+    /// func_80047F30 (:299, second game block): the same product without the clamp, because that call
+    /// site has no guard - a negative value reaches the bar routine and inverts the gauge.
+    /// </summary>
+    public static int BarIntensityRaw(int a, int b) =>
+        (sbyte)unchecked((a * b + 0x8000) >> 16);   // the retail code takes the low byte, sign extended
 
     /// <summary>func_80047BE8 backdrop: the blended plate behind a bar, already halved to screen space.</summary>
     public static (int X, int Y, int W, int H) BarBackdrop(int x, int yIn) => (x, yIn - 0x30, 8, 48);
@@ -106,15 +115,28 @@ public static class HudMath
     /// <summary>func_80047F30: blue channel of the ratio variant, 0 at empty health.</summary>
     public static int BarBlue(int ratio) => (ratio * 64) >> 16;
 
-    /// <summary>D_8009F34C: the score format string of the retail executable.</summary>
-    public static string FormatScore(int score) => score.ToString("D3", CultureInfo.InvariantCulture);
+    /// <summary>D_8009F34C: the score format string of the retail executable, "%03ld".</summary>
+    public static string FormatScore(int score) => PrintfD(score, 3);
 
     /// <summary>D_800117C0: the counter format string, "%02ld/%02ld".</summary>
     public static string FormatCounters(int first, int second) =>
-        first.ToString("D2", CultureInfo.InvariantCulture) + "/" + second.ToString("D2", CultureInfo.InvariantCulture);
+        PrintfD(first, 2) + "/" + PrintfD(second, 2);
 
     /// <summary>D_8009F354: the stage line format string, "L%02d".</summary>
-    public static string FormatStage(int stage) => "L" + stage.ToString("D2", CultureInfo.InvariantCulture);
+    public static string FormatStage(int stage) => "L" + PrintfD(stage, 2);
+
+    /// <summary>
+    /// printf("%0&lt;width&gt;d") for the HUD numbers. The width counts the sign, so -5 with width 3 is
+    /// "-05" and not "-005" the way .NET's "D3" would pad it. func_8008CD30 is a printf clone
+    /// (8008CD3C.c), which is why printf's rule is the right one.
+    /// </summary>
+    public static string PrintfD(int value, int width)
+    {
+        string digits = Math.Abs((long)value).ToString(CultureInfo.InvariantCulture);
+        string sign = value < 0 ? "-" : string.Empty;
+        int pad = width - sign.Length - digits.Length;
+        return sign + new string('0', Math.Max(0, pad)) + digits;
+    }
 
     /// <summary>
     /// func_80047F30: colour 9 replaces the base colour (1 or 3) while the score is at least 30, the
@@ -145,57 +167,6 @@ public static class HudMath
 
     /// <summary>func_80047F30: the score number is right aligned with a 6 pixel correction above 999.</summary>
     public static int ScoreWidth(int score) => score >= 1000 ? 6 : 0;
-
-    /// <summary>func_80047F30: score plate, first player layout (halved to screen space).</summary>
-    public static (int X, int Y, int W, int H) ScoreBox(int x, int width) => (x + 135 - width, 20, width + 22, 10);
-
-    /// <summary>func_80047F30: counter plate of the first player layout.</summary>
-    public static (int X, int Y, int W, int H) CounterBox(int x) => (x + 127, 32, 30, 10);
-
-    /// <summary>func_80047F30: counter plate of the one-player second score block (y 112 doubled).</summary>
-    public static (int X, int Y, int W, int H) SecondCounterBox(int x) => (x + 127, 56, 30, 10);
-
-    /// <summary>func_80047F30: second player's plates sit at x 6 and y 20 / 32.</summary>
-    public static (int X, int Y, int W, int H) SecondPlayerScoreBox(int width) => (6, 20, width + 22, 10);
-
-    /// <summary>func_80047F30: the second score block of a one-player game sits 24 pixels lower.</summary>
-    public static (int X, int Y, int W, int H) SecondScoreBox(int x, int width) => (x + 135 - width, 44, width + 22, 10);
-
-    /// <summary>func_80047F30: second player's counter plate.</summary>
-    public static (int X, int Y, int W, int H) SecondPlayerCounterBox => (6, 32, 30, 10);
-
-    /// <summary>func_80047F30: the divider between the two players' halves of the screen.</summary>
-    public static (int X, int Y, int W, int H) PlayerDivider => (159, 0, 1, 240);
-
-    /// <summary>func_80047F30: score text position, first player layout.</summary>
-    public static (int X, int Y) ScoreText(int x, int width) => (x + 138 - width, 20);
-
-    /// <summary>func_80047F30: counter text position, first player layout.</summary>
-    public static (int X, int Y) CounterText(int x) => (x + 130, 32);
-
-    /// <summary>func_80047F30: one-player second score text.</summary>
-    public static (int X, int Y) SecondScoreText(int x, int width) => (x + 138 - width, 44);
-
-    /// <summary>func_80047F30: one-player second counter text.</summary>
-    public static (int X, int Y) SecondCounterText(int x) => (x + 130, 56);
-
-    /// <summary>func_80047F30: stage line, "stage + 1" at the bottom right.</summary>
-    public static (int X, int Y) StageText => (274, 216);
-
-    /// <summary>func_80047F30: objective label of the first player.</summary>
-    public static (int X, int Y) LabelText => (12, 74);
-
-    /// <summary>func_80047F30: the second player's label is centred on the right half.</summary>
-    public static int SecondPlayerLabelX(int labelWidth) => 148 - labelWidth / 2;
-
-    /// <summary>func_80047F30: x origin of the score block (152 in a one-player game, else 0).</summary>
-    public static int ScoreBlockX(int playerCount) => playerCount == 1 ? 152 : 0;
-
-    /// <summary>func_80047F30: the score block is only drawn in HUD mode 1.</summary>
-    public static bool DrawsScoreBlock(int mode) => mode == 1;
-
-    /// <summary>func_80047F30: the HUD is only drawn in screen state 4.</summary>
-    public static bool DrawsInScreenState(int screenState) => screenState == 4;
 
     /// <summary>func_8001C214: 15-bit colour widened to the three 8-bit channels the quad carries.</summary>
     public static (int R, int G, int B) Expand15(uint colour) =>

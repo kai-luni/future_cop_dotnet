@@ -77,9 +77,10 @@ public sealed class InGameHud : IHudDevice
     /// <inheritdoc/>
     public void Rect(uint colour, int x, int y, int w, int h, int blend)
     {
-        // func_8001C214 halves all four coordinates and widens the 15-bit colour word.
+        // func_8001C214 halves all four coordinates with an arithmetic shift (it rounds towards
+        // minus infinity, unlike a division) and widens the 15-bit colour word.
         var rgb = HudMath.Expand15(colour);
-        Fill(x / 2, y / 2, w / 2, h / 2, rgb.R, rgb.G, rgb.B, opaque: blend == 0);
+        Fill(Halve(x), Halve(y), Halve(w), Halve(h), rgb.R, rgb.G, rgb.B, opaque: blend == 0);
     }
 
     /// <inheritdoc/>
@@ -90,20 +91,19 @@ public sealed class InGameHud : IHudDevice
         int pen = x;
         foreach (char c in text)
         {
-            if (c == ' ')
+            // Every character advances, whether or not this font can draw it - otherwise the pen and
+            // TextWidth would disagree about where a string ends.
+            if (Glyphs.TryGetValue(c, out var glyph))
             {
-                pen += 4;
-                continue;
+                for (int row = 0; row < 5; row++)
+                {
+                    int bits = glyph[row];
+                    for (int col = 0; col < 3; col++)
+                        if ((bits & (1 << (2 - col))) != 0)
+                            Put(pen + col, y + row, r, g, b, opaque: true);
+                }
             }
-            if (!Glyphs.TryGetValue(c, out var glyph)) continue;
-            for (int row = 0; row < 5; row++)
-            {
-                int bits = glyph[row];
-                for (int col = 0; col < 3; col++)
-                    if ((bits & (1 << (2 - col))) != 0)
-                        Put(pen + col, y + row, r, g, b, opaque: true);
-            }
-            pen += 4;
+            pen += Advance;
         }
     }
 
@@ -111,10 +111,9 @@ public sealed class InGameHud : IHudDevice
     public int TextWidth(string text)
     {
         if (string.IsNullOrEmpty(text)) return 0;
-        int advance = 0;
-        foreach (char c in text) advance += Glyphs.ContainsKey(c) || c == ' ' ? 4 : 0;
-        // func_80049340 sums the glyph advances and returns twice that sum (80049340.c:51).
-        return advance * 2;
+        // func_80049340 sums the glyph advances and returns twice that sum (80049340.c:51); the HUD
+        // then halves it again when it centres a label.
+        return text.Length * Advance * 2;
     }
 
     /// <summary>Gouraud quad with bilinear corner colours, clipped to the frame.</summary>
@@ -137,6 +136,9 @@ public sealed class InGameHud : IHudDevice
             }
         }
     }
+
+    /// <summary>func_8001C214 half: an arithmetic shift, so negative coordinates round down.</summary>
+    private static int Halve(int value) => value >> 1;
 
     private static int Lerp2(int topLeft, int topRight, int bottomLeft, int bottomRight, int u, int v)
     {
@@ -180,6 +182,9 @@ public sealed class InGameHud : IHudDevice
         9 => (0xFF, 0x40, 0x30),
         _ => (0xFF, 0xFF, 0xFF),
     };
+
+    /// <summary>Horizontal advance of one glyph in pixels (the retail value lives in the atlas).</summary>
+    public const int Advance = 4;
 
     // 3x5 glyphs, bit 2 is the left column.
     private static readonly Dictionary<char, int[]> Glyphs = new()

@@ -11,28 +11,42 @@ public sealed record HudGameBlock
     public int Health { get; init; }
     /// <summary>Game block +0x1E.</summary>
     public int MaxHealth { get; init; }
-    /// <summary>Game block +0xAC.</summary>
+    /// <summary>Game block +0xAC; the retail HUD dereferences it unconditionally.</summary>
     public HudPlayerBlock Player { get; init; } = new();
     /// <summary>Game block +0x134; carries the second game block's gauge words.</summary>
     public HudExtraBlock? Extra { get; init; }
 }
 
-/// <summary>Player block of <c>func_80047F30</c>.</summary>
+/// <summary>
+/// Player block of <c>func_80047F30</c>. The three gauge fields are consecutive members of the gauge
+/// record that starts at player +0x54 (func_8005A190.c:4-11): +0x54 is the divisor (= max health),
+/// +0x58 the current value, +0x5C the precomputed Q16 reciprocal <c>0x600000 / divisor</c>
+/// (func_8005A0C4.c:44-48) and +0x64 the three-state fill byte, 2 = full, 1 = moving, 0 = empty
+/// (func_8005A0C4.c:49-55). Their product therefore scales the value onto 0..0x60, the doubled plate
+/// height, which the bar routine halves to 48 pixels.
+/// </summary>
 public sealed record HudPlayerBlock
 {
-    /// <summary>Player +0x58: first word of the Q16 gauge-intensity product.</summary>
+    /// <summary>Player +0x58: the current gauge value.</summary>
     public int Value58 { get; init; }
-    /// <summary>Player +0x5C: second word of that product.</summary>
+    /// <summary>Player +0x5C: the gauge's Q16 reciprocal of its divisor.</summary>
     public int Value5C { get; init; }
-    /// <summary>Player +0x64: below 2 the gauge dims (a byte in the block).</summary>
+    /// <summary>Player +0x64: the gauge fill state; below 2 means the gauge is not full.</summary>
     public int Value64 { get; init; }
-    /// <summary>Player +0xA4: index into the objective label table.</summary>
+    /// <summary>
+    /// Player +0xA4: the objective label index. Player command 0x61 stores its argument here and 900
+    /// in +0xAE (800585B8.c:87-92), so both are a "show this label" pair.
+    /// </summary>
     public int ValueA4 { get; init; }
-    /// <summary>Player +0xAE: the label is drawn when this is positive.</summary>
+    /// <summary>Player +0xAE: frame timer of the label; the label is drawn while it is positive.</summary>
     public int ValueAe { get; init; }
-    /// <summary>Player +0xC1: 0 for the first player, non-zero for the second.</summary>
+    /// <summary>Player +0xC1: the player slot, 0 for the first player and 1 for the second.</summary>
     public int ValueC1 { get; init; }
-    /// <summary>Player +0x326: positive switches the gauge to the effect colour variant.</summary>
+    /// <summary>
+    /// Player +0x326: a countdown timer, not a permanent flag. A pickup sets it to 0x1770 frames
+    /// (8002FC90.c:179-181), a hit clears it (80053188.c:176-177) and it counts down per frame
+    /// (800588D4.c:297-299). While it runs, the gauge switches to the effect colour variant.
+    /// </summary>
     public int Value326 { get; init; }
 }
 
@@ -45,27 +59,43 @@ public sealed record HudExtraBlock
     public int A8 { get; init; }
 }
 
-/// <summary>Match state behind <c>D_8009FA94</c>.</summary>
+/// <summary>
+/// Match state behind <c>D_8009FA94</c>. The names follow the HUD's use of the fields; the retail
+/// code only exposes their offsets, and two of them have meanings that differ from the obvious guess
+/// (see <see cref="Stage"/> and <see cref="Mode"/>).
+/// </summary>
 public sealed record HudSession
 {
-    /// <summary>Session +0x4C; the stage line prints it plus one.</summary>
+    /// <summary>
+    /// Session +0x4C. The only code that writes it uses it as a difficulty / level index: it clamps
+    /// the value to 0..9 and scales health, speed and production with it (800331CC.c:134-139). The
+    /// HUD prints it plus one, which is where the name "stage" comes from.
+    /// </summary>
     public int Stage { get; init; }
-    /// <summary>Session +0x5C: the score block is only drawn in mode 1.</summary>
+    /// <summary>
+    /// Session +0x5C. The gate for the HUD's score block, and at the same time the split-screen flag:
+    /// the frontend stores split = 1 here and the tick code skips the partner when it is not zero
+    /// (8002FC90.c:136-138). The name "mode" is the HUD's reading, not the engine's.
+    /// </summary>
     public int Mode { get; init; }
     /// <summary>Session +0x64: two scores, indexed by the player block's +0xC1.</summary>
     public int Score0 { get; init; }
     public int Score1 { get; init; }
-    /// <summary>Session +0x6C..+0x78: the four counters.</summary>
+    /// <summary>
+    /// Session +0x6C..+0x78, printed as two "aa/bb" lines. +0x74/+0x78 are written as a production /
+    /// resource pair (a split of 10, capped at 0x14, 800331CC.c:222-232); no writer for +0x6C/+0x70
+    /// was found, so the HUD's "counter" reading is unconfirmed.
+    /// </summary>
     public int Count1 { get; init; }
     public int Count2 { get; init; }
     public int Count3 { get; init; }
     public int Count4 { get; init; }
-    /// <summary>Session +0x84/+0x88: the two totals the flash condition adds.</summary>
+    /// <summary>
+    /// Session +0x84/+0x88, addressed per player as <c>+0x84 + slot * 4</c> (800588D4.c:249-253), so
+    /// they are a per-player pair; the HUD adds both when it decides whether a score flashes.
+    /// </summary>
     public int Total1 { get; init; }
     public int Total2 { get; init; }
-
-    /// <summary>The score for a player index (+0xC1); the retail array has exactly two words.</summary>
-    public int ScoreAt(int playerIndex) => playerIndex == 0 ? Score0 : Score1;
 
     /// <summary>Adds the two totals the flash condition compares with 4.</summary>
     public int TotalSum => unchecked(Total1 + Total2);
@@ -116,11 +146,15 @@ public static class HudDraw
     /// <summary>The score block's x origin in a one-player game, otherwise zero.</summary>
     public const int OnePlayerScoreX = 152;
 
-    /// <summary>The objective label table the retail build carries at D_8009F348.</summary>
+    /// <summary>
+    /// The objective label table, read out of the retail executable: <c>D_8009F348</c> holds the
+    /// pointer <c>0x8009AC58</c>, and that table has seven entries terminated by <c>0x0001FFFF</c>.
+    /// The strings themselves live at 0x80011730..0x800117B0.
+    /// </summary>
     public static readonly IReadOnlyList<string> DefaultLabels = new[]
     {
         "Standard Camera", "Close-Up Camera", "Standard Side Camera", "Close-Up Side Camera",
-        "Sky Camera", "Crowd Control Camera", "Crowd Control Side Camera", "Guard",
+        "Sky Camera", "Crowd Control Camera", "Crowd Control Side Camera",
     };
 
     /// <summary>The format strings the retail executable carries for the HUD numbers.</summary>
@@ -142,7 +176,7 @@ public static class HudDraw
         device.Marker();
         device.SlotsBar();
 
-        var player = game.Player ?? new HudPlayerBlock();
+        var player = game.Player;
         DrawPlayerGauge(device, player, game.Health, game.MaxHealth, globals);
 
         device.TargetPass();
@@ -176,8 +210,9 @@ public static class HudDraw
     }
 
     /// <summary>
-    /// The objective label. <c>func_80049340</c> returns the summed glyph advance doubled, so the
-    /// centring divides a width in doubled units - the same doubling the rectangle coordinates carry.
+    /// The objective label. <c>func_80049340</c> returns twice the summed glyph advance
+    /// (80049340.c:51) and the routine divides that by two again, so the centring works in plain
+    /// screen pixels - the doubling is not a unit conversion.
     /// </summary>
     private static void DrawLabel(IHudDevice device, HudPlayerBlock player, HudGlobals globals)
     {
@@ -225,8 +260,12 @@ public static class HudDraw
 
         if (second.Health <= 0) return;
         int ratio = HudMath.HealthRatio(second.Health, second.MaxHealth);
+        // 80047F30.c:299 has no "if (intensity < 0) intensity = 0" - unlike the player gauge at
+        // 80047F30.c:193 - so a negative product reaches the bar routine unclamped. The retail code
+        // dereferences other->extra without a check; the port keeps an empty block so a missing one
+        // yields a zero height instead of a crash.
         var extra = second.Extra ?? new HudExtraBlock();
-        device.Bar(295, 206, HudMath.BarIntensity(extra.A4, extra.A8),
+        device.Bar(295, 206, HudMath.BarIntensityRaw(extra.A4, extra.A8),
                    HudMath.BarRed(ratio), HudMath.BarGreen(ratio), HudMath.BarBlue(ratio),
                    HudMath.LowHealthFlag(second.Health, second.MaxHealth) ? 1 : 0);
     }
