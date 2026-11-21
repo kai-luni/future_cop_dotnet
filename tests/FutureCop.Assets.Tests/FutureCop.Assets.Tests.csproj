@@ -47,5 +47,7 @@
     <None Include="../golden/mdec-frame.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/mdec-frame.vectors" />
     <None Include="../golden/wve-block.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/wve-block.vectors" />
     <None Include="../golden/wve-demux.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/wve-demux.vectors" />
+    <None Include="../golden/hud.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/hud.vectors" />
+    <None Include="../golden/hud-radar.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/hud-radar.vectors" />
   </ItemGroup>
 </Project>

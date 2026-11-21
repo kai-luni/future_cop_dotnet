@@ -44,6 +44,7 @@ public sealed class MenuFlow
     private readonly HashSet<uint> _suppressedUntilRelease = new();
     private readonly uint[] _padWords = new uint[2];
     private double _pendingWalkerTicks;
+    private int _maxHealth;
 
     public MainMenu Menu { get; } = new MainMenu();
     public PrecinctAssaultFrontEnd FrontEnd { get; } = new PrecinctAssaultFrontEnd();
@@ -233,6 +234,7 @@ public sealed class MenuFlow
                 var level = new LevelScene(mission);
                 if (_enableLevelMovement) level.EnableMechMovement();
                 Level = level;
+                _maxHealth = level.Walker?.Health ?? 0;
                 _pendingWalkerTicks = 0;
                 ClearHeldKeys();
                 _suppressedUntilRelease.Clear();
@@ -360,6 +362,26 @@ public sealed class MenuFlow
         Level.AdvanceWalker(steps, flags, externalPad);
     }
 
+    /// <summary>
+    /// HUD state of the running level (func_80047F30). The score block appears only with
+    /// <see cref="HudState.HudMode"/> 1; the port has no match scoring yet, so it stays hidden.
+    /// The gauge shows the health fraction until the retail Q16 energy words are available.
+    /// </summary>
+    public HudState Hud { get; set; } = new() { HudMode = 0 };
+
+    private HudState BuildHud()
+    {
+        var walker = Level?.Walker;
+        int health = walker?.Health ?? 0;
+        int max = _maxHealth > 0 ? _maxHealth : Math.Max(health, 1);
+        return Hud with
+        {
+            Health = health,
+            MaxHealth = max,
+            BarIntensity = Math.Clamp(health * 127 / Math.Max(max, 1), 0, 127),
+        };
+    }
+
     /// <summary>Renders the running scene into a BGRX window buffer, scaled by <paramref name="scale"/>.</summary>
     public void RenderScene(byte[] bgrx, int scale)
     {
@@ -367,6 +389,7 @@ public sealed class MenuFlow
         else if (Level != null)
         {
             Level.Render(Camera);
+            InGameHud.Draw(Level.Rgb, BuildHud());
             FrameBlit.RgbToBgrx(Level.Rgb, LevelScene.Width, LevelScene.Height, bgrx, scale);
         }
     }

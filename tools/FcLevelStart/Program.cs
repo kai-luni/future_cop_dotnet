@@ -6,7 +6,7 @@ using FutureCop.View;
 // centre, written as 24-bit BMP files (one per yaw angle).
 //
 //   FcLevelStart [--disc <build/disc/files>] [--mis <file.MIS>] [--entry <0..4>] [--out <prefix>]
-//                [--yaw a,b,...] [--elev deg] [--dist units] [--scale n] [--no-mech]
+//                [--yaw a,b,...] [--elev deg] [--dist units] [--scale n] [--no-mech] [--hud]
 //
 // Without --mis the mission comes from the Precinct Assault list D_8009B72C[entry] -> mission
 // record D_8009B4E4 -> name + ".mis" -> func_800833A8 directory prefix.
@@ -36,6 +36,15 @@ int dist = int.Parse(Arg(args, "--dist") ?? "7168", CultureInfo.InvariantCulture
 int scale = int.Parse(Arg(args, "--scale") ?? "2", CultureInfo.InvariantCulture);
 
 var scene = new LevelScene(mis) { DrawMech = !args.Contains("--no-mech") };
+
+// Sample state for the --hud preview: the plates and numbers are drawn with placeholder values
+// because the port has no match scoring yet.
+var hudPreview = new HudState
+{
+    Health = 100, MaxHealth = 100, BarIntensity = 100,
+    ScreenState = 4, PlayerCount = 1, HudMode = 1,
+    Score1 = 1234, Score2 = 380, Count1 = 2, Count2 = 5, Count3 = 1, Count4 = 3, Stage = 1,
+};
 var h = scene.Map.Header;
 Console.WriteLine($"map: GRDB {h.Width}x{h.Height} cells, {scene.Map.Sections.Count} Ctil sections, clip rect " +
                   string.Join(",", h.WorldClipRect.Select(v => "0x" + v.ToString("X"))));
@@ -45,6 +54,7 @@ Console.WriteLine($"mech: actor {scene.Actor.Id} ({string.Join(",", scene.Actor.
 foreach (double yaw in yaws)
 {
     int prims = scene.Render(new LevelCamera(yaw, elev, dist));
+    if (args.Contains("--hud")) InGameHud.Draw(scene.Rgb, hudPreview);
     string file = yaws.Length == 1 ? prefix + ".bmp" : $"{prefix}-{(int)yaw:000}.bmp";
     var rgb = scene.Rgb;
     int w = LevelScene.Width * scale, hh = LevelScene.Height * scale;

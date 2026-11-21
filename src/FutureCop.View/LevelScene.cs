@@ -66,6 +66,9 @@ public sealed class LevelScene
         MechWorld = (body.X, body.Y, body.Z);
     }
 
+    /// <summary>The attached walker body, so callers can read its health for the HUD.</summary>
+    public MechBody? Walker => _walker;
+
     /// <summary>Advance the persistent walker by caller-supplied retail steps and input flags.</summary>
     public int AdvanceWalker(int steps, uint flags, AnalogPad pad)
     {
