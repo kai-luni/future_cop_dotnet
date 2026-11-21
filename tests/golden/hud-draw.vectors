@@ -18,7 +18,9 @@
 #   TEXT ".." x y colour                       func_80049100
 #
 # Three harness stubs stand in for details that are not in the C code:
-#   * func_80049340 is strlen * 8, doubled - the retail advances live in a VRAM glyph atlas.
+#   * func_80049340 is strlen * 4, doubled - the retail advances live in a VRAM glyph atlas that is not
+#     decoded. 4 is the port's value and the only number this file cannot prove; 8 is disproved
+#     because it puts "Close-Up Side Camera" at x -12.
 #   * func_8008CD30 is a printf clone (8008CD3C.c) with 32-bit arguments; the host libc reproduces it
 #     once the "l" length modifier is dropped, so "%03ld" prints -05 for -5 just like the PS1 would.
 #   * the label table has seven entries, exactly as the retail pointer table at 0x8009AC58 (reached
@@ -166,7 +168,7 @@ CASE J_label_2p_center screen=4 players=2 frame=16 health=70 maxhealth=100 w58=6
   BAR 15 206 0 82 98 44 0
   TARGETPASS
   MARKERS
-  TEXT "Close-Up Camera" 28 74 8
+  TEXT "Close-Up Camera" 88 74 8
 CASE K_2p_second_score_mode1 screen=4 players=2 frame=16 health=40 maxhealth=80 w58=65536 w5c=64 w64=2 c1=1 score0=500 score1=42 count1=2 count2=5 count3=7 count4=9 total1=1 total2=1 mode=1
   MARKER
   SLOTSBAR
@@ -262,3 +264,38 @@ CASE Q_label_past_table screen=4 players=1 frame=16 health=100 maxhealth=100 w58
   TEXT "000" 290 44 3
   RECT 0 0 4 x=279 y=56 w=30 h=10 blend=1
   TEXT "00/00" 282 56 3
+CASE R_2p_flash_label screen=4 players=2 frame=144 health=100 maxhealth=100 w58=100 w5c=6291456 w64=1 a4=3 ae=1 c1=1 score0=500 score1=42 count3=7 count4=9 total1=1 total2=1 mode=1
+  MARKER
+  SLOTSBAR
+  BAR 15 206 0 64 127 64 1
+  TARGETPASS
+  MARKERS
+  TEXT "Close-Up Side Camera" 68 74 8
+  RECT 0 0 4 x=3 y=20 w=22 h=10 blend=1
+  TEXT "042" 6 20 9
+  RECT 0 0 4 x=3 y=32 w=30 h=10 blend=1
+  TEXT "07/09" 6 32 3
+CASE S_1p_second_flash screen=4 players=1 frame=144 health=100 maxhealth=100 w58=100 w5c=6291456 w64=1 score0=1234 score1=5000 count1=2 count2=5 count3=1 count4=3 total1=1 total2=2 mode=1
+  MARKER
+  SLOTSBAR
+  BAR 15 206 0 64 127 64 1
+  TARGETPASS
+  MARKERS
+  RECT 0 0 4 x=281 y=20 w=28 h=10 blend=1
+  TEXT "1234" 284 20 9
+  RECT 0 0 4 x=279 y=32 w=30 h=10 blend=1
+  TEXT "02/05" 282 32 1
+  RECT 0 0 4 x=281 y=44 w=28 h=10 blend=1
+  TEXT "5000" 284 44 9
+  RECT 0 0 4 x=279 y=56 w=30 h=10 blend=1
+  TEXT "01/03" 282 56 3
+CASE T_2p_flash_off_totals screen=4 players=2 frame=144 health=100 maxhealth=100 w58=100 w5c=6291456 w64=1 c1=1 score1=5000 total1=2 total2=2 mode=1
+  MARKER
+  SLOTSBAR
+  BAR 15 206 0 64 127 64 1
+  TARGETPASS
+  MARKERS
+  RECT 0 0 4 x=3 y=20 w=28 h=10 blend=1
+  TEXT "5000" 6 20 3
+  RECT 0 0 4 x=3 y=32 w=30 h=10 blend=1
+  TEXT "00/00" 6 32 3

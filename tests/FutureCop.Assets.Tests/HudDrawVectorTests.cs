@@ -157,9 +157,12 @@ public sealed class HudDrawVectorTests
             Calls.Add($"TEXT \"{text}\" {x} {y} {colour}");
 
         /// <summary>
-        /// The harness assumes an 8 pixel advance per glyph, because the retail advances live in the
-        /// glyph atlas that is not decoded. Label centring is therefore checked against that assumption.
+        /// The harness and this recorder must assume the same glyph advance, since the retail advances
+        /// live in a glyph atlas that is not decoded: 4 pixels per character, the port's value. This is
+        /// the one number the vectors cannot prove - 8 is disproved, it puts the longest label at x -12.
+        /// Everything else about the label (that it is drawn at all, that it uses the doubled width and
+        /// is centred on 148) is pinned by the vectors.
         /// </summary>
-        public int TextWidth(string text) => text.Length * 8 * 2;
+        public int TextWidth(string text) => text.Length * InGameHud.Advance * 2;
     }
 }
