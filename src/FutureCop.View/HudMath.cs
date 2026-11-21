@@ -106,6 +106,12 @@ public static class HudMath
         return (positive << 16) / maxHealth;
     }
 
+    /// <summary>
+    /// func_80047F30: the two bar variants sit one pixel apart - the effect variant at x 12, the
+    /// health ratio variant at x 15.
+    /// </summary>
+    public static int BarX(bool effectActive) => effectActive ? 12 : 15;
+
     /// <summary>func_80047F30: "bar is full" flag handed to the gauge (player+0x64 &lt; 2).</summary>
     public static bool BarFullFlag(int playerWord64) => playerWord64 < 2;
 

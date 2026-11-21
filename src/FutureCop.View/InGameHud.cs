@@ -68,8 +68,7 @@ public sealed record HudState
 /// </remarks>
 public static class InGameHud
 {
-    /// <summary>Bar origin of the first player (<c>func_80047F30</c> passes x 12, y 206).</summary>
-    public const int BarX = 12;
+    /// <summary>Bar origin of the first player (<c>func_80047F30</c> passes y 206).</summary>
     public const int BarY = 206;
     /// <summary>Bar origin of the second game block (x 295, y 206).</summary>
     public const int SecondBarX = 295;
@@ -83,11 +82,12 @@ public static class InGameHud
         if (rgb.Length < LevelScene.Width * LevelScene.Height * 3) return;
 
         int intensity = state.BarIntensity ?? HudMath.BarIntensity(state.BarWord58, state.BarWord5C);
-        if (state.BarEffectActive && state.BlinkPhase)
-            DrawBar(rgb, BarX, BarY, intensity, (0, 64, 127), HudMath.BarFullFlag(state.PlayerWord64), state.BlinkPhase);
-        else
-            DrawBar(rgb, BarX, BarY, intensity, HudMath.BarColourFromHealth(state.Health, state.MaxHealth),
-                    HudMath.BarFullFlag(state.PlayerWord64), state.BlinkPhase);
+        bool effect = state.BarEffectActive && state.BlinkPhase;
+        var barColour = effect
+            ? (0, 64, 127)
+            : HudMath.BarColourFromHealth(state.Health, state.MaxHealth);
+        DrawBar(rgb, HudMath.BarX(effect), BarY, intensity, barColour,
+                HudMath.BarFullFlag(state.PlayerWord64), state.BlinkPhase);
 
         if (state.PlayerCount >= 2 && state.PlayerIndex == 0)
         {
