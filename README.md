@@ -45,18 +45,20 @@ dotnet run --project tools/FcAssetTool -- dump build/disc/files/CW/M1A1.MIS 11
 ### Main menu prototype (Linux/X11)
 
 `dotnet run --project tools/FcMainMenu -- build/disc/files/CW/FE.MIS` opens an
-experimental X11 menu. Select Precinct Assault's Single Player entry to go through
-player setup, zone selection and loadout; accepting the loadout opens the selected
-zone's retail map (`PA/<ZONE>.MIS`) as the level view. In menus, use the arrows
+experimental menu that requires an accessible X11 display. Select Precinct
+Assault's Single Player entry to go through player setup, zone selection and
+loadout; accepting the loadout opens the selected zone's retail map
+(`PA/<ZONE>.MIS`) as the level view. In menus, use the arrows
 to navigate and Enter to accept. In the level, hold Up/Down to move forward/back
-and Left/Right to turn. Escape goes back to the loadout, and Q quits (except while
-entering a name). `FC_MENU_SCENE=wireframe` opens the earlier mech-only preview with
-weapon test fire instead. Other main menu actions and briefing movies are not
+and Left/Right to turn, and press Space to jump. Escape goes back to the loadout,
+and Q quits (except while entering a name). `FC_MENU_SCENE=wireframe` opens the
+earlier mech-only preview with weapon test fire instead. Other main menu actions and briefing movies are not
 implemented. The menu's key handling lives in
 `tools/FcMainMenu/MenuFlow.cs` and is tested in `tests/FutureCop.Assets.Tests/MenuFlowTests.cs`.
 
-The Linux level uses the limited single-player WALK port on static terrain. It
-takes the first player actor's position, heading and ground selector from `tACT`
+The Linux level uses the limited single-player WALK port on static terrain and
+draws the in-game HUD with the walker's health gauge. It takes the first player
+actor's position, heading and ground selector from `tACT`
 (`func_800573A4`, `func_800579D4`) and initializes the body track and footprint from
 the mission model's `AnmD` and `3DBB` (`func_80051AF8`, `func_800518A8`). The arrow
 keys feed the ported digital pad mapping; elapsed time drives the eight-tick
@@ -114,9 +116,10 @@ The music decoder has not been validated against PS1 SPU audio.
 
 ### Experimental Precinct Assault level preview
 
-`dotnet run --project tools/FcLevelStart -- --mis build/disc/files/PA/CONFT.MIS`
-produces a static terrain and walker preview; see the tool's arguments for output
-and camera settings. `tools/FcLevelTv` provides a separately deployed Samsung TV
+`dotnet run --project tools/FcLevelStart -- --mis build/disc/files/PA/CONFT.MIS --hud --out /tmp/conft-hud`
+writes a static terrain and walker preview to `/tmp/conft-hud.bmp` without a
+window. `--hud` draws the in-game HUD with sample values. Use `--scale 1` for a
+320x240 BMP. `tools/FcLevelTv` provides a separately deployed Samsung TV
 preview with left/right camera rotation and an FPS overlay. It expects the retail
 mission at `assets/CONFT.MIS` beside its assembly. Retail assets and the Tizen
 framework are not included. The preview is not playable and does not yet provide
@@ -124,13 +127,26 @@ complete C parity or mutation-tested coverage.
 
 ## Tests (identical cases in .NET and C)
 
-Shared golden vectors: `tests/golden/3dtl.vectors` (line form `fcop-3dtl-golden/v2`,
-schema documented in the file header). Both suites assert the same cases:
+The .NET asset suite and the C harness both assert the cases in
+`tests/golden/3dtl.vectors` (line form `fcop-3dtl-golden/v2`, schema documented
+in the file header).
 
 ```bash
-dotnet test tests/FutureCop.Assets.Tests          # .NET xUnit, 61 tests
+dotnet test tests/FutureCop.Assets.Tests          # .NET xUnit, 2,707 tests
+dotnet test tests/FutureCop.Gpu.Tests             # .NET xUnit, 133 tests
 bash ../future-cop-lapd-ps1/tests/host/build.sh   # C harness vs ORIGINAL decomp C
 ```
+
+The two sides do not share every fixture. `tests/golden/env.vectors` (37 cases, 7 directives) is a
+subset of the C repo's own `tests/host/vectors/env.vectors` (58 cases, 14 directives), and
+`env_test.sh` reads the latter unless `ENV_VECTORS` points at this repo's file. Passing the .NET
+fixture to the C harness works, but the C-only directives (`LOADROT`, `MULMV`, `TRANSPOSE`, `VIEW`,
+`XF1D4`, `XF234`, `XF6C`) have no .NET coverage. Three fixtures have no C consumer at all - `hud`,
+`hud-radar` and `mdec-frame` - so those pin the port against a recorded file, not against a harness
+you can re-run. `hud-draw` is the exception: `tests/host/hud/hud_test.sh` compiles the
+unmodified `80047F30.c` and `8001C214.c` out of the reference repo (only the MIPS register/address
+annotations are translated away) against recording stubs, so that file can be re-derived and
+re-checked. The label width remains an explicit assumption there - see the file header.
 
 The C harness lives in the decomp repo (`tests/host/`): it compiles the unmodified
 decomp functions `800131A0`, `80012E48`, `8001306C`, `80012E1C`, `80063C5C` with
@@ -141,6 +157,12 @@ needed). The golden vectors stay in this repo as the shared fixture; the harness
 reads them via `VECTORS` (default: sibling checkout of this repo). It feeds
 synthetic `Cobj` wrappers around each vector body through the real loader and
 compares output hex plus every decoded record field.
+
+Not every harness lives there: `tests/host/level/` and `tests/host/mech/` are in *this* repo and read
+the reference C repo read-only, which is why `level_test.sh` and `mech_test.sh` take `DOTNET_REPO` and
+`DECOMP` overrides. `mech_test.sh` runs the controller slice by default; the 2394-case walker suite
+needs `MECH_VECTORS=tests/golden/mech-walk.vectors`. Their default paths resolve to a *sibling*
+checkout, so running them from a clone tests that sibling unless the overrides are set.
 
 A case claims parity only where both sides can measure it: `CASE <id> ok` means
 C and .NET assert the same `OUT`/`REC` lines, `c_skip` marks retail behaviour that
@@ -172,6 +194,14 @@ unmodified in the harness; the GTE asm is mirrored identically in both
 languages (rounded UNR-equivalent quotient, GTE saturation/FLAG bits, clip
 byte semantics incl. "clip 1 = point not written"). `work.xy3` is don't-care
 for triangles: retail leaves the walk's stack work block stale there.
+
+`tests/golden/hud-draw.vectors` holds 23 cases produced by running the original
+`func_80047F30` together with `func_8001C214` in a host harness whose drawing primitives record
+their arguments; the file header states which details the stubs had to assume. One .NET test
+compares `HudDraw`'s call sequence against it, so the branch order, arguments and arithmetic of the
+retail HUD are pinned. `HudDraw` emits the calls, `IHudDevice` is the sink and `InGameHud`
+rasterizes them into the level framebuffer. Only the Linux menu level draws it so far; the TV
+frontends do not.
 
 ## Wireframe viewer
 
@@ -253,10 +283,11 @@ the retail flight basis
 definitions with two triggers each (models 59, 60, 62, 64, 65, 66, 68), so
 up/down steps through sixteen shots.
 
-Ported with C parity: `WeaponCatalog` (definition and resource reader),
-`ShotSpawn.Compose` (`tests/golden/shot.vectors`, 7 cases against the unchanged
+Ported with C parity in two steps: `ShotSpawn.Compose` (`tests/golden/shot.vectors`, 7 cases against the unchanged
 `func_8005E47C`) and `ShotMotion.Integrate` (`tests/golden/shot-move.vectors`,
-8 cases against `func_8001ACA4`). Not ported: the pursuit logic of the mover,
+8 cases against `func_8001ACA4`). `WeaponCatalog`, the definition and resource reader, has no C
+harness of its own - only these two steps are proven against the original. Not ported: the pursuit
+logic of the mover,
 the lob solver, the beam paths and collision - see the open points in the
 document.
 
@@ -310,6 +341,9 @@ scripts/build-profiles.sh linux    # -> dist/linux
 scripts/build-profiles.sh tizen    # -> dist/tizen  (needs tizen/framework)
 scripts/build-profiles.sh all
 ```
+
+The Linux profile stages `FcModelViewer`. Build the menu and level preview
+separately with their project commands above.
 
 The Tizen profile compiles against the TV's own signed Tizen assemblies; they are
 fetched once from the device and stay out of git:

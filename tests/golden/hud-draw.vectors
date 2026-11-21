@@ -17,6 +17,9 @@
 #   RECT r g b x=.. y=.. w=.. h=.. blend=..    func_8001C214, already halved and widened
 #   TEXT ".." x y colour                       func_80049100
 #
+# Regenerate or re-check with tests/host/hud/hud_test.sh (that script --emit prints the observed
+# output; without it the script compares this file against a fresh run of the retail routine).
+#
 # Three harness stubs stand in for details that are not in the C code:
 #   * func_80049340 is strlen * 4, doubled - the retail advances live in a VRAM glyph atlas that is not
 #     decoded. 4 is the port's value and the only number this file cannot prove; 8 is disproved
