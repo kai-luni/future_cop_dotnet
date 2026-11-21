@@ -32,14 +32,16 @@ public sealed class Shot
     }
 
     public Shot(ShotDefinition definition, Model model, int x, int y, int z,
-        double speedMultiplier = 1.0, double aimDegrees = 90.0)
+        double speedMultiplier = 1.0, double aimDegrees = 90.0, int[]? direction = null)
     {
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(model);
         Definition = definition;
         Model = model;
         Position = new[] { x, y, z };
-        Direction = Aim(aimDegrees);
+        // An explicit direction wins over the aim angle: the level viewer fires along the walker's own
+        // facing axis, which has no equivalent in the angle parameterisation.
+        Direction = direction is { Length: >= 3 } d ? new[] { d[0], d[1], d[2] } : Aim(aimDegrees);
         SpeedMultiplier = speedMultiplier > 0 ? speedMultiplier : 1.0;
         _speedScale = definition.StepWord;
         _speedLimit = definition.SpeedWord << 4;   // position units, unkD4 << 4

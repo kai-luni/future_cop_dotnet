@@ -30,11 +30,13 @@ namespace FutureCop.Assets;
 /// <param name="CadenceRate">def + 0x0A: reload timer added on every other shot.</param>
 /// <param name="RecordOffset">File offset of the 0x44-byte definition record.</param>
 /// <param name="Resources">The up to four (type, id) references of the aRSL list.</param>
+/// <param name="AmmoWord">def + 0x02: starting ammunition of this half; gResetPlayerWeaponLoadout
+/// (func_8006AB38:77-112) copies it into +0x84 and scales it by the difficulty.</param>
 public sealed record ShotDefinition(
     int SectionId, int Half, int Action, int Flags, int ModelId, int ObjWord00, int DamageWord,
     int SpeedWord, int AltSpeed, int ArcWord, int ObjWord0E, int ObjWord12, int SoundId,
     int SecondaryColumn, int Burst, int ReloadTicks, int GapTicks, int RecordOffset,
-    IReadOnlyList<ResourceReference> Resources)
+    IReadOnlyList<ResourceReference> Resources, int AmmoWord = 0)
 {
     /// <summary>
     /// Leash radius of the shot in retail position units: func_80035904:234 stores the range word
@@ -55,6 +57,40 @@ public sealed record ShotDefinition(
     /// <summary>Per-tick step target of the mover: speed &lt;&lt; 4, or speed &lt;&lt; 1 when the
     /// alternate-speed selector is set (func_8005E47C:87-93).</summary>
     public int StepWord => AltSpeed != 0 ? SpeedWord << 1 : SpeedWord << 4;
+}
+
+/// <summary>
+/// One cached registry record of D_800A3340: the id the loadout stores in a slot, its section and the
+/// two fire halves with their ammunition words. func_8006AAEC returns this record, and
+/// func_8006BA50 picks the half from the state of the shot counter.
+/// </summary>
+/// <param name="Id">Record byte 0: what a slot id (+0x90..0x92) refers to.</param>
+/// <param name="SectionId">tACT section the record belongs to.</param>
+/// <param name="HalfA">The config + 0x04 half, fired by the main trigger.</param>
+/// <param name="HalfB">The config + 0x24 half, fired while the reserve counter is positive.</param>
+/// <param name="RecordOffset">File offset of the 0x44-byte record.</param>
+public sealed record WeaponRecord(byte Id, int SectionId, ShotDefinition HalfA, ShotDefinition? HalfB,
+    int RecordOffset)
+{
+    /// <summary>Ammunition word of the first half (record + 0x06), which seeds the slot counter.</summary>
+    public int AmmoA => HalfA.AmmoWord;
+
+    /// <summary>Ammunition word of the second half (record + 0x26); zero in every mission measured.</summary>
+    public int AmmoB => HalfB?.AmmoWord ?? 0;
+
+
+    /// <summary>Shots per reload cycle of the first half (record + 0x0A) and the reload words.</summary>
+    public int BurstA => HalfA.Burst;
+
+    /// <summary>Flag byte of the first half; bit 4 selects the press-edge trigger of slot 2.</summary>
+    public int FlagsA => HalfA.Flags;
+
+    /// <summary>The half a shot uses: the second one while the reserve counter is positive.</summary>
+    public ShotDefinition Half(bool secondHalf) => secondHalf ? HalfB ?? HalfA : HalfA;
+
+    /// <summary>Human-readable line for logs.</summary>
+    public string Name => $"id 0x{Id:X2} tACT 0x{SectionId:X2} (a: action {HalfA.Action:X2}, " +
+                          $"ammo {AmmoA}; b: {(HalfB is null ? "none" : $"action {HalfB.Action:X2}, ammo {AmmoB}")})";
 }
 
 /// <summary>
@@ -125,6 +161,55 @@ public static class WeaponCatalog
         return shots;
     }
 
+    /// <summary>
+    /// The weapon registry gRegistryFind searches: record byte 0 of every tACT definition whose payload
+    /// type is 0x63, keyed by that byte. func_8006A918 copies data + 0x10 for 0x44 bytes into
+    /// D_800A3340 only for those payloads (func_8004D6D4:118-119) and func_8006AAEC:36-38 compares
+    /// byte 0 of the copy, so the slot ids of a player are these bytes - not section ids.
+    /// The first record with a given id wins, like the linear scan of the retail registry.
+    /// </summary>
+    /// <param name="file">Mission archive to scan.</param>
+    public static IReadOnlyDictionary<byte, WeaponRecord> LoadRegistry(MisFile file)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        return BuildRegistry(file.Bytes, file.Models
+            .Where(m => m.Vertices.TryGetValue(1, out var v) && v.Count > 0 && m.Polygons.Count > 0)
+            .Select(m => m.Id).ToHashSet());
+    }
+
+    /// <summary>Payload type byte that marks a definition the retail registry caches.</summary>
+    public const byte RegistryPayloadType = 0x63;
+
+    /// <summary>Scanner behind <see cref="LoadRegistry"/>, testable without a full archive.</summary>
+    public static IReadOnlyDictionary<byte, WeaponRecord> BuildRegistry(byte[] data,
+        IReadOnlyCollection<int> drawableModelIds)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        ArgumentNullException.ThrowIfNull(drawableModelIds);
+        uint tact = ChunkReader.TagValue("tACT");
+        uint arsl = ChunkReader.TagValue("aRSL");
+        var registry = new Dictionary<byte, WeaponRecord>();
+        for (int p = 0; p + 12 + RecordOffset + RecordLength <= data.Length; p += 4)
+        {
+            if (BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(p)) != tact) continue;
+            int length = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(p + 4));
+            int section = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(p + 8));
+            if (length != ChunkLength || section <= 0 || section >= 0x1000) continue;
+            if (data[p + 12] != RegistryPayloadType) continue;
+            var resources = ReadResources(data, p + length, arsl, section);
+            int modelId = resources.FirstOrDefault(r => r.Type == "Cobj").Id;
+            int record = p + 12 + RecordOffset;
+            var halfA = ReadHalf(data, record + 0x04, section, 0, record, modelId, resources);
+            if (halfA is null) continue;
+            var halfB = ReadHalf(data, record + 0x24, section, 1, record, modelId, resources);
+            byte id = data[record];
+            // The record carries both halves and both ammunition words; the b half is reached through
+            // the per-slot reserve counter (+0x8A), which the loadout reset fills from AmmoB.
+            registry.TryAdd(id, new WeaponRecord(id, section, halfA, halfB, record));
+        }
+        return registry;
+    }
+
     /// <summary>The aRSL list that follows a definition chunk, exactly like func_8006A918 reads it.</summary>
     private static IReadOnlyList<ResourceReference> ReadResources(byte[] data, int offset, uint arsl,
         int section)
@@ -152,6 +237,7 @@ public static class WeaponCatalog
             SectionId: section,
             Half: index,
             Action: s[0x00],
+            AmmoWord: BinaryPrimitives.ReadInt16LittleEndian(s.Slice(0x02)),
             Flags: s[0x01],
             ModelId: modelId,
             ObjWord00: BinaryPrimitives.ReadUInt16LittleEndian(s.Slice(0x0C)),

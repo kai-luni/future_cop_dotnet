@@ -34,6 +34,9 @@ public sealed class MenuFlow
     // X11 keycodes (evdev + 8) as the window delivers them.
     private const uint KeyEscape = 9, KeyBackspace = 22, KeyQ = 24, KeyEnter = 36, KeySpace = 65, KeyKpEnter = 104;
     private const uint KeyUp = 111, KeyLeft = 113, KeyRight = 114, KeyDown = 116;
+    // Fire buttons, mapped to the two pad buttons gWeaponSlotInput reads: X11 keycode 52 is Z and 53 is
+    // X on the evdev+8 mapping this window delivers (xmodmap -pk confirms both).
+    private const uint KeyZ = 52, KeyX = 53, KeyC = 54;
 
     private readonly string _frontEndPath;
     private readonly string _missionDir;
@@ -233,6 +236,7 @@ public sealed class MenuFlow
             {
                 var level = new LevelScene(mission);
                 if (_enableLevelMovement) level.EnableMechMovement();
+                if (_enableLevelMovement) level.EnableFiring();
                 Level = level;
                 _maxHealth = level.Walker?.Health ?? 0;
                 _pendingWalkerTicks = 0;
@@ -334,6 +338,12 @@ public sealed class MenuFlow
         KeyLeft => PadButtons.Left,
         KeyRight => PadButtons.Right,
         KeySpace or KeyEnter or KeyKpEnter => PadButtons.Triangle,
+        // gWeaponSlotInput fires slot 0 on Square and slot 1 on Cross. The keyboard maps them to the
+        // two keys the HUD already uses for actions, so a player can shoot without a pad.
+        KeyZ => PadButtons.Square,
+        KeyX => PadButtons.Cross,
+        // The third slot (49a, the lob) sits on Circle; C is the free key next to Z and X.
+        KeyC => PadButtons.Circle,
         _ => PadButtons.None,
     };
 
@@ -363,6 +373,10 @@ public sealed class MenuFlow
         PadButtons buttons = HeldPadButtons() | externalButtons;
         MechInput.RefreshPadWords(_padWords, buttons, PadMapping.Default);
         uint flags = MechInput.TranslatePadButtons(_padWords[0], players: 1, _padWords[1]);
+        // gWeaponSlotInput reads the translated word, not the raw buttons: pass the same one the
+        // walker just received from func_800576A8.
+        Level.HeldButtons = buttons;
+        Level.HeldPadWord = flags;
         Level.AdvanceWalker(steps, flags, externalPad);
     }
 
@@ -391,6 +405,27 @@ public sealed class MenuFlow
         // health and the reciprocal of max health reproduces the retail height, so the port uses the
         // same two words instead of inventing a third quantity.
         int reciprocal = max > 0 ? 0x600000 / max : 0;
+
+        // func_8006C080 reads the three slot ids at +0x90 and their counters at +0x84/+0x8A straight
+        // out of the player control block, so the bar shows the live loadout of the fire path.
+        var slots = Level?.Weapons?.Slots;
+        if (slots is not null)
+        {
+            return new HudGameBlock
+            {
+                Health = health,
+                MaxHealth = max,
+                Player = Player with
+                {
+                    Value58 = health,
+                    Value5C = reciprocal,
+                    Value84 = slots.Ammo.ToArray(),
+                    Value8A = slots.Reserve.ToArray(),
+                    Value90 = slots.SlotIds.Select(id => (int)id).ToArray(),
+                },
+            };
+        }
+
         return new HudGameBlock
         {
             Health = health,

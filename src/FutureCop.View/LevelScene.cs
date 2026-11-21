@@ -1,4 +1,5 @@
 using FutureCop.Assets;
+using FutureCop.Game;
 using FutureCop.Game.Mech;
 
 namespace FutureCop.View;
@@ -51,6 +52,43 @@ public sealed class LevelScene
         GroundAttribute = attribute;
     }
 
+    private LevelWeapons? _weapons;
+    private PickupItems? _pickups;
+
+    /// <summary>
+    /// The weapon pickups lying on this mission's map, or null until firing is enabled. The field is
+    /// built from the type 0x10 records of the archive (func_8002FA20), so the items sit where the
+    /// retail level puts them.
+    /// </summary>
+    public PickupItems? Pickups => _pickups;
+
+    /// <summary>
+    /// The fire path of the running level, or null when it was not enabled. Created lazily from the
+    /// mission's definitions so a static preview does not pay for the scan.
+    /// </summary>
+    public LevelWeapons? Weapons
+    {
+        get
+        {
+            if (_weapons is null && _fireEnabled) _weapons = new LevelWeapons(_file);
+            return _weapons;
+        }
+    }
+
+    private bool _fireEnabled;
+
+    /// <summary>Enables firing for the interactive viewer; the scene then advances live projectiles.</summary>
+    public void EnableFiring()
+    {
+        _fireEnabled = true;
+        _ = Weapons;
+        // func_8002FC90:188-199 refills the control block the fire path spends from, and the gauge
+        // bits at +0x1C/+0x1E raise the same health word the walker carries.
+        _pickups = new PickupItems(_file, Map,
+            PlayerResupplyState.ForWalker(Weapons!.Slots, () => Walker!.Health,
+                v => Walker!.Health = (short)v, 0x7F00));
+    }
+
     /// <summary>
     /// Opt in to a caller-initialized one-player walker. Initialization and clip records must be
     /// supplied from a verified game state; this viewer does not invent a retail spawn state.
@@ -77,8 +115,37 @@ public sealed class LevelScene
         int result = MechWalker.Tick(_walker, _walkerWorld, steps, flags);
         WalkerSteps += steps;
         MechWorld = (_walker.X, _walker.Y, _walker.Z);
+        // The trigger and the projectile clock run on retail frames, not on locomotion substeps: the
+        // wireframe viewer ticks once per 1/60 s frame and subtracts RetailClock.TicksPerFrame from
+        // the reload timer (func_8006C3E0). Passing substeps here made both run eight times too fast.
+        int ticks = steps * RetailClock.LocomotionTicks;
+        int frames = ticks / RetailClock.TicksPerFrame;
+        _weapons?.AdvanceShots(frames);
+        // Beams live on the 60 Hz frame, like the trigger that spawns them.
+        for (int f = 0; f < frames; f++) _weapons?.AdvanceBeams();
+        // func_8002FF6C runs per frame against the player's position.
+        _pickups?.Update(_walker.X, _walker.Y, _walker.Z);
+        _weapons?.Advance(_walker, _parts, _padWord, RetailClock.TicksPerFrame * frames);
         UpdateWalkerPose();
         return result;
+    }
+
+    /// <summary>
+    /// Pad buttons held this frame, for the HUD and for callers that only need the raw set.
+    /// </summary>
+    public PadButtons HeldButtons { get; set; }
+
+    private uint _padWord;
+
+    /// <summary>
+    /// The translated pad word gWeaponSlotInput reads (func_800576A8, stored at state + 0x30). The
+    /// caller sets this before <see cref="AdvanceWalker"/>: it is the same word
+    /// <see cref="MechInput.TranslatePadButtons"/> produced for the walker, not the raw button set.
+    /// </summary>
+    public uint HeldPadWord
+    {
+        get => _padWord;
+        set => _padWord = value;
     }
 
     private void UpdateWalkerPose()
@@ -265,12 +332,61 @@ public sealed class LevelScene
         }
         MechFaces = mechFaces;
 
+        // Live projectiles, after the walker so they sort into the same painter's-order list and end
+        // up behind or in front of the terrain and the mech by their own depth.
+        if (_weapons is { Shots.Count: > 0 } weapons)
+        {
+            foreach (var shot in weapons.Shots)
+            {
+                if (!shot.Model.Vertices.TryGetValue(1, out var shotVerts) || shotVerts.Count == 0) continue;
+                var shotMatrix = ShotMatrix(shot, view);
+                var projected = shot.Model.IsScripted
+                    ? ScriptRender.Project(shot.Model, shotVerts, 0, shotMatrix, Focal, Ofx, Ofy, 1)
+                    : ModelRender.Project(Gte.Load(shotMatrix), shotVerts, Focal, Ofx, Ofy, 1);
+                var shotWidths = shot.Model.Widths.TryGetValue(1, out var sw) ? sw.ToArray() : Array.Empty<short>();
+                foreach (var face in ModelRender.WalkTextured(shot.Model.Polygons, projected, shotWidths, 0xFF, 0))
+                {
+                    var f = face;
+                    var model = shot.Model;
+                    faces.Add((f.Work.Z, () => DrawModelFace(f, model)));
+                }
+            }
+        }
+
+        // Weapon pickups lying on the map (func_8002FA20). Same pipeline as the shots: local offset
+        // from the mech origin, no rotation, sorted into the shared list by depth.
+        if (_pickups is { RemainingCount: > 0 } pickups)
+        {
+            foreach (var item in pickups.Items)
+            {
+                if (item.Collected) continue;
+                var model = _file.Models.FirstOrDefault(m => m.Id == item.ModelId);
+                if (model is null) continue;
+                if (!model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
+                var pickupMatrix = PickupMatrix(item, view);
+                var projected = model.IsScripted
+                    ? ScriptRender.Project(model, verts, 0, pickupMatrix, Focal, Ofx, Ofy, 1)
+                    : ModelRender.Project(Gte.Load(pickupMatrix), verts, Focal, Ofx, Ofy, 1);
+                var widths = model.Widths.TryGetValue(1, out var pw) ? pw.ToArray() : Array.Empty<short>();
+                foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
+                {
+                    var f = face;
+                    var m = model;
+                    faces.Add((f.Work.Z, () => DrawModelFace(f, m)));
+                }
+            }
+        }
+
         // Painter's order, far first, stable for equal keys (submission order). Viewer convention:
         // retail sorts into an ordering table whose bucket mapping is not ported; both keys are SZ3
         // averages. An unstable sort reorders coplanar terrain packets whenever the mech is added.
         var ordered = faces.Select((f, i) => (f.Key, f.Draw, Index: i))
             .OrderByDescending(f => f.Key).ThenBy(f => f.Index).ToList();
         foreach (var f in ordered) f.Draw();
+
+        // Live beams (func_8006B23C) are drawn after the sorted faces: the ribbon builder retail uses
+        // is not ported, so each beam is one line from muzzle to far end and must sit on top.
+        if (_weapons is { Beams.Count: > 0 } beams) BeamLines(beams, view);
         return faces.Count;
     }
 
@@ -375,6 +491,109 @@ public sealed class LevelScene
                     Rgb[o + ch] = (byte)value;
                 }
             }
+    }
+
+    /// <summary>
+    /// View matrix of a projectile: the retail basis of func_800193F8 built from the flight vector,
+    /// placed where the shot is. Retail rebuilds the same basis every tick (func_80035B7C:554-568), so
+    /// the model nose (model +Z) points along the velocity.
+    /// </summary>
+    /// <remarks>
+    /// The shot lives in world position units, but <paramref name="view"/> is the mech-local frame the
+    /// level draws everything else in, so the position is converted here: subtract the walker's world
+    /// position and divide by 16 (one model unit is 16 position units, func_80010750). Writing the raw
+    /// world position with &lt;&lt; 4 put every projectile a few map widths away, which is why nothing
+    /// showed up. The scale factor is 1 like the original - the wireframe viewer's 1.5 is its own
+    /// convention (REPORT-feuern.md).
+    /// </remarks>
+    private Gte.Mat ShotMatrix(Shot shot, Gte.Mat view)
+    {
+        var basis = ShotMotion.FlightBasis(shot.Direction);
+        int lx = (shot.X - MechWorld.X) >> 4;
+        int ly = (shot.Y - MechWorld.Y) >> 4;
+        int lz = (shot.Z - MechWorld.Z) >> 4;
+        var local = new Gte.Mat(new[]
+        {
+            basis[0], basis[1], basis[2],
+            basis[3], basis[4], basis[5],
+            basis[6], basis[7], basis[8],
+        }, lx << 4, ly << 4, lz << 4);
+        return ScriptRender.Compose(local, view);
+    }
+
+    /// <summary>
+    /// Model matrix of a pickup: the item's map position relative to the mech origin, in model units,
+    /// with the identity orientation. func_8002FA20:92-113 stores position and extents only, so the
+    /// retail item is not rotated.
+    /// </summary>
+    private Gte.Mat PickupMatrix(WeaponPickup item, Gte.Mat view)
+    {
+        int lx = (item.X - MechWorld.X) >> 4;
+        int ly = (item.Y - MechWorld.Y) >> 4;
+        int lz = (item.Z - MechWorld.Z) >> 4;
+        // 0x10000 is 1.0 in engine matrix units (Gte.Load shifts the rotation right by 4).
+        var local = new Gte.Mat(new[]
+        {
+            0x10000, 0, 0,
+            0, 0x10000, 0,
+            0, 0, 0x10000,
+        }, lx << 4, ly << 4, lz << 4);
+        return ScriptRender.Compose(local, view);
+    }
+
+    /// <summary>
+    /// Draws every live beam as a line from muzzle to far end, projected with the level camera. The
+    /// beam is the one thing retail hands to a ribbon builder the port does not have, so the geometry
+    /// is retail and only the look is the viewer's.
+    /// </summary>
+    private void BeamLines(LevelWeapons weapons, Gte.Mat view)
+    {
+        foreach (var beam in weapons.Beams)
+        {
+            var a = ProjectWorld(beam.X, beam.Y, beam.Z, view);
+            var b = ProjectWorld(beam.End.X, beam.End.Y, beam.End.Z, view);
+            if (a is null || b is null) continue;
+            // Pale blue, the tracer colour func_8006B23C:418-421 asks for (0x300/0x200 with 0x30).
+            Line(a.Value.X, a.Value.Y, b.Value.X, b.Value.Y, new byte[] { 0xB0, 0xD8, 0xFF });
+        }
+    }
+
+    /// <summary>Projects one world position to screen pixels, or null when it is behind the camera.</summary>
+    private (int X, int Y)? ProjectWorld(int x, int y, int z, Gte.Mat view)
+    {
+        int lx = (x - MechWorld.X) >> 4;
+        int ly = (y - MechWorld.Y) >> 4;
+        int lz = (z - MechWorld.Z) >> 4;
+        var local = new Gte.Mat(new[]
+        {
+            0x10000, 0, 0,
+            0, 0x10000, 0,
+            0, 0, 0x10000,
+        }, lx << 4, ly << 4, lz << 4);
+        var point = ModelRender.Project(Gte.Load(ScriptRender.Compose(local, view)),
+            new[] { new Vertex(0, 0, 0) }, Focal, Ofx, Ofy, 1);
+        if (point.Length == 0 || (point[0].Clip & 1) != 0) return null;
+        return (Sx((uint)point[0].Xy), Sy((uint)point[0].Xy));
+    }
+
+    private void Line(int x0, int y0, int x1, int y1, byte[] colour)
+    {
+        int dx = Math.Abs(x1 - x0), dy = -Math.Abs(y1 - y0);
+        int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
+        while (true)
+        {
+            if (x0 >= 0 && x0 < Width && y0 >= 0 && y0 < Height)
+            {
+                int o = (y0 * Width + x0) * 3;
+                Rgb[o] = colour[0];
+                Rgb[o + 1] = colour[1];
+                Rgb[o + 2] = colour[2];
+            }
+            if (x0 == x1 && y0 == y1) break;
+            int e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
     }
 
     private Dictionary<int, TextureRecord> TextureLookup(Model model)

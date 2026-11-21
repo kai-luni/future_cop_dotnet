@@ -10,6 +10,12 @@ public static class RetailClock
     /// <summary>Ticks per 60 Hz frame (gFrameId, its floor and its typical value).</summary>
     public const int TicksPerFrame = 5;
 
+    /// <summary>
+    /// Ticks of one locomotion substep: func_800588D4 passes one substep to func_800549F0 per eight
+    /// ticks, which is the unit the scene's <c>steps</c> parameter counts in.
+    /// </summary>
+    public const int LocomotionTicks = 8;
+
     /// <summary>Ticks per second of retail time.</summary>
     public const int TicksPerSecond = 300;
 }
