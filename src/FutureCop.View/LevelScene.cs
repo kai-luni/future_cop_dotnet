@@ -243,6 +243,9 @@ public sealed class LevelScene
         _file = new MisFile(misPath);
         Map = LevelMap.FromMisFile(misPath);
         _textures = TextureBank.FromMisFile(misPath);
+        // D_800A8EA4 = gTexpageBaseTable[9] = the packed word of Cbmp slot 9 (80063C5C.c:144).
+        var hudPage = _textures.Resources.FirstOrDefault(r => r.Id == HudTexpageResourceId);
+        HudTexpageWord = hudPage is null ? 0u : ((uint)hudPage.Clut << 16) | hudPage.Tpage;
         Actor = _file.PlayerActors.FirstOrDefault() ?? throw new InvalidDataException("mission has no player actor");
         _parts = PlayerForm.Build(Actor, _file.Models, 0);
         _poseMatrices = _parts.Select(p => p.Matrix).ToArray();
@@ -293,6 +296,24 @@ public sealed class LevelScene
 
     /// <summary>The mission's texture memory, i.e. the source the GPU texture cache decodes from.</summary>
     public Vram Vram => _textures.Vram;
+
+    /// <summary>
+    /// <c>D_800A8EA4</c> (<c>gEnvMapTexpageWord</c>): the packed <c>(CLUT &lt;&lt; 16) | TPAGE</c> word of
+    /// <c>gTexpageBaseTable[9]</c>. The two tables are the same array -
+    /// <c>gTexpageBaseTable</c> is <c>D_800A8E80</c> (80063C5C.c:27) and <c>D_800A8EA4</c> is 0x24 bytes
+    /// further, i.e. element 9 - written by <c>gLoadCbmpTexture</c> for <c>s0 = unk1C - 1</c>
+    /// (80063C5C.c:78,96,144), i.e. the tenth uploaded Cbmp. The HUD's slot-icon emitter reads
+    /// <c>[0]</c> of it (8006BF44.c:8,23). Zero when the mission ships no tenth Cbmp, which leaves the
+    /// HUD on its solid-block fallback.
+    /// </summary>
+    public uint HudTexpageWord { get; }
+
+    /// <summary>
+    /// Cbmp resource id whose packed word is <c>gTexpageBaseTable[9]</c> = <c>D_800A8EA4</c>.
+    /// <c>gLoadCbmpTexture</c> indexes the table with <c>unk1C - 1</c>, so table slot 9 is the tenth
+    /// uploaded texture (80063C5C.c:78,144).
+    /// </summary>
+    public const int HudTexpageResourceId = 10;
 
     /// <summary>Local y range of the assembled walker in model units (min, max).</summary>
     public (double Min, double Max) MechBounds { get; private set; }

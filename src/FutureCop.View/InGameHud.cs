@@ -1,3 +1,5 @@
+using FutureCop.Assets;
+
 namespace FutureCop.View;
 
 /// <summary>
@@ -18,9 +20,9 @@ namespace FutureCop.View;
 /// </para>
 /// <para>
 /// <see cref="SlotsBar"/> runs <c>func_8006C080</c>, <c>func_8006BF44</c> and <c>func_800491F8</c>:
-/// the texpage state packet (<c>0xE1</c>) produces no pixels, and each <c>0x66</c> sprite packet is
-/// painted as a solid 16x16 block at <c>(x, y)</c> in the packet's highlight colour because the
-/// retail VRAM sprite atlas is not decoded yet.
+/// the texpage state packet (<c>0xE1</c>) latches the texture page, and each <c>0x66</c> sprite
+/// packet is textured from VRAM through that page (<see cref="SlotRasterSink"/>). Only when no
+/// drawing page has been latched yet does the sink fall back to the packet's solid colour.
 /// </para>
 /// </remarks>
 public sealed class InGameHud : IHudDevice
@@ -47,7 +49,20 @@ public sealed class InGameHud : IHudDevice
     /// Creates a device that paints into <paramref name="rgb"/> (320x240, 3 bytes per pixel) using
     /// <paramref name="registry"/> for slot icon lookups.
     /// </summary>
-    public InGameHud(byte[] rgb, int frameTime, ISlotRegistry? registry)
+    public InGameHud(byte[] rgb, int frameTime, ISlotRegistry? registry) : this(rgb, frameTime, registry, null) { }
+
+    /// <summary>
+    /// Creates a device that paints into <paramref name="rgb"/> (320x240, 3 bytes per pixel) and
+    /// textures the slot sprites from <paramref name="vram"/>.
+    /// </summary>
+    /// <param name="rgb">Frame buffer, 3 bytes per pixel, top row first.</param>
+    /// <param name="frameTime">D_8009FAA4, the HUD frame stamp.</param>
+    /// <param name="registry">Slot icon lookups; null uses <see cref="NullSlotRegistry"/>.</param>
+    /// <param name="vram">
+    /// The mission's texture memory (<c>TextureBank.Vram</c>). Null keeps the solid-colour fallback,
+    /// which is what a HUD without a loaded mission archive gets.
+    /// </param>
+    public InGameHud(byte[] rgb, int frameTime, ISlotRegistry? registry, Vram? vram)
     {
         ArgumentNullException.ThrowIfNull(rgb);
         if (rgb.Length < LevelScene.Width * LevelScene.Height * 3)
@@ -55,34 +70,109 @@ public sealed class InGameHud : IHudDevice
         _rgb = rgb;
         _frameTime = frameTime;
         _registry = registry ?? NullSlotRegistry.Instance;
-        _slotSink = new SlotRasterSink(this);
+        _slotSink = new SlotRasterSink(this, vram);
     }
 
     /// <summary>Draws the HUD of <paramref name="game"/> over the finished frame.</summary>
     public static void Paint(byte[] rgb, HudGameBlock game, HudSession session, HudGlobals globals) =>
-        HudDraw.Draw(new InGameHud(rgb, globals.FrameTime), game, session, globals);
+        Paint(rgb, game, session, globals, null);
+
+    /// <summary>
+    /// Draws the HUD of <paramref name="game"/> over the finished frame, texturing the slot sprites
+    /// from <paramref name="vram"/> when one is supplied.
+    /// </summary>
+    public static void Paint(byte[] rgb, HudGameBlock game, HudSession session, HudGlobals globals, Vram? vram) =>
+        HudDraw.Draw(new InGameHud(rgb, globals.FrameTime, null, vram), game, session, globals);
 
     /// <inheritdoc/>
     public void Marker() { }
 
     /// <summary>
     /// <c>func_8006C080</c>: draws the slot numbers and paints each emitted <c>0x66</c> sprite
-    /// packet as a solid 16x16 block in the packet's colour (the <c>0xE1</c> texpage packet is a
-    /// state-only no-op and the sprite atlas itself is not decoded yet).
+    /// packet from the VRAM page latched by the preceding <c>0xE1</c> packet.
     /// </summary>
     public void SlotsBar(HudPlayerBlock player, HudGlobals globals) =>
         SlotsBarDraw.Draw(this, _registry, _slotSink, player, globals);
 
+    /// <summary>
+    /// Rasterises the primitive packets of <c>func_8006BF44</c>. The <c>0xE1</c> texpage packet
+    /// carries the drawing page in its colour word (<c>gEmitStatusSlotIcon</c> packs
+    /// <c>(texture &amp; 0x9FF) | 0xE1000600</c>), so the sink latches it and uses it for every
+    /// following <c>0x66</c> sprite; the sprite's own <see cref="SlotPacket.Clut"/> selects the
+    /// palette. Sampling goes through <see cref="Vram.SampleRgb"/>, and only non-transparent texels
+    /// are written, which is the PS1 rule that texel <c>0x0000</c> leaves the destination untouched
+    /// (LevelScene's terrain path uses the same test).
+    /// </summary>
+    /// <remarks>
+    /// The packet's own R/G/B is the highlight tint, not the sprite colour: retail turns it into a
+    /// <c>0x66</c> SPRT that the GPU multiplies against the texels. Multiplying here is what makes
+    /// the lit/unlit phases of <c>func_8006C080</c> visible, and the idle value 0x60/0x60/0x60 is
+    /// exactly the 37.5% dimming the retail sprite shows. Without a VRAM (or with a page that has no
+    /// texel at the sprite's UV) the sink falls back to the solid block the previous revision drew.
+    /// </remarks>
     private sealed class SlotRasterSink : ISlotPacketSink
     {
+        /// <summary>Texpage bits of a PS1 drawing-mode word (<c>tpage</c> field of a 0xE1 packet).</summary>
+        private const uint TexpageMask = 0x9FF;
+
         private readonly InGameHud _owner;
-        public SlotRasterSink(InGameHud owner) => _owner = owner;
+        private readonly Vram? _vram;
+        private ushort? _page;
+
+        public SlotRasterSink(InGameHud owner, Vram? vram)
+        {
+            _owner = owner;
+            _vram = vram;
+        }
 
         public void Emit(SlotPacket packet)
         {
+            if (packet.Code == 0xE1)
+            {
+                // func_8006BF44:64 packs the page into the packet's colour word, so the low 16 bits
+                // of that word are the tpage the following sprite is sampled through.
+                uint page = packet.R | ((uint)packet.G << 8) | ((uint)packet.B << 16);
+                _page = (ushort)(page & TexpageMask);
+                return;
+            }
             if (packet.Code != 0x66) return;
+
+            if (_vram is { } vram && _page is ushort tpage)
+            {
+                if (DrawSprite(vram, tpage, packet)) return;
+            }
             _owner.Fill(packet.X, packet.Y, packet.W, packet.H, packet.R, packet.G, packet.B, opaque: true);
         }
+
+        /// <summary>
+        /// Textures one 16x16 sprite. Returns false when the page carries no opaque texel at the
+        /// packet's UV, so the caller can fall back to the solid block.
+        /// </summary>
+        private bool DrawSprite(Vram vram, ushort tpage, SlotPacket packet)
+        {
+            // A UV outside the 256x256 page window wraps in the hardware, so a quick probe is enough
+            // to tell "nothing there" from "a real icon".
+            int written = 0;
+            for (int row = 0; row < packet.H; row++)
+            {
+                for (int col = 0; col < packet.W; col++)
+                {
+                    var (r, g, b, transparent) =
+                        vram.SampleRgb(tpage, packet.Clut, packet.U + col, packet.V + row);
+                    if (transparent) continue;
+                    // The 2D packet is modulated by its colour, like the SPRT the retail code emits:
+                    // 0x80 is unity, 0x60 the dim idle grey, 0xC0 the lit phase - which can exceed 255
+                    // and therefore has to be clamped instead of wrapping.
+                    _owner.Put(packet.X + col, packet.Y + row,
+                        Modulate(r, packet.R), Modulate(g, packet.G), Modulate(b, packet.B), opaque: true);
+                    written++;
+                }
+            }
+            return written > 0;
+        }
+
+        /// <summary>The SPRT colour modulation of one channel: 0x80 is unity, result clamped to 8 bits.</summary>
+        private static int Modulate(int texel, int tint) => Math.Min(0xFF, (texel * tint) / 0x80);
     }
 
     /// <inheritdoc/>

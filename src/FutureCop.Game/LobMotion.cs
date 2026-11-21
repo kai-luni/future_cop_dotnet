@@ -12,8 +12,8 @@ namespace FutureCop.Game;
 /// its own. What it computes is a planar unit vector scaled by <c>angle * 300</c>, tilted upward by an
 /// elevation the function derives from the planar distance, the height difference and the
 /// <c>scale</c> argument. The arc itself is integrated later by the projectile mover, whose
-/// per-tick downward bias lives in func_80036BD4:190-192
-/// (<c>y -= descent * delta / 300</c>, the descent word coming from the descriptor).
+/// per-tick downward bias lives in func_80036BD4:136-137 (gGuidedProjectileUpdate,
+/// <c>y -= (descent * delta) / 300</c>, the descent word coming from the descriptor).
 /// </para>
 /// <para>
 /// Source of every step: <c>src/game/8005E624.c</c>. Line references below point at that file. The

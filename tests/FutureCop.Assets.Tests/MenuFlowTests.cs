@@ -519,6 +519,42 @@ public class MenuFlowTests
         Assert.Equal(new[] { "Ready", "Gun: Powered Mini-Gun", "Heavy: Hellfire2000 Missile", "Special: Mortar Launcher" }, loadout.Entries);
     }
 
+    /// <summary>
+    /// The loadout row record of func_8007D7CC carries the entry's name in the half-word at +4, and
+    /// the weapon definition id the slot fires in the half-word at +2 (func_8007DD08:42-43 walks the
+    /// table with a 6-byte stride). Reading the name from +2 produced no label at all, so the panel
+    /// fell back to "Unknown" - the bug this pins.
+    /// </summary>
+    [Fact]
+    public void LoadoutRowsResolveEverySlotNameFromTheTextTable()
+    {
+        string? fe = FrontEndPath();
+        if (fe == null) return;
+        var text = FrontEndText.FromMisFile(fe);
+
+        // Text ids the retail table points at, straight out of the 6-byte rows (PrecinctAssaultData).
+        var expected = new (ushort Caption, ushort NameId, string Name)[]
+        {
+            (0x271a, 0x2774, "Powered Mini-Gun"),
+            (0x2724, 0x277E, "Hellfire2000 Missile"),
+            (0x272e, 0x279c, "Mortar Launcher"),
+        };
+        foreach (var (_, nameId, name) in expected)
+            Assert.Equal(name, text.Lookup(nameId)?.Replace('\n', ' '));
+
+        var flow = NewFlow(fe);
+        ToLoadout(flow);
+        var loadout = flow.Panel((id, fb) => (text.Lookup(id) ?? fb).Replace('\n', ' '))!;
+        Assert.DoesNotContain(loadout.Entries, e => e.Contains("Unknown", StringComparison.Ordinal));
+        foreach (var (caption, _, name) in expected)
+            Assert.Contains(loadout.Entries, e => e.StartsWith(caption switch
+            {
+                0x271a => "Gun: ",
+                0x2724 => "Heavy: ",
+                _ => "Special: ",
+            }, StringComparison.Ordinal) && e.EndsWith(name, StringComparison.Ordinal));
+    }
+
     [Fact]
     public void SceneKindComesFromTheEnvironmentValue()
     {

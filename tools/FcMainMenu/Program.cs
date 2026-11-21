@@ -10,7 +10,21 @@ var flow = new MenuFlow(path, MenuFlow.SceneKindFrom(Environment.GetEnvironmentV
 var menu = flow.Menu;
 FrontEndText? text = null;
 try { text = FrontEndText.FromMisFile(path); }
-catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException) { Console.Error.WriteLine($"Menu text unavailable: {ex.Message}"); }
+catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException)
+{
+    // A mission archive carries no front-end text: the labels, and with them the weapon names of
+    // the loadout rows, live in the front-end archive next to it. Fall back to that one before
+    // giving up, so a level started directly still shows real names instead of bare ids.
+    var frontEnd = Path.Combine(Path.GetDirectoryName(path) ?? ".", "..", "CW", "FE.MIS");
+    try
+    {
+        text = FrontEndText.FromMisFile(frontEnd);
+    }
+    catch (Exception inner) when (inner is IOException || inner is InvalidDataException || inner is UnauthorizedAccessException)
+    {
+        Console.Error.WriteLine($"Menu text unavailable: {ex.Message} (front-end fallback: {inner.Message})");
+    }
+}
 string Label(ushort id, string fallback) => (text?.Lookup(id) ?? fallback).Replace('\n', ' ');
 using var window = MenuWindow.Open(width, height);
 if (window == null) { Console.Error.WriteLine("Cannot open X11 display."); return; }

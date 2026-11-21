@@ -240,6 +240,9 @@ public sealed class MenuFlow
                 Level = level;
                 _maxHealth = level.Walker?.Health ?? 0;
                 _pendingWalkerTicks = 0;
+                // D_800A8EA4 and the mission's VRAM: what makes the slot sprites real icons instead
+                // of solid blocks (func_8006BF44 reads the page word, the sprite samples VRAM).
+                Globals = Globals with { EnvMapTexpageWord = level.HudTexpageWord };
                 ClearHeldKeys();
                 _suppressedUntilRelease.Clear();
                 if (confirmKey is uint suppressed) _suppressedUntilRelease.Add(suppressed);
@@ -291,12 +294,24 @@ public sealed class MenuFlow
                 {
                     var c = pa.LoadoutTable[col];
                     int offset = (int)(c.Items - PrecinctAssaultData.LoadoutRowsAddress) + pa.LoadoutSelection[col, 0] * 6;
-                    // A selection row outside the retail table (corrupt menu state) shows the
-                    // fallback label instead of throwing while drawing the panel.
-                    ushort id = offset >= 0 && offset + 6 <= PrecinctAssaultData.LoadoutRows.Length
-                        ? System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(PrecinctAssaultData.LoadoutRows.AsSpan(offset + 4))
+                    // The 6-byte row record of func_8007D7CC: +2 is the weapon definition id the slot
+                    // fires (func_8006AAEC looks it up) and +4 is the text id func_8007D7CC:225 hands
+                    // to func_800788F0, the routine that draws the entry's name. The name therefore
+                    // comes from +4, never from the definition id.
+                    bool valid = offset >= 0 && offset + 6 <= PrecinctAssaultData.LoadoutRows.Length;
+                    var row = valid ? PrecinctAssaultData.LoadoutRows.AsSpan(offset, 6) : default;
+                    ushort nameId = valid
+                        ? System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(row.Slice(4))
                         : (ushort)0;
-                    entries.Add($"{label(captions[col], "Weapon")}: {label(id, "Unknown")}");
+                    ushort weaponId = valid
+                        ? System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(row.Slice(2))
+                        : (ushort)0;
+                    // A row outside the retail table is corrupt menu state; it must still print
+                    // something honest rather than a name that was never in the archive.
+                    string name = valid
+                        ? label(nameId, $"id 0x{weaponId:X2}")
+                        : $"id 0x{weaponId:X2}";
+                    entries.Add($"{label(captions[col], "Weapon")}: {name}");
                 }
                 return new MenuPanel(label(0x2710, "Weapons"), entries, Selected, "ARROWS: SELECT / CHANGE   ENTER: START   ESC: BACK");
             }
@@ -441,7 +456,7 @@ public sealed class MenuFlow
         else if (Level != null)
         {
             Level.Render(Camera);
-            InGameHud.Paint(Level.Rgb, BuildHud(), Session, Globals);
+            InGameHud.Paint(Level.Rgb, BuildHud(), Session, Globals, Level.Vram);
             FrameBlit.RgbToBgrx(Level.Rgb, LevelScene.Width, LevelScene.Height, bgrx, scale);
         }
     }

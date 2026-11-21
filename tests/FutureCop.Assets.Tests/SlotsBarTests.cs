@@ -176,6 +176,126 @@ public sealed class SlotsBarTests
         Assert.Equal("-1", HudMath.FormatSlotCount(-1));
     }
 
+    /// <summary>
+    /// The slot icons of <c>func_8006BF44</c> are real sprites in the mission's VRAM, not solid
+    /// blocks: <c>gEmitStatusSlotIcon</c> emits the page word of <c>D_800A8EA4</c> as a <c>0xE1</c>
+    /// packet and then a 16x16 <c>0x66</c> SPRT whose CLUT comes from the upper half of that word
+    /// (8006BF44.c:62-64,92-97). With the mission's VRAM the three boxes must therefore carry more
+    /// than one colour each - the flat block was the bug.
+    /// </summary>
+    /// <remarks>
+    /// Guarded on the retail archive like the other disc-backed tests: without CONFT.MIS there is no
+    /// VRAM to sample, and the fallback path is what the case above pins.
+    /// </remarks>
+    [Fact]
+    public void InGameHud_textures_the_slot_icons_from_the_mission_vram()
+    {
+        string? mis = MissionPath();
+        if (mis == null) return;
+
+        var scene = new LevelScene(mis);
+        Assert.NotEqual(0u, scene.HudTexpageWord);
+
+        var player = new HudPlayerBlock
+        {
+            Value64 = 2,
+            Value8A = new[] { 7500, 181, 31 },
+            Value90 = new[] { 0x00, 0x10, 0x20 },
+        };
+        var game = new HudGameBlock { Health = 100, MaxHealth = 100, Player = player };
+        var session = new HudSession { Mode = 0 };
+        var globals = new HudGlobals
+        {
+            FrameTime = 0x40, PlayerCount = 1,
+            EnvMapTexpageWord = scene.HudTexpageWord,
+            PlayerInvulnerable = new byte[] { 0, 0 },
+        };
+
+        var textured = new byte[LevelScene.Width * LevelScene.Height * 3];
+        InGameHud.Paint(textured, game, session, globals, scene.Vram);
+        var flat = new byte[LevelScene.Width * LevelScene.Height * 3];
+        InGameHud.Paint(flat, game, session, globals);
+
+        // spriteX = 0x22 + 0x29 * i, y = 0xE0 - 16 (func_8006C080:77-101, func_8006BF44:88).
+        for (int i = 0; i < 3; i++)
+        {
+            int bx = 0x22 + i * 0x29;
+            Assert.Equal(1, DistinctColours(flat, bx, 208));
+            Assert.True(DistinctColours(textured, bx, 208) > 8,
+                $"slot {i}: expected a textured icon, got {DistinctColours(textured, bx, 208)} colours");
+        }
+
+        // Nothing outside the four 16x16 boxes may move: three slot icons at spriteX = 0x22 + 0x29 * i
+        // and the invulnerability icon at x = 0x0C, all at y = 0xE0 - 16 (func_8006C080:77-106).
+        bool InSprite(int x, int y)
+        {
+            if (y < 208 || y >= 224) return false;
+            for (int i = 0; i < 3; i++)
+            {
+                int bx = 0x22 + i * 0x29;
+                if (x >= bx && x < bx + 16) return true;
+            }
+            return x >= 0x0C && x < 0x0C + 16;
+        }
+        int outside = 0;
+        for (int y = 0; y < LevelScene.Height; y++)
+            for (int x = 0; x < LevelScene.Width; x++)
+            {
+                if (InSprite(x, y)) continue;
+                int o = (y * LevelScene.Width + x) * 3;
+                if (flat[o] != textured[o] || flat[o + 1] != textured[o + 1] || flat[o + 2] != textured[o + 2])
+                    outside++;
+            }
+        Assert.Equal(0, outside);
+    }
+
+    /// <summary>
+    /// Without a VRAM the sink keeps the previous behaviour instead of drawing nothing: the 0x66
+    /// packet still fills its 16x16 box with the packet colour.
+    /// </summary>
+    [Fact]
+    public void Slot_icons_fall_back_to_the_solid_block_without_vram()
+    {
+        var rgb = new byte[LevelScene.Width * LevelScene.Height * 3];
+        var player = new HudPlayerBlock { Value64 = 2, Value8A = new[] { 1, 2, 3 }, Value90 = new[] { 0, 0x10, 0x20 } };
+        var game = new HudGameBlock { Health = 100, MaxHealth = 100, Player = player };
+        var globals = new HudGlobals
+        {
+            FrameTime = 0x40, EnvMapTexpageWord = 0x7F58009E, PlayerInvulnerable = new byte[] { 0, 0 },
+        };
+
+        InGameHud.Paint(rgb, game, new HudSession { Mode = 0 }, globals, null);
+
+        Assert.Equal(1, DistinctColours(rgb, 0x22, 208));
+        Assert.Equal((0xC0, 0xA0, 0xA0), Pixel(rgb, 0x22, 208));
+    }
+
+    /// <summary>Colours inside a 16x16 sprite box, read from the 320x240 frame.</summary>
+    private static int DistinctColours(byte[] rgb, int x, int y)
+    {
+        var seen = new HashSet<(byte, byte, byte)>();
+        for (int row = 0; row < 16; row++)
+            for (int col = 0; col < 16; col++)
+            {
+                int o = ((y + row) * LevelScene.Width + x + col) * 3;
+                seen.Add((rgb[o], rgb[o + 1], rgb[o + 2]));
+            }
+        return seen.Count;
+    }
+
+    /// <summary>The mission the disc-backed cases read, or null when the archive is not checked out.</summary>
+    private static string? MissionPath()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            string candidate = Path.Combine(dir.FullName, "build", "disc", "files", "PA", "CONFT.MIS");
+            if (File.Exists(candidate)) return candidate;
+            dir = dir.Parent;
+        }
+        return null;
+    }
+
     private static (byte R, byte G, byte B) Pixel(byte[] rgb, int x, int y)
     {
         int offset = (y * LevelScene.Width + x) * 3;

@@ -51,7 +51,10 @@ var hudSession = new HudSession
     Mode = 1, Stage = 1,
     Score0 = 1234, Score1 = 380, Count1 = 2, Count2 = 5, Count3 = 1, Count4 = 3,
 };
-var hudGlobals = new HudGlobals { ScreenState = 4, PlayerCount = 1, FrameTime = 0x10 };
+var hudGlobals = new HudGlobals
+{
+    ScreenState = 4, PlayerCount = 1, FrameTime = 0x10, EnvMapTexpageWord = scene.HudTexpageWord,
+};
 var h = scene.Map.Header;
 Console.WriteLine($"map: GRDB {h.Width}x{h.Height} cells, {scene.Map.Sections.Count} Ctil sections, clip rect " +
                   string.Join(",", h.WorldClipRect.Select(v => "0x" + v.ToString("X"))));
@@ -61,7 +64,7 @@ Console.WriteLine($"mech: actor {scene.Actor.Id} ({string.Join(",", scene.Actor.
 foreach (double yaw in yaws)
 {
     int prims = scene.Render(new LevelCamera(yaw, elev, dist));
-    if (args.Contains("--hud")) InGameHud.Paint(scene.Rgb, hudGame, hudSession, hudGlobals);
+    if (args.Contains("--hud")) InGameHud.Paint(scene.Rgb, hudGame, hudSession, hudGlobals, scene.Vram);
     string file = yaws.Length == 1 ? prefix + ".bmp" : $"{prefix}-{(int)yaw:000}.bmp";
     var rgb = scene.Rgb;
     int w = LevelScene.Width * scale, hh = LevelScene.Height * scale;
