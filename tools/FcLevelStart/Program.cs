@@ -38,13 +38,20 @@ int scale = int.Parse(Arg(args, "--scale") ?? "2", CultureInfo.InvariantCulture)
 var scene = new LevelScene(mis) { DrawMech = !args.Contains("--no-mech") };
 
 // Sample state for the --hud preview: the plates and numbers are drawn with placeholder values
-// because the port has no match scoring yet.
-var hudPreview = new HudState
+// because the port has no match scoring yet. func_80047F30 takes the low byte of (a * b) >> 16, so
+// 0x10000 * 0x7F gives the full 127 intensity.
+var hudGame = new HudGameBlock
 {
-    Health = 100, MaxHealth = 100, BarIntensity = 100,
-    ScreenState = 4, PlayerCount = 1, HudMode = 1,
-    Score1 = 1234, Score2 = 380, Count1 = 2, Count2 = 5, Count3 = 1, Count4 = 3, Stage = 1,
+    Health = 100,
+    MaxHealth = 100,
+    Player = new HudPlayerBlock { Value58 = 0x10000, Value5C = 0x7F, Value64 = 2 },
 };
+var hudSession = new HudSession
+{
+    Mode = 1, Stage = 1,
+    Score0 = 1234, Score1 = 380, Count1 = 2, Count2 = 5, Count3 = 1, Count4 = 3,
+};
+var hudGlobals = new HudGlobals { ScreenState = 4, PlayerCount = 1, FrameTime = 0x10 };
 var h = scene.Map.Header;
 Console.WriteLine($"map: GRDB {h.Width}x{h.Height} cells, {scene.Map.Sections.Count} Ctil sections, clip rect " +
                   string.Join(",", h.WorldClipRect.Select(v => "0x" + v.ToString("X"))));
@@ -54,7 +61,7 @@ Console.WriteLine($"mech: actor {scene.Actor.Id} ({string.Join(",", scene.Actor.
 foreach (double yaw in yaws)
 {
     int prims = scene.Render(new LevelCamera(yaw, elev, dist));
-    if (args.Contains("--hud")) InGameHud.Draw(scene.Rgb, hudPreview);
+    if (args.Contains("--hud")) InGameHud.Paint(scene.Rgb, hudGame, hudSession, hudGlobals);
     string file = yaws.Length == 1 ? prefix + ".bmp" : $"{prefix}-{(int)yaw:000}.bmp";
     var rgb = scene.Rgb;
     int w = LevelScene.Width * scale, hh = LevelScene.Height * scale;

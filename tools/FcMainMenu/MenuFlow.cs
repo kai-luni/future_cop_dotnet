@@ -353,6 +353,10 @@ public sealed class MenuFlow
         // func_8002703C caps each frame at 0x3C clock ticks; func_800588D4 carries the
         // remainder and passes one locomotion substep per eight ticks to func_800549F0.
         _pendingWalkerTicks += Math.Min(seconds * RetailClock.TicksPerSecond, 0x3C);
+        // D_8009FAA4 is a monotonically growing frame stamp in the retail build; only its bit 0x80 and
+        // the >= 0x80 comparison matter to the HUD, so the port advances it by the drawn ticks.
+        int frameTime = Globals.FrameTime + (int)Math.Min(seconds * RetailClock.TicksPerSecond, 0x3C);
+        Globals = Globals with { FrameTime = frameTime & 0xFF };
         int steps = (int)(_pendingWalkerTicks / 8);
         if (steps == 0) return;
         _pendingWalkerTicks -= steps * 8;
@@ -363,22 +367,34 @@ public sealed class MenuFlow
     }
 
     /// <summary>
-    /// HUD state of the running level (func_80047F30). The score block appears only with
-    /// <see cref="HudState.HudMode"/> 1; the port has no match scoring yet, so it stays hidden.
-    /// The gauge shows the health fraction until the retail Q16 energy words are available.
+    /// Match state of the running level (<c>D_8009FA94</c>) and the HUD globals (<c>D_8009FA00</c>,
+    /// <c>D_8009FA0C</c>, <c>D_8009FAA4</c>). The score block appears only with
+    /// <see cref="HudSession.Mode"/> 1; the port has no match scoring yet, so it stays hidden.
     /// </summary>
-    public HudState Hud { get; set; } = new() { HudMode = 0 };
+    public HudSession Session { get; set; } = new() { Mode = 0 };
 
-    private HudState BuildHud()
+    /// <summary>The globals the HUD gate reads; the frame stamp drives the blink phase.</summary>
+    public HudGlobals Globals { get; set; } = new();
+
+    /// <summary>
+    /// The player block of the running level. The two gauge words (+0x58/+0x5C) are not filled by the
+    /// port yet, so the gauge height is derived from the health fraction instead.
+    /// </summary>
+    public HudPlayerBlock Player { get; set; } = new() { Value64 = 2 };
+
+    private HudGameBlock BuildHud()
     {
         var walker = Level?.Walker;
         int health = walker?.Health ?? 0;
         int max = _maxHealth > 0 ? _maxHealth : Math.Max(health, 1);
-        return Hud with
+        int intensity = Math.Clamp(health * 127 / Math.Max(max, 1), 0, 127);
+        // BarIntensity takes the low byte of (a * b) >> 16, so 0x10000 * intensity yields exactly the
+        // wanted height. The retail meaning of the two words is still unknown; the height is right.
+        return new HudGameBlock
         {
             Health = health,
             MaxHealth = max,
-            BarIntensity = Math.Clamp(health * 127 / Math.Max(max, 1), 0, 127),
+            Player = Player with { Value58 = 0x10000, Value5C = intensity },
         };
     }
 
@@ -389,7 +405,7 @@ public sealed class MenuFlow
         else if (Level != null)
         {
             Level.Render(Camera);
-            InGameHud.Draw(Level.Rgb, BuildHud());
+            InGameHud.Paint(Level.Rgb, BuildHud(), Session, Globals);
             FrameBlit.RgbToBgrx(Level.Rgb, LevelScene.Width, LevelScene.Height, bgrx, scale);
         }
     }

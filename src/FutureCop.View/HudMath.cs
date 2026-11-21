@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace FutureCop.View;
 
 /// <summary>
@@ -91,12 +93,35 @@ public static class HudMath
     /// </summary>
     public static (int R, int G, int B) BarColourFromHealth(int health, int maxHealth)
     {
-        if (maxHealth <= 0) return (127, 31, 0);
         int ratio = HealthRatio(health, maxHealth);
-        return (127 + ((ratio - (ratio << 6)) >> 16),
-                31 + ((ratio * 96) >> 16),
-                (ratio * 64) >> 16);
+        return (BarRed(ratio), BarGreen(ratio), BarBlue(ratio));
     }
+
+    /// <summary>func_80047F30: red channel of the ratio variant, 127 at empty health.</summary>
+    public static int BarRed(int ratio) => 127 + ((ratio - (ratio << 6)) >> 16);
+
+    /// <summary>func_80047F30: green channel of the ratio variant, 31 at empty health.</summary>
+    public static int BarGreen(int ratio) => 31 + ((ratio * 96) >> 16);
+
+    /// <summary>func_80047F30: blue channel of the ratio variant, 0 at empty health.</summary>
+    public static int BarBlue(int ratio) => (ratio * 64) >> 16;
+
+    /// <summary>D_8009F34C: the score format string of the retail executable.</summary>
+    public static string FormatScore(int score) => score.ToString("D3", CultureInfo.InvariantCulture);
+
+    /// <summary>D_800117C0: the counter format string, "%02ld/%02ld".</summary>
+    public static string FormatCounters(int first, int second) =>
+        first.ToString("D2", CultureInfo.InvariantCulture) + "/" + second.ToString("D2", CultureInfo.InvariantCulture);
+
+    /// <summary>D_8009F354: the stage line format string, "L%02d".</summary>
+    public static string FormatStage(int stage) => "L" + stage.ToString("D2", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// func_80047F30: colour 9 replaces the base colour (1 or 3) while the score is at least 30, the
+    /// frame stamp blinks and both totals are below 4.
+    /// </summary>
+    public static bool ScoreFlashes(int score, HudSession session, bool blinkPhase) =>
+        score >= 30 && blinkPhase && session.TotalSum < 4;
 
     /// <summary>func_80047F30: (health &lt;&lt; 16) / maxhealth, negative health folded to zero.</summary>
     public static int HealthRatio(int health, int maxHealth)
@@ -168,10 +193,6 @@ public static class HudMath
 
     /// <summary>func_80047F30: the score block is only drawn in HUD mode 1.</summary>
     public static bool DrawsScoreBlock(int mode) => mode == 1;
-
-    /// <summary>func_80047F30: the score flashes (colour 9) while it is at least 30 and both totals are below 4.</summary>
-    public static bool ScoreFlashes(int score, int total1, int total2, bool blinkPhase) =>
-        score >= 30 && blinkPhase && total1 + total2 < 4;
 
     /// <summary>func_80047F30: the HUD is only drawn in screen state 4.</summary>
     public static bool DrawsInScreenState(int screenState) => screenState == 4;
