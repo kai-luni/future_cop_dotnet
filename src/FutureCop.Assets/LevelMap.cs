@@ -88,7 +88,9 @@ public sealed class MapHeader
             if (len <= 0) break;
             p += len;
         } while ((uint)p < (uint)payload.Length);
-        return found < 0 ? null : new MapHeader(payload, found);
+        // The header words end at +0x18 (see the constructor); a GRDB tag too close to the end is
+        // treated as "no header" instead of reading past the payload.
+        return found < 0 || found + 0x1C > payload.Length ? null : new MapHeader(payload, found);
     }
 }
 
@@ -264,6 +266,10 @@ public sealed class LevelMap
                 continue;
             }
             if (type != sect) continue;
+            // func_800639D4 reads the counts at +0x08 and the entry count at +0x3CA, so a shorter
+            // Sect chunk is corrupt data, not a valid section with empty tables.
+            if (chunk + 0x3CC > data.Length)
+                throw new InvalidDataException($"Ctil {id}: Sect chunk at 0x{chunk:X} is truncated");
             section = new LevelSection(id, data, chunk);
             _sections[id] = section;
         }

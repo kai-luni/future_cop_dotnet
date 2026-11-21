@@ -134,7 +134,8 @@ public sealed class LevelScene
         double z0 = double.MaxValue, z1 = double.MinValue;
         foreach (var part in _parts)
         {
-            var verts = part.Model.Vertices[part.Model.IsScripted ? 1 : part.Frame + 1];
+            // A model without the requested frame chunk has no points to measure.
+            if (!part.Model.Vertices.TryGetValue(part.Model.IsScripted ? 1 : part.Frame + 1, out var verts)) continue;
             var points = part.Model.IsScripted
                 ? ScriptRender.PoseVertices(part.Model, verts, part.Frame, part.Matrix)
                 : verts.Select(v => (
@@ -205,7 +206,9 @@ public sealed class LevelScene
             {
                 var entry = window[j * 5 + i];
                 if (entry.Mask == 0) continue;
-                var section = Map.Section(entry.SectionId)!;
+                // A window cell whose section is missing in the map (corrupt or partial level data)
+                // is drawn as empty instead of failing the whole frame.
+                if (Map.Section(entry.SectionId) is not { } section) continue;
                 drawn.Add(entry.SectionId);
                 var buffer = new byte[TerrainRender.VertexBufferBytes];
                 TerrainRender.ProjectGrid(section, buffer, entry.X, entry.Y, entry.Z, (uint)entry.Mask << 16, gte);
@@ -242,7 +245,8 @@ public sealed class LevelScene
         }
         foreach (var part in DrawMech ? _parts : Array.Empty<PlayerPart>())
         {
-            var partVerts = part.Model.Vertices[part.Model.IsScripted ? 1 : part.Frame + 1];
+            // A model without the requested frame chunk is left out of the frame.
+            if (!part.Model.Vertices.TryGetValue(part.Model.IsScripted ? 1 : part.Frame + 1, out var partVerts)) continue;
             var composed = ScriptRender.Compose(part.Matrix, bodyView);
             var projected = part.Model.IsScripted
                 ? ScriptRender.Project(part.Model, partVerts, part.Frame, composed, Focal, Ofx, Ofy, 1)

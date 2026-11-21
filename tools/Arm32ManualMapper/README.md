@@ -29,20 +29,20 @@ A failure after partial publication can leave a partially registered module reop
 - `Arm32ManualMapper.csproj` sets `<Version>1.1.0</Version>`.
 - Build:
   ```bash
-  ~/.dotnet/dotnet build mapper/Arm32ManualMapper.csproj -c Release
+  ~/.dotnet/dotnet build tools/Arm32ManualMapper/Arm32ManualMapper.csproj -c Release
   ```
-- Output files: `mapper/bin/Release/net6.0/Arm32ManualMapper.dll`, `.runtimeconfig.json`, `.deps.json`.
+- Output files: `tools/Arm32ManualMapper/bin/Release/net6.0/Arm32ManualMapper.dll`, `.runtimeconfig.json`, `.deps.json`.
 - **Do not overwrite** existing TV targets (`$B/net8-lab/Arm32ManualMapper.dll`, `$B/fcview/app`, or existing retail assets) during validation. Stage the new mapper and the `FcMainMenu.Tizen` GPU game (`FcMainMenu.Tizen.dll` + dependencies + `assets/`) into a separate isolated test directory on the TV and launch `/usr/bin/dotnet ./Arm32ManualMapper.dll --run <coreclr10-dir> <isolated-gpu-game-dir>/FcMainMenu.Tizen.dll`.
 
 ## Verification Commands (Nova)
 ### Host Unit Tests (platform-independent, runnable on Linux x64 and ARM32)
 ```bash
-~/.dotnet/dotnet test mapper/tests/Arm32ManualMapper.Tests/Arm32ManualMapper.Tests.csproj --filter "Category!=Arm32Device"
+~/.dotnet/dotnet test tools/Arm32ManualMapper/tests/Arm32ManualMapper.Tests/Arm32ManualMapper.Tests.csproj --filter "Category!=Arm32Device"
 ```
 
 ### ARM32 Runtime Integration Tests (must run on ARM32; fails explicitly on x64)
 ```bash
-~/.dotnet/dotnet test mapper/tests/Arm32ManualMapper.Tests/Arm32ManualMapper.Tests.csproj --filter "Category=Arm32Device"
+~/.dotnet/dotnet test tools/Arm32ManualMapper/tests/Arm32ManualMapper.Tests/Arm32ManualMapper.Tests.csproj --filter "Category=Arm32Device"
 ```
 
 ### TV Verification (GPU Game `FcMainMenu.Tizen`, isolated staging directory)

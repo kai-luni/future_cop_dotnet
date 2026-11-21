@@ -181,6 +181,9 @@ public sealed class MisFile
                         model.Header[i] = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(i * 4));
                     break;
                 case "3DQL":
+                    // A truncated chunk (payload shorter than the count word) is skipped instead of
+                    // aborting the scan: the record may be a false Cobj match in a corrupt archive.
+                    if (span.Length < 4) break;
                     int count = (int)BinaryPrimitives.ReadUInt32LittleEndian(span);
                     for (int i = 0; i < count && 4 + (i + 1) * 12 <= span.Length; i++)
                     {

@@ -32,7 +32,7 @@ while (true) {
             flow.Advance(Stopwatch.GetElapsedTime(lastFrame, now).TotalSeconds);
         window.DrawScene(flow);
     }
-    else if (flow.Panel(Label) is { } panel) window.DrawPanel(panel.Heading, panel.Entries, panel.Selected, panel.Hint);
+    else if (flow.Panel(Label) is { } panel) window.DrawPanel(panel.Heading, panel.Entries, panel.Selected, panel.Hint, flow.LastLoadError);
     lastFrame = now;
     Thread.Sleep(16);
 }
@@ -164,12 +164,13 @@ sealed class MenuWindow : IDisposable
         Text("UP / DOWN: SCROLL      ENTER: ACCEPT", 218, 0xc0c0c0);
         XFlush(display);
     }
-    public void DrawPanel(string heading, IReadOnlyList<string> entries, int selection, string hint) {
+    public void DrawPanel(string heading, IReadOnlyList<string> entries, int selection, string hint, string? error = null) {
         XSetForeground(display, gc, 0x10182e); XFillRectangle(display, window, gc, 0, 0, (uint)width, (uint)height);
         Text(heading, 50, 0x73c5ff);
         for (int i = 0; i < entries.Count; i++)
             Text(entries[i], 84 + i * 16, i == selection ? 0xffff80UL : 0xffffffUL);
         Text(hint, 218, 0xc0c0c0);
+        if (error != null) Text(error, 232, 0xff8080);
         XFlush(display);
     }
     public void DrawScene(MenuFlow flow) {

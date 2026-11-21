@@ -43,7 +43,13 @@ bool texturedFlag = args.Any(a => a is "textured" or "--textured");
 var posArgs = args.Where(a => a is not ("textured" or "--textured")).ToArray();
 
 string mis = posArgs.Length > 0 ? posArgs[0] : "build/disc/files/CW/M1A1.MIS";
-int modelId = posArgs.Length > 1 ? int.Parse(posArgs[1]) : 30;
+int modelId = 30;
+if (posArgs.Length > 1 && !int.TryParse(posArgs[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out modelId))
+{
+    Console.Error.WriteLine($"FcModelViewer: model id must be an integer, got '{posArgs[1]}'");
+    Environment.ExitCode = 2;
+    return;
+}
 string bmpPath = posArgs.Length > 2 ? posArgs[2] : "wireframe.bmp";
 
 var options = new ViewerOptions(

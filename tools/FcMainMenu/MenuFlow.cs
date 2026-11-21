@@ -74,7 +74,9 @@ public sealed class MenuFlow
         _out = output;
         _err = error;
         _missionDir = missionDirectory
-            ?? Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(frontEndPath)))!, "PA");
+            ?? Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(frontEndPath))
+                                                    ?? Directory.GetCurrentDirectory())
+                            ?? Directory.GetCurrentDirectory(), "PA");
         FrontEnd.Session.PlayerOption = FrontEnd.Session.PlayerOption2 = 1;
         for (int p = 0; p < 2; p++)
         {
@@ -283,7 +285,11 @@ public sealed class MenuFlow
                 {
                     var c = pa.LoadoutTable[col];
                     int offset = (int)(c.Items - PrecinctAssaultData.LoadoutRowsAddress) + pa.LoadoutSelection[col, 0] * 6;
-                    ushort id = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(PrecinctAssaultData.LoadoutRows.AsSpan(offset + 4));
+                    // A selection row outside the retail table (corrupt menu state) shows the
+                    // fallback label instead of throwing while drawing the panel.
+                    ushort id = offset >= 0 && offset + 6 <= PrecinctAssaultData.LoadoutRows.Length
+                        ? System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(PrecinctAssaultData.LoadoutRows.AsSpan(offset + 4))
+                        : (ushort)0;
                     entries.Add($"{label(captions[col], "Weapon")}: {label(id, "Unknown")}");
                 }
                 return new MenuPanel(label(0x2710, "Weapons"), entries, Selected, "ARROWS: SELECT / CHANGE   ENTER: START   ESC: BACK");
