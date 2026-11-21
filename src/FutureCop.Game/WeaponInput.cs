@@ -49,21 +49,18 @@ public sealed class WeaponInput
     public int SpecialPhase => _specialPhase;
 
     /// <summary>
-    /// func_8005780C:45-54: pressed after an idle phase gives the press edge, a held button gives
-    /// "held", a release gives "released", and a released button returns to idle.
+    /// func_8005780C:45-54. The C tests the phase, not the previous button word, so every branch has to
+    /// be reproduced: a button entering from idle is a press edge, any other down frame is "held", a
+    /// release out of "held" is a released edge, and any other up frame falls back to idle - including
+    /// a press edge dropped before it ever became a held frame.
     /// </summary>
     private static int Next(uint word, uint mask, int phase)
     {
         bool down = (word & mask) != 0;
-        return phase switch
-        {
-            PhaseIdle when down => PhasePressed,
-            PhasePressed when down => PhaseHeld,
-            PhaseHeld when down => PhaseHeld,
-            PhaseHeld => PhaseReleased,
-            PhaseReleased => PhaseIdle,
-            _ => phase,
-        };
+        if (down)
+            return phase == PhaseIdle ? PhasePressed : PhaseHeld;
+        if (phase == PhaseHeld) return PhaseReleased;
+        return phase != PhaseIdle ? PhaseIdle : phase;
     }
 
     /// <summary>

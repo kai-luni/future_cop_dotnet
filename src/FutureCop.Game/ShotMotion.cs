@@ -114,4 +114,39 @@ public static class ShotMotion
         int next = scale + (accel * delta) / 16;
         return next > limit ? limit : next;
     }
+
+    /// <summary>Start value of the pursuit countdown unkDA: func_80035904:237 (and the state-4 launch,
+    /// func_80035B7C:320) store 0x5DC = 1500 ticks = 5 s.</summary>
+    public const int DecayCountdownStart = 0x5DC;
+
+    /// <summary>Reload of the countdown after each halving: func_80035B7C:465 adds 0x12C = 300 ticks = 1 s.</summary>
+    public const int DecayCountdownReload = 0x12C;
+
+    /// <summary>A speed scale below this kills the shot: func_80035B7C:466-467 (<c>unk84 &lt; 16</c> -&gt; unk1C = -1).</summary>
+    public const int DecayDeathSpeed = 16;
+
+    /// <summary>
+    /// The pursuit brake of the mover, func_80035B7C:461-468 (states 1 and 3 only, case at :459):
+    /// <code>
+    /// unkDA = (u16)(unkDA - delta);
+    /// if ((s16)unkDA &lt; 0) { unk84 /= 2; unkD4 = (s16)(unk84 &gt;&gt; 4); unkDA += 0x12C;
+    ///                        if (unk84 &lt; 16) unk1C = -1; }
+    /// </code>
+    /// The first halving therefore comes after 1500 ticks, every further one after 300. Halving
+    /// unkD4 too lowers the acceleration limit <c>unkD4 &lt;&lt; 4</c>, so the mover cannot speed back up.
+    /// </summary>
+    /// <param name="scale">unk84, the 16.16 speed scale.</param>
+    /// <param name="speedWord">unkD4, the s16 limit word (limit = word &lt;&lt; 4).</param>
+    /// <param name="countdown">unkDA, the u16 countdown.</param>
+    /// <param name="delta">Retail ticks of this call.</param>
+    /// <returns>False when the shot dies (unk1C = -1), true while it keeps flying.</returns>
+    public static bool DecaySpeed(ref int scale, ref int speedWord, ref int countdown, int delta)
+    {
+        countdown = (ushort)(countdown - delta);
+        if ((short)countdown >= 0) return true;
+        scale /= 2;                                   // C signed division, truncates toward zero
+        speedWord = (short)(scale >> 4);
+        countdown = (ushort)(countdown + DecayCountdownReload);
+        return scale >= DecayDeathSpeed;
+    }
 }

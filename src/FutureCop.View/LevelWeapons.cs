@@ -62,13 +62,30 @@ public sealed class LevelWeapons
     public int MuzzleSide { get; private set; }
 
     /// <summary>
-    /// Slow-motion divisor for the projectile clock. Retail shots are tracer-fast: a 44a starts at
-    /// 16384 units per tick with an acceleration of 122/16 per tick and a leash of 131072, so it lives
-    /// about two frames (REPORT-feuern.md:263-270). A viewer keeping that speed would never show a
-    /// projectile, so the level slows the flight like the wireframe viewer does - the trigger cadence,
-    /// the muzzle and the direction stay retail.
+    /// Slow-motion divisor of the projectile clock: a shot advances <c>TicksPerFrame / factor</c>
+    /// retail ticks per 60 Hz frame (<see cref="Shot.AdvanceRetailTime"/>). Path, speed and leash stay
+    /// retail; only the wall-clock time of the flight is stretched. This is a viewer value, not a
+    /// retail one - retail runs at factor 1.
     /// </summary>
-    public const double ShotSlowMotionDefault = 300.0;
+    /// <remarks>
+    /// Derivation (tACT 0x44a, slot 1 of the boot loadout; all values position units):
+    /// <list type="bullet">
+    /// <item>start speed unk84 = speed &lt;&lt; 1 = 8192 &lt;&lt; 1 = 16384, because the alternate word
+    /// obj+0x08 = 122 is set (func_8005E47C: args.unk2C, func_80035904:198);</item>
+    /// <item>acceleration (122 * delta) / 16 = +7 per tick up to unkD4 &lt;&lt; 4 = 131072
+    /// (func_80035B7C:441-447); step s3 = delta * unk84 (:450), added along the unit flight vector
+    /// (:522, func_8001ACA4);</item>
+    /// <item>leash (unkA6 &lt;&lt; 8) = ((8192 &lt;&lt; 4) &gt;&gt; 8) &lt;&lt; 8 = 131072 (func_80035904:234, :434).</item>
+    /// </list>
+    /// Per tick the position runs 16391, 32789, 49194, 65606, 82025, 98451, 114884, 131324: eight
+    /// ticks, the ninth finds s4 &gt; 131072 and stops the shot. At 60 Hz retail passes delta = 5:
+    /// frame 1 ends at 82110, frame 2 at 164410, frame 3 stops it - two frames, 8 ticks = 27 ms.
+    /// Target flight time 0.3 .. 0.8 s = 90 .. 240 ticks, so factor = 90/8 .. 240/8 = 11.25 .. 30.
+    /// 20 sits in that band: 8 * 20 = 160 ticks = 0.53 s = 32 frames for the full range, and the
+    /// slowest-to-see shot of the loadout (tACT 0x49a: step 65536 against a 49152 leash, one tick)
+    /// still stays on screen for 20 / 5 = 4 frames.
+    /// </remarks>
+    public const double ShotSlowMotionDefault = 20.0;
 
     /// <summary>Slow-motion divisor this instance flies its shots with.</summary>
     public double ShotSlowMotion => _shotSlowMotion;
@@ -126,6 +143,10 @@ public sealed class LevelWeapons
         ArgumentNullException.ThrowIfNull(body);
         ArgumentNullException.ThrowIfNull(parts);
         Slots.AdvanceTimers(delta);
+
+        // func_80055E10:61: a locked control block returns before any slot is read, so a paused or
+        // cut-scene player fires nothing and its button edges do not advance either.
+        if (body.Frozen != 0) return 0;
 
         int fired = 0;
         _input.Poll(translated, Slots.WeaponState, slot => fired += TryFireSlot(body, parts, slot));
@@ -210,8 +231,12 @@ public sealed class LevelWeapons
             direction = LobDirection(half, muzzle);
         }
 
-        var shot = new Shot(half, model, muzzle.X, muzzle.Y, muzzle.Z, 1.0 / _shotSlowMotion, 0.0,
-            direction: direction);
+        // The muzzle is in world position units (LevelScene.ShotMatrix subtracts the walker's world
+        // position and divides by 16), which is the unit the mover's step and leash are in - so the
+        // shot takes divisor 1 and the retail step unchanged. Slow motion is applied to the clock in
+        // AdvanceShots, not to the step. No target exists, so unkE0 = 0 (func_8005E47C:108-109).
+        var shot = new Shot(half, model, muzzle.X, muzzle.Y, muzzle.Z, 1.0, 0.0,
+            direction: direction, positionDivisor: 1, pursuitState: 0);
         Shots.Add(shot);
 
         // func_8006ACB0:137-139: slot 1 stamps 0x84 into the recoil timer of the firing arm before the
@@ -317,12 +342,17 @@ public sealed class LevelWeapons
         return (body.X + local.X, body.Y + local.Y, body.Z + local.Z);
     }
 
-    /// <summary>Advances every live projectile one retail tick and drops the expired ones.</summary>
-    /// <param name="ticks">Retail ticks to advance (5 per 60 Hz frame).</param>
-    public void AdvanceShots(int ticks)
+    /// <summary>
+    /// Advances every live projectile by <paramref name="frames"/> 60 Hz frames of slowed retail time
+    /// (<see cref="RetailClock.TicksPerFrame"/> / <see cref="ShotSlowMotion"/> ticks each) and drops
+    /// the expired ones.
+    /// </summary>
+    /// <param name="frames">60 Hz frames to advance.</param>
+    public void AdvanceShots(int frames)
     {
-        for (int t = 0; t < ticks; t++)
-            foreach (var shot in Shots) shot.Tick();
+        double ticksPerFrame = RetailClock.TicksPerFrame / _shotSlowMotion;
+        for (int f = 0; f < frames; f++)
+            foreach (var shot in Shots) shot.AdvanceRetailTime(ticksPerFrame);
         Shots.RemoveAll(s => s.Expired);
     }
 
