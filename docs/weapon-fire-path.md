@@ -101,6 +101,40 @@ the lob solver `func_8005E624`/`func_8005E2A0` (the arc word is carried but the 
 the beam paths (`func_8006B23C`, actions 10..12/14), the six other spawners, the projectile animation
 track (`func_80044B34`), collision and the secondary object of `func_800402DC`.
 
+## The body reaction to a shot: there is no fire clip
+
+Retail has **no fire animation clip** for the player mech, and none is needed. The complete weapon
+path - `gWeaponSlotInput` (`func_80055E10`), `gWeaponSlotUpdate` (`func_8006BA50`),
+`gWeaponFireDispatch` (`func_8006ACB0`) and `gBeamPartUpdate` (`func_8006B23C`) - contains **no call to
+`gSelectAnimationClip` (`func_800448D8`)** and touches no animation track at all. The only animated
+track a player owns is the locomotion one at `obj+0xC8`, and `func_800549F0` drives it from the input
+state alone (`anim` is chosen from `state`/`unkB9`/`unkBA` at `800549F0.c:367-600`, then selected at
+`:807`). The walk/run/dash clips therefore never fire a shot-triggered pose; nothing in the fire path
+can start clip 0x36/0x37 - those two are the punch clips of `action == 2` (`800549F0.c:856-876`) and
+belong to the melee path, not to the weapon slots.
+
+What the original does instead, in this order:
+
+1. **The arm kick.** `func_8006ACB0.c:137-139`: after `gTransformPartVertex` sampled the muzzle of the
+   firing arm, and only for `index == 1` (the Cross slot), the dispatcher stamps `0x84` into the recoil
+   timer of that arm - `*(u16 *)(state + 0x174 + offset * 2) = 0x84`. `offset` is the low bit of the
+   shot counter (`:123-131`), so the timer of the arm that actually fired is the one that is set.
+2. **The arm displacement.** `func_80057E40.c:201-215`: `func_80052D7C` recomposes both arm instances
+   from the companion's joint chain, then each live timer is decremented by the frame delta, and while
+   it is still positive `gVectorMulAdd(part.b, part.a, sum, part.b)` moves the instance along the
+   arm's own local Z using `sum = (timer - 132) << 4` above 88 and `sum = -timer << 3` below. The
+   matrix is recomposed every frame, so this is an absolute per-frame offset, not an integral.
+3. **The muzzle effect.** `func_8006ACB0.c:287-297`: if the half's byte at `def + 0x1B` is non-zero,
+   `gSpawnTypeAtOwner` spawns the secondary object from that spawn-table column at the muzzle; without
+   a spawned projectile it goes through the `t60` block with `ptr = state + 0x178 + offset * 76` and
+   `b = 0x64`, i.e. it is attached to the same arm record for 100 ticks.
+
+The port reproduces (1) and (2) in `src/FutureCop.Game/WeaponRecoil.cs`, wired into
+`LevelWeapons.TryFireSlot` and `LevelScene.UpdateWalkerPose`; the frame order of `func_800588D4`
+(`gSlewEntityAim` at `:287` before `gWeaponSlotInput` at `:290`) is kept, so the shot leaves from the
+arm pose of its own frame and the kick shows from the next one. (3) is **not** ported: it needs the
+spawn table (`D_800A7040`) and the object constructor, which the port does not have yet.
+
 ## Open points
 
 - **Which definitions the player carries.** The three slot ids live in the runtime player state

@@ -51,6 +51,13 @@ public sealed class LevelWeapons
     /// </summary>
     public List<Beam> Beams { get; } = new();
 
+    /// <summary>
+    /// The two arm recoil timers (state + 0x174 / + 0x176) and their displacement. Retail's only body
+    /// reaction to a shot: func_8006ACB0:137-139 stamps 0x84 for slot 1 and func_80057E40:202-215 slides
+    /// that arm along its own axis while the timer runs.
+    /// </summary>
+    public WeaponRecoil Recoil { get; } = new();
+
     /// <summary>Muzzle side of the last shot (state + 0x178 record index): the counter's low bit.</summary>
     public int MuzzleSide { get; private set; }
 
@@ -125,6 +132,14 @@ public sealed class LevelWeapons
         return fired;
     }
 
+    /// <summary>
+    /// func_80057E40:202-215 for the frame: decays both recoil timers and snapshots the displacement the
+    /// pose of this frame uses. Retail runs it before gWeaponSlotInput (func_800588D4:287 vs :290), so a
+    /// kick this frame's shot stamps only moves the arm on the next one.
+    /// </summary>
+    /// <param name="delta">Retail ticks of the frame (<see cref="RetailClock.TicksPerFrame"/> at 60 Hz).</param>
+    public void AdvanceRecoil(int delta = RetailClock.TicksPerFrame) => Recoil.Advance(delta);
+
     /// <summary>func_8006BA50:169-217 for one slot. Returns 1 when a shot left the muzzle.</summary>
     /// <param name="body">The walker.</param>
     /// <param name="parts">The player instances (parts 2 and 3 are the two arm records).</param>
@@ -198,6 +213,10 @@ public sealed class LevelWeapons
         var shot = new Shot(half, model, muzzle.X, muzzle.Y, muzzle.Z, 1.0 / _shotSlowMotion, 0.0,
             direction: direction);
         Shots.Add(shot);
+
+        // func_8006ACB0:137-139: slot 1 stamps 0x84 into the recoil timer of the firing arm before the
+        // shot leaves; func_80057E40 turns it into the arm displacement on the following frames.
+        Recoil.Trigger(slot, MuzzleSide);
 
         Slots.Cycles[slot] = state.Cycle;
         Slots.Timers[slot] = state.Timer;
@@ -287,6 +306,9 @@ public sealed class LevelWeapons
         var part = parts[index];
         var (sin, cos) = MechMath.SinCos(body.Angle);
         var heading = new Gte.Mat(new[] { cos, 0, -sin, 0, 0x10000, 0, sin, 0, cos }, 0, 0, 0);
+        // The caller hands over the pose of this frame, arms already displaced by the recoil
+        // (LevelScene.ApplyRecoil = func_80057E40:202-215, which runs before gWeaponSlotInput), so the
+        // muzzle sits where the drawn arm is.
         var local = PlayerAssembly.Point(part.Model, part.Frame, 0,
             ScriptRender.Compose(part.Matrix, heading));
         // Point already returns engine translation units (func_80017668 applies the <<4 of

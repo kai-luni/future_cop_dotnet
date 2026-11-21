@@ -125,8 +125,13 @@ public sealed class LevelScene
         for (int f = 0; f < frames; f++) _weapons?.AdvanceBeams();
         // func_8002FF6C runs per frame against the player's position.
         _pickups?.Update(_walker.X, _walker.Y, _walker.Z);
-        _weapons?.Advance(_walker, _parts, _padWord, RetailClock.TicksPerFrame * frames);
+        // func_800588D4 frame order: :287 gSlewEntityAim composes the arm instances and decays the recoil
+        // timers (func_80057E40:201-215), :290 gWeaponSlotInput fires from those instances. The pose is
+        // therefore built BEFORE the trigger, and the muzzle of this frame's shot sits on the displaced
+        // arm - a kick stamped by the shot itself first moves the arm on the next frame.
+        _weapons?.AdvanceRecoil(RetailClock.TicksPerFrame * frames);
         UpdateWalkerPose();
+        _weapons?.Advance(_walker, _parts, _padWord, RetailClock.TicksPerFrame * frames);
         return result;
     }
 
@@ -151,7 +156,60 @@ public sealed class LevelScene
     private void UpdateWalkerPose()
     {
         if (_animateWalker && _walker is { } walker && _parts[0].Frame != walker.Track.Frame)
-            _parts = PlayerAssembly.Build(Actor, _file.Models, mainFrame: walker.Track.Frame);
+            RebuildParts(walker.Track.Frame);
+        ApplyRecoil();
+    }
+
+    /// <summary>The matrices <see cref="PlayerAssembly"/> composed, before any recoil of this frame.</summary>
+    private Gte.Mat[] _poseMatrices = Array.Empty<Gte.Mat>();
+
+    /// <summary>Rebuilds the five instances and caches their unrecoiled matrices.</summary>
+    private void RebuildParts(int mainFrame)
+    {
+        _parts = PlayerAssembly.Build(Actor, _file.Models, mainFrame: mainFrame);
+        _poseMatrices = _parts.Select(p => p.Matrix).ToArray();
+    }
+
+    /// <summary>
+    /// func_80057E40:202-215: the two arm instances (<c>parts[2]</c> = state + 0x178,
+    /// <c>parts[3]</c> = state + 0x1C4) are displaced along their own Z axis by the recoil timers of
+    /// state + 0x174 / + 0x176. The displacement is applied to the cached joint matrices, never to the
+    /// already displaced ones, because the C recomposes the instance from the joint chain
+    /// (func_80057E40:201) before every application.
+    /// </summary>
+    private void ApplyRecoil()
+    {
+        if (_weapons is not { } weapons) return;
+        var parts = _parts.ToArray();
+        for (int side = 0; side < WeaponRecoil.Count; side++)
+        {
+            int index = 2 + side;
+            if (index >= parts.Length || index >= _poseMatrices.Length) break;
+            parts[index] = parts[index] with { Matrix = weapons.Recoil.Apply(_poseMatrices[index], side) };
+        }
+        _parts = parts;
+    }
+
+    /// <summary>
+    /// Displacement the render actually applies to the two arms this frame, in world position units:
+    /// the drawn arm matrix minus the unrecoiled one that the joint chain composed. This is the barrel
+    /// travel of func_80057E40 - the only visible body reaction retail has to a shot.
+    /// </summary>
+    public ((int X, int Y, int Z) Right, (int X, int Y, int Z) Left) ArmRecoil
+    {
+        get
+        {
+            if (_weapons is null || _poseMatrices.Length < 4) return ((0, 0, 0), (0, 0, 0));
+            Gte.Mat Delta(int index)
+            {
+                var drawn = _parts[index].Matrix;
+                var rest = _poseMatrices[index];
+                return drawn with { Tx = drawn.Tx - rest.Tx, Ty = drawn.Ty - rest.Ty, Tz = drawn.Tz - rest.Tz };
+            }
+            var right = Delta(2);
+            var left = Delta(3);
+            return ((right.Tx, right.Ty, right.Tz), (left.Tx, left.Ty, left.Tz));
+        }
     }
 
     /// <summary>Cumulative retail locomotion substeps supplied to the walker.</summary>
@@ -187,6 +245,7 @@ public sealed class LevelScene
         _textures = TextureBank.FromMisFile(misPath);
         Actor = _file.PlayerActors.FirstOrDefault() ?? throw new InvalidDataException("mission has no player actor");
         _parts = PlayerForm.Build(Actor, _file.Models, 0);
+        _poseMatrices = _parts.Select(p => p.Matrix).ToArray();
 
         var clip = Map.Header.WorldClipRect;
         int x = (clip[2] + clip[3]) / 2, z = (clip[0] + clip[1]) / 2;
