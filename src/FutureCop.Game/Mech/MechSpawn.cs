@@ -5,7 +5,12 @@ namespace FutureCop.Game.Mech;
 /// <summary>Static-terrain, single-player WALK initialization from mission records.</summary>
 public static class MechSpawn
 {
-    public static MechBody CreateWalker(PlayerActor actor, Model model, LevelMap map)
+    /// <param name="companion">
+    /// The companion instance model (LSRa slot 2). func_80051AF8:138 starts clip (form == 1) on its
+    /// track at +0xA0, which func_80055988:194-227 then drives through the transform; null leaves
+    /// <see cref="MechBody.CompanionTrack"/> without a clip table (not driven).
+    /// </param>
+    public static MechBody CreateWalker(PlayerActor actor, Model model, LevelMap map, Model? companion = null)
     {
         if (actor.Spawn is not { } spawn || spawn.Heading < 0)
             throw new InvalidDataException($"Actor {actor.Id} has no supported WALK spawn record");
@@ -26,6 +31,12 @@ public static class MechSpawn
         if (model.AnimationClips.Count == 0)
             throw new InvalidDataException($"Model {model.Id} has no WALK animation table");
         MechAnimation.Play(body.Track, 0, 1, 0);
+        // func_80051AF8:138: the walker form (state + 0xAD == 0) starts clip 0 on the companion track.
+        if (companion is { AnimationClips.Count: > 0 })
+        {
+            body.CompanionTrack.Clips = companion.AnimationClips;
+            MechAnimation.Play(body.CompanionTrack, 0, 1, 0);
+        }
         // func_80055988 / func_800518A8 read the 3DBB record of the frame the body instance shows.
         body.FrameBounds = model.FrameBounds;
         body.InstanceFrame = body.Track.Frame;

@@ -44,7 +44,8 @@ public sealed class LevelScene
     /// <summary>Use the mission's player record and body model for the interactive WALK viewer.</summary>
     public void EnableMechMovement()
     {
-        AttachWalker(MechSpawn.CreateWalker(Actor, _parts[0].Model, Map));
+        // _parts[1] is the companion instance (LSRa slot 2) whose track func_80051AF8:138 starts.
+        AttachWalker(MechSpawn.CreateWalker(Actor, _parts[0].Model, Map, _parts[1].Model));
         _animateWalker = true;
         UpdateWalkerPose();
         var (x, y, z) = MechWorld;
@@ -206,33 +207,33 @@ public sealed class LevelScene
     {
         if (_animateWalker && _walker is { } walker)
         {
-            // func_800518A8 interpolates the pose by state + 0xBC: PlayerForm.Build already blends the
-            // rest clip against the hover clip on that word (:216-230, PlayerForm.Frame), so the pose
-            // has to follow the progress too, not just the track frame. Without this the mech keeps
-            // its walking legs while the transform runs (:191-205) and floats on them afterwards.
-            if (_parts[0].Frame != walker.Track.Frame || _poseProgress != walker.Progress)
+            // The drawn frames are the ones the instances carry, never a function of state + 0xBC:
+            // the body frame is +0xD4 set by func_800549F0:878/:916 on foot and by
+            // func_80055988:241/:248 during the transform (scrub of clip 0xC, clip 0xD at the end),
+            // the companion frame is +0xAC of its track (func_80055988:240/:247). func_800597C0:254-269
+            // reads state + 0xBC only for the two polygon-group masks. The lift of :235-237 is already
+            // in the position (obj + 0x54), so the assembly itself is not raised.
+            int mainFrame = walker.Track.Frame;
+            int companionFrame = walker.CompanionTrack.Clips is null ? -1 : walker.CompanionTrack.Frame;
+            if (_parts[0].Frame != mainFrame || _poseCompanionFrame != companionFrame
+                || _poseProgress != walker.Progress)
             {
                 _poseProgress = walker.Progress;
-                RebuildParts(walker.Track.Frame);
+                _poseCompanionFrame = companionFrame;
+                var (mainMask, companionMask) = PlayerForm.Masks(walker.Progress);
+                _parts = PlayerAssembly.Build(Actor, _file.Models, mainFrame, companionFrame, mainMask, companionMask);
+                _poseMatrices = _parts.Select(p => p.Matrix).ToArray();
             }
         }
         ApplyRecoil();
     }
 
+    // -1 = no pose built from the walker yet, so the first UpdateWalkerPose always assembles.
     private int _poseProgress = -1;
+    private int _poseCompanionFrame = int.MinValue;
 
     /// <summary>The matrices <see cref="PlayerAssembly"/> composed, before any recoil of this frame.</summary>
     private Gte.Mat[] _poseMatrices = Array.Empty<Gte.Mat>();
-
-    /// <summary>Rebuilds the five instances and caches their unrecoiled matrices.</summary>
-    private void RebuildParts(int mainFrame)
-    {
-        // progress -1 means "no form state yet": the initial assembly is the progress-0 one.
-        _parts = _poseProgress < 0
-            ? PlayerAssembly.Build(Actor, _file.Models, mainFrame: mainFrame)
-            : PlayerForm.Build(Actor, _file.Models, _poseProgress);
-        _poseMatrices = _parts.Select(p => p.Matrix).ToArray();
-    }
 
     /// <summary>
     /// func_80057E40:202-215: the two arm instances (<c>parts[2]</c> = state + 0x178,
@@ -278,6 +279,9 @@ public sealed class LevelScene
 
     /// <summary>Cumulative retail locomotion substeps supplied to the walker.</summary>
     public long WalkerSteps { get; private set; }
+
+    /// <summary>The five player instances as func_800597C0 submits them this frame (frames, masks, matrices).</summary>
+    public IReadOnlyList<PlayerPart> Parts => _parts;
 
     /// <summary>Walker state that affects the projected geometry and camera.</summary>
     public ((int X, int Y, int Z) Position, int Angle, int Frame) WalkerRenderPose =>

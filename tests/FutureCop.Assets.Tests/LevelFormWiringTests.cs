@@ -105,13 +105,84 @@ public class LevelFormWiringTests
         }
         Assert.Equal(0x10000, walker.Progress);
 
-        // func_800518A8 blends the pose by state + 0xBC, so the assembled parts must follow the
-        // progress: the same track frame at progress 0 and 0x10000 is two different poses.
+        // The hover pose is the frame func_80055988:227 leaves on the body track (clip 0xD), set on
+        // the instance at :248. (func_800518A8 is gUpdateMorphBounds - footprint and bounds, not a
+        // pose blend; the earlier comment here was wrong.)
         Assert.NotEqual(onFootFrame, scene.WalkerRenderPose.Frame);
+        Assert.Equal(walker.Track.Frame, scene.WalkerRenderPose.Frame);
         var model = new MisFile(FindMission()!).Models;
         var onFoot = PlayerForm.Build(scene.Actor, model, 0);
         var hover = PlayerForm.Build(scene.Actor, model, 0x10000);
         Assert.Equal(onFoot.Count, hover.Count);
         Assert.NotEqual(onFoot[4].Matrix.Ty, hover[4].Matrix.Ty);
+    }
+
+    private const uint Forward = 0x40000000;
+
+    [RetailFact]
+    public void ScenePoseRunsTheWalkCycleOnFoot()
+    {
+        // Regression of the progress-driven pose: at state + 0xBC == 0 the scene built the
+        // ClipStart(0) frame and the legs stood still while the body walked. On foot the body frame
+        // is the track frame func_800549F0:878 advances and :916 sets on the instance.
+        var scene = Attach();
+        var walker = scene.Walker!;
+        var frames = new HashSet<int>();
+        for (int step = 0; step < 30; step++)
+        {
+            scene.HeldPadWord = Forward;
+            scene.AdvanceWalker(1, Forward, AnalogPad.Digital);
+            Assert.Equal(0, walker.Progress);
+            Assert.Equal(walker.Track.Frame, scene.Parts[0].Frame);
+            Assert.Equal(walker.Track.Frame, scene.WalkerRenderPose.Frame);
+            frames.Add(scene.Parts[0].Frame);
+        }
+        // Measured on CONFT.MIS: the walk runs through clips 8, 0x26..0x29, frames 3..37.
+        Assert.True(frames.Count >= 25, $"walk cycle shows only {frames.Count} distinct frames");
+        Assert.Equal(37, scene.Parts[0].Frame);
+    }
+
+    [RetailFact]
+    public void SceneTransformPoseIsTheTrackScrubAndKeepsTheLiftInThePosition()
+    {
+        var scene = Attach();
+        var walker = scene.Walker!;
+        var models = new MisFile(FindMission()!).Models;
+        bool sawTransform = false;
+        for (int step = 0; step < 120; step++)
+        {
+            // Out and back: chord at step 0 (to hover) and at step 60 (back to the walker).
+            uint flags = step is 0 or 60 ? FormChord : 0u;
+            scene.HeldPadWord = flags;
+            scene.AdvanceWalker(1, flags, AnalogPad.Digital);
+            // func_80055988:240-241 scrub clip 2 / 0xC by state + 0xBC (func_80044B34 type 3),
+            // :213/:216/:226-227 select clips 0 / 1 / 0xD at the ends; func_800597C0:254-269 takes the
+            // masks from + 0xBC. PlayerForm.Build is the independent closed form of the same.
+            var expected = PlayerForm.Build(scene.Actor, models, walker.Progress);
+            var parts = scene.Parts;
+            Assert.Equal(expected[0].Frame, parts[0].Frame);
+            Assert.Equal(expected[1].Frame, parts[1].Frame);
+            Assert.Equal(expected[0].Mask, parts[0].Mask);
+            Assert.Equal(expected[1].Mask, parts[1].Mask);
+            // :235-237 add the lift to obj + 0x54 (the position); func_800597C0 draws the instances
+            // at that position without a second lift.
+            Assert.Equal(0, parts[0].Matrix.Ty);
+            Assert.Equal(PlayerForm.Height(walker.Progress), walker.LiftHeight);
+            sawTransform |= walker.Progress is > 0 and < 0x10000;
+        }
+        Assert.True(sawTransform);
+        Assert.Equal(0, walker.Progress);
+    }
+
+    [RetailFact]
+    public void SpawnStartsTheCompanionTrackOnTheWalkerClip()
+    {
+        // func_80051AF8:138 selects clip (state + 0xAD == 1) on the companion track at +0xA0; the
+        // walker spawn is form 0, so clip 0 - without it func_80055988:194 has no table to scrub.
+        var scene = Attach();
+        var track = scene.Walker!.CompanionTrack;
+        Assert.NotNull(track.Clips);
+        Assert.Equal(0, track.ClipIndex);
+        Assert.Equal(track.Clips![0].Start, track.Frame);
     }
 }
