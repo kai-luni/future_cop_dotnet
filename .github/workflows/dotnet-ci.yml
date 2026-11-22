@@ -16,7 +16,7 @@ jobs:
           dotnet-version: '10.0.x'
       - name: Build all projects
         run: |
-          for p in src/FutureCop.Assets src/FutureCop.Audio src/FutureCop.Game src/FutureCop.Gpu src/FutureCop.Gpu.SceneBridge src/FutureCop.Render src/FutureCop.View tools/FcAssetTool tools/FcLevelStart tools/FcLevelTv tools/FcMainMenu; do
+          for p in $(git ls-files '*.csproj' | grep -v '^tests/' | sed 's|/[^/]*$||' | sort -u); do
             dotnet build "$p" -v q
           done
       - name: Run xUnit test suite (asset-free tests; asset-dependent tests skip)
