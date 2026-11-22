@@ -6,9 +6,17 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: dotnet-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -18,7 +26,11 @@ jobs:
         run: |
           # Tizen projects need TV framework DLLs (gitignored, local only) - skip them.
           for p in $(git ls-files '*.csproj' | grep -v '^tests/' | grep -vi 'tizen' | sed 's|/[^/]*$||' | sort -u); do
-            dotnet build "$p" -v q
+            dotnet build "$p"
           done
       - name: Run xUnit test suite (asset-free tests; asset-dependent tests skip)
-        run: dotnet test tests/FutureCop.Assets.Tests -v q
+        run: |
+          # Discover test projects the same way as the build step.
+          for p in $(git ls-files 'tests/*/*.csproj' | sed 's|/[^/]*$||' | sort -u); do
+            dotnet test "$p" --no-build -v q
+          done

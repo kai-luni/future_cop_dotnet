@@ -48,7 +48,7 @@ Shared golden vectors: `tests/golden/3dtl.vectors` (line form `fcop-3dtl-golden/
 schema documented in the file header). Both suites assert the same cases:
 
 ```bash
-dotnet test tests/FutureCop.Assets.Tests          # .NET xUnit, 61 tests
+dotnet test tests/FutureCop.Assets.Tests          # .NET xUnit, 114 tests
 bash ../future-cop-lapd-ps1/tests/host/build.sh   # C harness vs ORIGINAL decomp C
 ```
 
