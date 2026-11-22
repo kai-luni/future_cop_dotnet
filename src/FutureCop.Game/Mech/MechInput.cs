@@ -22,8 +22,8 @@ public enum PadButtons : ushort
 
 /// <summary>
 /// D_800AAC50 per port: 14 button masks over the polled word (func_8001EF8C: ~raw, buttons in
-/// bits 16..31). <see cref="Default"/> is what func_8001E588 writes; the option presets of
-/// func_8007BFCC (D_8009BEF4/D_8009BFD4) are not ported.
+/// bits 16..31). <see cref="Default"/> is what func_8001E588 writes; <see cref="Preset"/> is the
+/// controller-configuration option func_8007BFCC (button layouts only - no dead zone or curve).
 /// </summary>
 public sealed class PadMapping
 {
@@ -43,6 +43,36 @@ public sealed class PadMapping
         0x100000, 0x400000, 0x800000, 0x200000, 0x80000000, 0x40000000, 0x20000000,
         0x10000000, 0x8000000, 0x4000000, 0x1000000, 0x2000000, 0x10000, 0x80000,
     });
+
+    /// <summary>D_8009BEF4[i].value (stride 12, word at +8), read from SLUS_007.39.</summary>
+    private static readonly uint[] PresetValues =
+    {
+        0x1000000, 0x4000000, 0x100000, 0x800000, 0x400000, 0x200000, 0x10000,
+        0x2000000, 0x8000000, 0x10000000, 0x20000000, 0x40000000, 0x80000000, 0x80000,
+    };
+
+    /// <summary>D_8009BFD4: four presets of 14 slot indices, read from SLUS_007.39.</summary>
+    private static readonly byte[] PresetSlots =
+    {
+        10, 9, 0, 2, 1, 3, 12, 11, 8, 7, 6, 5, 4, 13,
+        9, 10, 0, 2, 1, 3, 12, 8, 11, 7, 6, 5, 4, 13,
+        10, 9, 0, 2, 1, 3, 12, 11, 8, 5, 4, 7, 6, 13,
+        9, 10, 0, 2, 1, 3, 12, 8, 11, 5, 4, 7, 6, 13,
+    };
+
+    /// <summary>
+    /// func_8007BFCC gApplyControllerPreset(port, value): value clamped to 0..3, slot
+    /// D_8009BFD4[value * 14 + i] receives D_8009BEF4[i].value. Preset 0 (the boot default,
+    /// func_80076A2C) equals <see cref="Default"/>; 1 swaps L1/L2 and R1/R2, 2 swaps
+    /// Square/Circle and Cross/Triangle, 3 does both.
+    /// </summary>
+    public static PadMapping Preset(int value)
+    {
+        value = value < 0 ? 0 : value > 3 ? 3 : value;
+        var masks = new uint[14];
+        for (int i = 0; i < 14; i++) masks[PresetSlots[value * 14 + i]] = PresetValues[i];
+        return new PadMapping(masks);
+    }
 }
 
 /// <summary>Controller path of the player mech (ports of the retail input units).</summary>

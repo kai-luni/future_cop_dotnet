@@ -87,7 +87,38 @@ public sealed class LevelScene
         _pickups = new PickupItems(_file, Map,
             PlayerResupplyState.ForWalker(Weapons!.Slots, () => Walker!.Health,
                 v => Walker!.Health = (short)v, 0x7F00));
+        EnableObjectives();
     }
+
+    private ObjectiveField? _objectives;
+    private int _playerTeam;
+
+    /// <summary>
+    /// The capturable outposts (entity type 0x24) of this mission and the match score they feed, or
+    /// null until the live level is enabled.
+    /// </summary>
+    public ObjectiveField? Objectives => _objectives;
+
+    /// <summary>
+    /// Places the mission's outposts: every type-0x24 record of a Csac request (32 in CONFT.MIS). The
+    /// player's team is the team byte of its own record (source + 0x1C, func_8002A5F4:118).
+    /// </summary>
+    public void EnableObjectives()
+    {
+        if (_objectives is not null) return;
+        var records = MissionEntities.Load(_file);
+        _playerTeam = records.FirstOrDefault(r => r.Type == 1 && r.Id == Actor.Id)?.Team ?? 0;
+        _objectives = ObjectiveField.FromRecords(records,
+            (x, z) => LevelGround.Height(Map, x, 0x100000, z, out _), new MatchScore(_playerTeam));
+    }
+
+    /// <summary>
+    /// The HUD session with the live score words (D_8009FA94 + 0x64). +0x5C is 1 in a Precinct Assault
+    /// match: the match end branches on it (80027D9C.c:78, 80060A0C.c:114).
+    /// </summary>
+    public HudSession ScoreSession(HudSession session) => _objectives is { } field
+        ? session with { Mode = 1, Score0 = field.Score.Score[0], Score1 = field.Score.Score[1] }
+        : session;
 
     /// <summary>
     /// Opt in to a caller-initialized one-player walker. Initialization and clip records must be
@@ -125,6 +156,9 @@ public sealed class LevelScene
         for (int f = 0; f < frames; f++) _weapons?.AdvanceBeams();
         // func_8002FF6C runs per frame against the player's position.
         _pickups?.Update(_walker.X, _walker.Y, _walker.Z);
+        // Message 10 of func_8002D664 hands the touching entity to gTryCaptureObjective. The player's
+        // instance radius (obj+0x68) is not derived yet, so the candidate carries 0 there.
+        _objectives?.Touch(new CaptureCandidate(Actor.Id, 1, _playerTeam, _walker.X, _walker.Y, _walker.Z, 0));
         // func_800588D4 frame order: :287 gSlewEntityAim composes the arm instances and decays the recoil
         // timers (func_80057E40:201-215), :290 gWeaponSlotInput fires from those instances. The pose is
         // therefore built BEFORE the trigger, and the muzzle of this frame's shot sits on the displaced
@@ -457,6 +491,29 @@ public sealed class LevelScene
             }
         }
 
+        // Outposts (type 0x24): the record's own model and the child gInitObjectFromDef spawns from the
+        // second aRSL model (8002C584.c:286-295), both at the outpost position, unrotated like pickups.
+        if (_objectives is { } objectives)
+        {
+            foreach (var objective in objectives.Objectives)
+                foreach (int modelId in new[] { objective.ModelId, objective.ChildModelId })
+                {
+                    var model = _file.Models.FirstOrDefault(m => m.Id == modelId);
+                    if (model is null || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
+                    var matrix = PlacedMatrix(objective.X, objective.Y, objective.Z, view);
+                    var projected = model.IsScripted
+                        ? ScriptRender.Project(model, verts, 0, matrix, Focal, Ofx, Ofy, 1)
+                        : ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1);
+                    var widths = model.Widths.TryGetValue(1, out var ow) ? ow.ToArray() : Array.Empty<short>();
+                    foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
+                    {
+                        var f = face;
+                        var m = model;
+                        faces.Add((f.Work.Z, () => DrawModelFace(f, m)));
+                    }
+                }
+        }
+
         // Painter's order, far first, stable for equal keys (submission order). Viewer convention:
         // retail sorts into an ordering table whose bucket mapping is not ported; both keys are SZ3
         // averages. An unstable sort reorders coplanar terrain packets whenever the mech is added.
@@ -606,11 +663,14 @@ public sealed class LevelScene
     /// with the identity orientation. func_8002FA20:92-113 stores position and extents only, so the
     /// retail item is not rotated.
     /// </summary>
-    private Gte.Mat PickupMatrix(WeaponPickup item, Gte.Mat view)
+    private Gte.Mat PickupMatrix(WeaponPickup item, Gte.Mat view) => PlacedMatrix(item.X, item.Y, item.Z, view);
+
+    /// <summary>Unrotated placement of a model at a world position, relative to the mech origin.</summary>
+    private Gte.Mat PlacedMatrix(int x, int y, int z, Gte.Mat view)
     {
-        int lx = (item.X - MechWorld.X) >> 4;
-        int ly = (item.Y - MechWorld.Y) >> 4;
-        int lz = (item.Z - MechWorld.Z) >> 4;
+        int lx = (x - MechWorld.X) >> 4;
+        int ly = (y - MechWorld.Y) >> 4;
+        int lz = (z - MechWorld.Z) >> 4;
         // 0x10000 is 1.0 in engine matrix units (Gte.Load shifts the rotation right by 4).
         var local = new Gte.Mat(new[]
         {

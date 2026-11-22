@@ -21,36 +21,7 @@ public static partial class MechWalker
     {
         unchecked
         {
-            if (speed != 0)
-            {
-                int r0 = body.AxisX, r1 = body.AxisZ, t2 = speed;
-                if (lane == 0)
-                {
-                    if (direction != 0)
-                    {
-                        speed *= 181;
-                        speed = (speed < 0 ? speed + 0xFF : speed) >> 8;
-                        t2 = speed;
-                        bool below = speed < 1;
-                        bool first = direction == 1 ? below : !below;
-                        if (first) (r0, r1) = (r0 - r1, r1 + r0);
-                        else (r0, r1) = (r0 + r1, r1 - r0);
-                    }
-                }
-                else
-                {
-                    int a = r0;
-                    r0 = r1;
-                    r1 = -a;
-                }
-                delta[0] = MechMath.Fmul(t2, r0);
-                delta[2] = MechMath.Fmul(speed, r1);
-            }
-            else
-            {
-                delta[0] = 0;
-                delta[2] = 0;
-            }
+            AxisDelta(body, speed, lane, delta, direction);
 
             int n = (sbyte)body.Slow;
             if (n != 0)
@@ -102,6 +73,50 @@ public static partial class MechWalker
             }
             delta[2] = z;
             delta[1] += -0x9800;
+        }
+    }
+
+    /// <summary>
+    /// The planar thrust shared by func_80054590 and func_800537D0 gBuildHoverMovementVector
+    /// (800537D0.c:48-96, the same branches): <paramref name="speed"/> along the facing axis,
+    /// <paramref name="lane"/> != 0 turns the axis by 90 degrees, otherwise <paramref name="direction"/>
+    /// 1/2 mixes in the side axis at 181/256. Writes delta[0] and delta[2] only. The trailing
+    /// func_80053730 (2P separation) does nothing with one player.
+    /// </summary>
+    public static void AxisDelta(MechBody body, int speed, int lane, int[] delta, int direction)
+    {
+        unchecked
+        {
+            if (speed != 0)
+            {
+                int r0 = body.AxisX, r1 = body.AxisZ, t2 = speed;
+                if (lane == 0)
+                {
+                    if (direction != 0)
+                    {
+                        speed *= 181;
+                        speed = (speed < 0 ? speed + 0xFF : speed) >> 8;
+                        t2 = speed;
+                        bool below = speed < 1;
+                        bool first = direction == 1 ? below : !below;
+                        if (first) (r0, r1) = (r0 - r1, r1 + r0);
+                        else (r0, r1) = (r0 + r1, r1 - r0);
+                    }
+                }
+                else
+                {
+                    int a = r0;
+                    r0 = r1;
+                    r1 = -a;
+                }
+                delta[0] = MechMath.Fmul(t2, r0);
+                delta[2] = MechMath.Fmul(speed, r1);
+            }
+            else
+            {
+                delta[0] = 0;
+                delta[2] = 0;
+            }
         }
     }
 
@@ -335,7 +350,7 @@ public static partial class MechWalker
     }
 
     /// <summary>func_80010750 + func_80010234 for one corner: world = position + basis^T * (corner &lt;&lt; 4), y flipped.</summary>
-    private static Vec3 TransformCorner(MechBody body, short vx, short vy, short vz)
+    internal static Vec3 TransformCorner(MechBody body, short vx, short vy, short vz)
     {
         unchecked
         {
@@ -444,8 +459,10 @@ public static partial class MechWalker
         {
             if (world.Players != 1)
                 throw new NotSupportedException("2P walker collision (func_8005220C/func_80052098) and camera (func_80053730) are not ported");
-            if (self.Platform != null)
-                throw new NotSupportedException("standing on a dynamic object (func_80053514 with a surface) is not ported");
+            // w.surface (sp + 0x60) is one stack slot for the whole call: the jump probe (:314) and every
+            // sub-step probe (:705) write it, and an early-returning probe leaves the previous value.
+            // Never written at all it is stack garbage in retail; the port uses null.
+            IGroundSurface? surface = null;
             int impactTotal = 0;
             int move = 0;
             int magV = 0, magH = 0;
@@ -459,7 +476,9 @@ public static partial class MechWalker
                 && (self.Bits & 0x40) == 0)
             {
                 var probe = new Vec3(self.X + (self.AxisX >> 3), self.Y + 0x10000, self.Z + (self.AxisZ >> 3));
-                int rise = MechGround.Probe(world.Map, probe).Height - self.Y;
+                var jump = MechGround.Probe(world, probe);
+                if (jump.SurfaceWritten) surface = jump.Surface;
+                int rise = jump.Height - self.Y;
                 move = 0x0F;
                 if (rise >= 0x0AE2)
                 {
@@ -653,7 +672,8 @@ public static partial class MechWalker
                         }
                     }
 
-                    var ground = MechGround.Probe(world.Map, new Vec3(self.X, self.Y + 0x0CCC, self.Z));
+                    var ground = MechGround.Probe(world, new Vec3(self.X, self.Y + 0x0CCC, self.Z));
+                    if (ground.SurfaceWritten) surface = ground.Surface;
                     // Retail reuses the same output slot across substeps. If no probe has written
                     // it yet, keep the body's existing normal and slope instead of using stack data.
                     normal = ground.Normal ?? normal;
@@ -663,7 +683,7 @@ public static partial class MechWalker
                         lane = self.Y - 0xC0;
                         self.MotionY = 0;
                     }
-                    self.Platform = null; // func_80053514 with surface 0 (empty object queue)
+                    MechPlatform.Ride(self, surface); // func_80053514(self, w.surface), :710
                     self.Slow = 0;
                     self.Hazard = 0;
                     int attribute = ground.Attribute & unchecked((int)0xFFFFFF3F);
@@ -707,7 +727,7 @@ public static partial class MechWalker
                         {
                             anim = 0;
                             self.State = 0;
-                            var fallback = MechGround.Probe(world.Map, new Vec3(prevX, prevY + 0x0CCC, prevZ));
+                            var fallback = MechGround.Probe(world, new Vec3(prevX, prevY + 0x0CCC, prevZ));
                             int floor = fallback.Height;
                             if (self.Y < floor || self.Y - floor < 0x333)
                             {
@@ -790,6 +810,7 @@ public static partial class MechWalker
             (self.VelocityX, self.VelocityY, self.VelocityZ) = (velocity[0], velocity[1], velocity[2]);
             self.Speed = length >> 11;
             if (self.Speed == 0) (self.VelocityX, self.VelocityY, self.VelocityZ) = (self.AxisX, self.AxisY, self.AxisZ);
+            self.InstanceFrame = self.Track.Frame;
             world.ModelFrame?.Invoke(self.Track.Frame);
             return impactTotal;
         }

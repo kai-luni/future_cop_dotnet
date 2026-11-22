@@ -53,8 +53,9 @@ public sealed class RetailRandom
 
 /// <summary>
 /// Global state the walker tick reads besides its own entity: terrain, player count, the session
-/// words, invulnerability flags, the pads, the PRNG, and sinks for the side effects that are
-/// recorded but not ported (sound events, script messages, model frames).
+/// words, invulnerability flags, the pads, the PRNG, the dynamic-object ground hook, and sinks for
+/// the side effects that are recorded but not executed here (sounds, script messages, model frames,
+/// rumble). Audio playback itself (func_80046E88 / SPU) is not part of the player path.
 /// </summary>
 public sealed class MechWorld
 {
@@ -82,4 +83,41 @@ public sealed class MechWorld
     public Action<MechMessage>? ScriptMessage { get; set; }
     /// <summary>func_800175F8(self + 0x28, frame): model frame of the body instance.</summary>
     public Action<int>? ModelFrame { get; set; }
+    /// <summary>func_800175F8(companion + 0x28, companion + 0xAC) from func_80055988:247.</summary>
+    public Action<int>? CompanionFrame { get; set; }
+
+    /// <summary>
+    /// func_8006320C gFindGroundObjectAtPosition over the object queue D_800A31A0 (objects with
+    /// flag 0x20000000 and their model boxes). Null = empty queue. Owned by the mission side.
+    /// </summary>
+    public Func<Vec3, GroundObjectHit?>? GroundObjects { get; set; }
+
+    /// <summary>func_80046C84(id, unit): non-positional sound effect (0x2A = transformation refused).</summary>
+    public Action<int>? Sound { get; set; }
+
+    /// <summary>D_800A1810[stream].track, the looping sound bound to each stream (func_800471C4).</summary>
+    public int[] LoopingTracks { get; } = new int[2];
+
+    /// <summary>func_80046E88 start (track) and func_800243F8 stop (0xFF) of a stream's looping sound.</summary>
+    public Action<int, int>? LoopingSound { get; set; }
+
+    /// <summary>
+    /// func_800471C4 gSetEntityLoopingSound(track, unit): no-op for the current track, otherwise the
+    /// stream switches to <paramref name="track"/> (0xFF = stop only).
+    /// </summary>
+    public void SetLoopingSound(int stream, int track)
+    {
+        if (track == LoopingTracks[stream]) return;
+        LoopingTracks[stream] = track;
+        LoopingSound?.Invoke(stream, track);
+    }
+
+    /// <summary>func_8001E930(unit, flag): small rumble on/off while the form change runs.</summary>
+    public Action<int>? Rumble { get; set; }
+
+    /// <summary>D_8009F9A0: an attached entity; non-null keeps func_80055988 from toggling the form.</summary>
+    public object? Focus { get; set; }
+
+    /// <summary>func_8004D958(D_8009F9A0): retire the focus entity (Start while it is attached).</summary>
+    public Action<object>? RetireEntity { get; set; }
 }

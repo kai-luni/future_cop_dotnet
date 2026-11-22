@@ -65,12 +65,23 @@ public sealed class MechBody
     public byte Timer { get; set; }
     /// <summary>+0xC3: idle counter.</summary>
     public byte Idle { get; set; }
-    /// <summary>+0xC4: the dynamic ground object the unit stands on (func_80053514); only null is ported.</summary>
-    public object? Platform { get; set; }
+    /// <summary>+0xC4: the dynamic ground object the unit stands on (func_80053514, <see cref="MechPlatform.Ride"/>).</summary>
+    public IGroundSurface? Platform { get; set; }
     /// <summary>+0xC8: the body animation track.</summary>
     public AnimTrack Track { get; } = new() { ClipIndex = -1 };
+    /// <summary>+0xD4 as func_800175F8 last applied it to the body instance (+0x28); 3DBB index of func_800518A8.</summary>
+    public int InstanceFrame { get; set; }
     /// <summary>+0xF0: s16 roll angle of the basis (also the form-change lift bookkeeping).</summary>
     public short Lift { get; set; }
+    /// <summary>+0xF2: s16 body lift of the form change, (progress &lt;&lt; 12) &gt;&gt; 16 (func_80055988:235-237).</summary>
+    public short LiftHeight { get; set; }
+    /// <summary>
+    /// The track at (+0xDC companion instance) + 0xA0 that func_80055988 plays clips 2/1/0 on.
+    /// Null clip table = the track is not driven (func_800448D8 returns early).
+    /// </summary>
+    public AnimTrack CompanionTrack { get; } = new() { ClipIndex = -1 };
+    /// <summary>3DBB records of the body model (func_800518A8 reads the one of <see cref="InstanceFrame"/>).</summary>
+    public IReadOnlyList<short[]>? FrameBounds { get; set; }
 
     // ---- state block (+0xAC) -------------------------------------------------------------
     /// <summary>+0xAD: current form (0 walker, 1 hover).</summary>
@@ -79,6 +90,16 @@ public sealed class MechBody
     public sbyte Lock { get; set; }
     /// <summary>+0xC1: player slot / controller port.</summary>
     public sbyte Port { get; set; }
+    /// <summary>+0xBC: form-change progress 0 (walker) .. 0x10000 (hover), func_80055988.</summary>
+    public int Progress { get; set; }
+    /// <summary>+0xC2: s16 hover bank angle (func_80053A74:243-279), cleared when a transformation starts.</summary>
+    public short Bank { get; set; }
+    /// <summary>+0xDC: s16 hover idle ramp, grows by dt up to 0x800 while no drive mode is held.</summary>
+    public short Throttle { get; set; }
+    /// <summary>+0xE0..+0xE8: pending position shift func_80055988 adds to the position and clears.</summary>
+    public int ShiftX { get; set; }
+    public int ShiftY { get; set; }
+    public int ShiftZ { get; set; }
     /// <summary>+0xDE: set by surface attribute 1 (sinking/held); pins the height.</summary>
     public byte Grab { get; set; }
     /// <summary>+0xDF: bit0 selects the stronger jump impulses.</summary>
@@ -91,6 +112,15 @@ public sealed class MechBody
     public byte Hazard { get; set; }
     /// <summary>+0x147: slowdown level 0..3 from surface attributes 3/4/5.</summary>
     public byte Slow { get; set; }
+    /// <summary>
+    /// +0xEC + 0x50 / + 0x54 / + 0x58 (s16) / + 0x5C / + 0x60: the platform cache of func_80053514 -
+    /// surface x/z and yaw (message 0xF) and the unit's own x/z at the last ride update.
+    /// </summary>
+    public int PlatformX { get; set; }
+    public int PlatformZ { get; set; }
+    public short PlatformYaw { get; set; }
+    public int PlatformSelfX { get; set; }
+    public int PlatformSelfZ { get; set; }
     /// <summary>+0x150: pending knockback impulse.</summary>
     public int ImpulseX { get; set; }
     public int ImpulseY { get; set; }
@@ -107,6 +137,10 @@ public sealed class MechBody
     public byte Request { get; set; }
     /// <summary>+0x310: non-zero blocks the stick read.</summary>
     public sbyte Frozen { get; set; }
+    /// <summary>+0x31A: s16 timer; while &gt; 0 func_80055988 masks the controls to 0xC0000.</summary>
+    public short ControlBlock { get; set; }
+    /// <summary>+0x320: set to 3 when func_80055988 retires the focus entity D_8009F9A0.</summary>
+    public int Status320 { get; set; }
     /// <summary>+0x326: s16 timer cleared by surface attribute 1.</summary>
     public short HitTimer { get; set; }
     /// <summary>state + 0x2DC record + 0xA / + 0x10: the two s16 written by func_80051AC8.</summary>

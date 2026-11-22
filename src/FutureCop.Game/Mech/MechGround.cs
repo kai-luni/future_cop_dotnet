@@ -8,17 +8,22 @@ namespace FutureCop.Game.Mech;
 /// attribute byte (0 unless the surface lies within 0x2000 below the probe limit) and whether
 /// the dynamic-surface pointer (*a3) was written (it is left untouched on the early returns).
 /// </summary>
-public readonly record struct GroundProbe(int Height, Vec3? Normal, int Attribute, bool SurfaceWritten);
+public readonly record struct GroundProbe(int Height, Vec3? Normal, int Attribute, bool SurfaceWritten,
+    IGroundSurface? Surface = null);
 
 /// <summary>Ground query of the walker (func_80066F78 with normal, attribute and surface outputs).</summary>
 public static class MechGround
 {
+    /// <summary>func_80066F78 with the dynamic-object search of <paramref name="world"/> (<see cref="MechWorld.GroundObjects"/>).</summary>
+    public static GroundProbe Probe(MechWorld world, Vec3 position) => Probe(world.Map, position, world.GroundObjects);
+
     /// <summary>
-    /// func_80066F78(position, normal, &amp;attribute, &amp;surface). The dynamic-object surface
-    /// search func_8006320C (moving platforms, building tops registered as objects) is NOT ported:
-    /// it is evaluated with an empty object queue, so the surface pointer is always 0 here.
+    /// func_80066F78(position, normal, &amp;attribute, &amp;surface). The dynamic-object search
+    /// func_8006320C is delegated to <paramref name="objects"/> (null = empty object queue D_8009F838,
+    /// the surface pointer is then always 0). It is only consulted once the terrain produced a
+    /// height (lines 192-204); an object at or above the terrain height wins (lines 206-221).
     /// </summary>
-    public static GroundProbe Probe(LevelMap map, Vec3 position)
+    public static GroundProbe Probe(LevelMap map, Vec3 position, Func<Vec3, GroundObjectHit?>? objects = null)
     {
         unchecked
         {
@@ -64,7 +69,10 @@ public static class MechGround
             }
             if (lowest == 0x40000000) return new GroundProbe(0, null, 0, false);
             if (best == unchecked((int)0xC0000000)) { best = lowest; bestPoly = lowestPoly; }
-            // func_8006320C with an empty object queue returns 0: *a3 = 0, no override.
+            // func_8006320C(pos, ...): a hit at or above the terrain replaces normal, attribute
+            // (the entry id), surface and height; otherwise *a3 = 0 and the terrain stands.
+            if (objects?.Invoke(position) is GroundObjectHit hit && hit.Height >= best)
+                return new GroundProbe(hit.Height, hit.Normal, hit.Id, true, hit.Surface);
             int attribute = limit - best < 0x2000 ? block.Byte(0x370 + (int)((bestPoly >> 13) & 3)) : 0;
             return new GroundProbe(best, Normal(block, heights, (int)((bestPoly >> 15) & 0x7F), xl, zl), attribute, true);
         }

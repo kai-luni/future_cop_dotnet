@@ -26,6 +26,9 @@ public static class MechSpawn
         if (model.AnimationClips.Count == 0)
             throw new InvalidDataException($"Model {model.Id} has no WALK animation table");
         MechAnimation.Play(body.Track, 0, 1, 0);
+        // func_80055988 / func_800518A8 read the 3DBB record of the frame the body instance shows.
+        body.FrameBounds = model.FrameBounds;
+        body.InstanceFrame = body.Track.Frame;
 
         // func_800518A8 at t=0: X centre, Z centre and the two half-extents come from 3DBB.
         // func_80055988 rebuilds these only during morph; WALK keeps the rest-frame corners.

@@ -31,11 +31,17 @@ public static class MechAnimation
     /// and steps frames, follows clip transitions (next0/1/2 by direction), and returns the packed
     /// event word (bit 0 = clip end, then 6-bit event codes from the clip code fields).
     /// </summary>
-    public static uint Advance(MechBody body, MechWorld world, int speed, int direction)
+    public static uint Advance(MechBody body, MechWorld world, int speed, int direction) =>
+        Advance(body, body.Track, world, speed, direction);
+
+    /// <summary>
+    /// func_80044B34(self, track, speed, direction) on any track of the unit (func_80055988 also
+    /// drives the companion track at model + 0xA0); the unit's queued commands run on that track.
+    /// </summary>
+    public static uint Advance(MechBody body, AnimTrack track, MechWorld world, int speed, int direction)
     {
         unchecked
         {
-            var track = body.Track;
             if (track.Clips == null) return 0;
             RunScript(body.Commands, track);
             if ((track.Flags & 2) != 0) return 0;

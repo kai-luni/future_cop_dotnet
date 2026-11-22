@@ -195,6 +195,40 @@ public static class MechMath
         return t;
     }
 
+    /// <summary>
+    /// func_80010974 gGteCrossProduct(a, b, out): R11/R22/R33 = (s16)(a[i] &gt;&gt; 4), IR1..3 = (s16)(b[i] &gt;&gt; 4),
+    /// GTE OP with sf = 1, MAC1..3 &lt;&lt; 4. <paramref name="output"/> may alias an input.
+    /// </summary>
+    public static void GteCross(int[] a, int[] b, int[] output)
+    {
+        unchecked
+        {
+            long d1 = (short)(a[0] >> 4), d2 = (short)(a[1] >> 4), d3 = (short)(a[2] >> 4);
+            long i1 = (short)(b[0] >> 4), i2 = (short)(b[1] >> 4), i3 = (short)(b[2] >> 4);
+            output[0] = (int)((d2 * i3 - d3 * i2) >> 12) << 4;
+            output[1] = (int)((d3 * i1 - d1 * i3) >> 12) << 4;
+            output[2] = (int)((d1 * i2 - d2 * i1) >> 12) << 4;
+        }
+    }
+
+    /// <summary>
+    /// func_8001AD20 gCrossProductQ16(a, b, out): a x b with each product &gt;&gt; 16. Loads and stores
+    /// follow the retail order (out[0] is stored before b[0]/a[0] are read), so aliasing behaves
+    /// as on PS1; the hover path never aliases.
+    /// </summary>
+    public static void Cross(int[] a, int[] b, int[] output)
+    {
+        unchecked
+        {
+            int o0 = Fmul(b[2], a[1]) - Fmul(b[1], a[2]);
+            output[0] = o0;
+            int o1 = Fmul(b[0], a[2]) - Fmul(b[2], a[0]);
+            output[1] = o1;
+            int o2 = Fmul(b[1], a[0]) - Fmul(b[0], a[1]);
+            output[2] = o2;
+        }
+    }
+
     /// <summary>func_8001A7AC: planar length of (v[0], v[1]); normalises the pair when it is &gt;= 2.</summary>
     public static int Length2(int[] v)
     {
