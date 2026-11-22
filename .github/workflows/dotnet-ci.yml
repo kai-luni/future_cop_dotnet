@@ -16,7 +16,8 @@ jobs:
           dotnet-version: '10.0.x'
       - name: Build all projects
         run: |
-          for p in $(git ls-files '*.csproj' | grep -v '^tests/' | sed 's|/[^/]*$||' | sort -u); do
+          # Tizen projects need TV framework DLLs (gitignored, local only) - skip them.
+          for p in $(git ls-files '*.csproj' | grep -v '^tests/' | grep -vi 'tizen' | sed 's|/[^/]*$||' | sort -u); do
             dotnet build "$p" -v q
           done
       - name: Run xUnit test suite (asset-free tests; asset-dependent tests skip)
