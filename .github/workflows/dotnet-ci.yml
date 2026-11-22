@@ -20,4 +20,4 @@ jobs:
             dotnet build "$p" -v q
           done
       - name: Run xUnit test suite (asset-free tests; asset-dependent tests skip)
-        run: dotnet test tests/FutureCop.Assets.Tests -v q --logger "github;summary={}"
+        run: dotnet test tests/FutureCop.Assets.Tests -v q
