@@ -264,6 +264,28 @@ public class WeaponAnimTests
         Assert.True(wrong.Count == 0, string.Join("\n", wrong));
     }
 
+    [RetailFact]
+    public void PrimaryBeamUsesTheRawOwnerAxisAndRetailRange()
+    {
+        // func_8006B23C:340-342 reads raw axis fields, not a normalized direction.
+        // CONFT.MIS weapon 0x00, half A: action 0x0A, signed range word 6144.
+        var (scene, weapons, parts) = Level();
+        weapons.Equip(new byte[] { 0, 0, 0 });
+        var body = scene.Walker!;
+        body.AxisX = 32768;
+        body.AxisY = -1234;
+        body.AxisZ = 49152;
+        weapons.Slots.Timers[0] = 0;
+
+        Assert.Equal(1, weapons.TryFireSlot(body, parts, 0));
+        var beam = Assert.Single(weapons.Beams);
+        Assert.Equal(6144, beam.Length);
+        Assert.Equal(new[] { body.AxisX, body.AxisY, body.AxisZ }, beam.Direction);
+        Assert.Equal(beam.X + (((body.AxisX >> 4) * 6144) >> 8), beam.End.X);
+        Assert.Equal(beam.Y + (((body.AxisY >> 4) * 6144) >> 8), beam.End.Y);
+        Assert.Equal(beam.Z + (((body.AxisZ >> 4) * 6144) >> 8), beam.End.Z);
+    }
+
     // ------------------------------------------------------------------- harness case 13
 
     /// <summary>

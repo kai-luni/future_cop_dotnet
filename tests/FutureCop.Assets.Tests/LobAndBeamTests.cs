@@ -70,7 +70,7 @@ public sealed class LobAndBeamTests
     [Fact]
     public void ABeamEndsAlongItsDirectionAtTheRequestedReach()
     {
-        // The end is muzzle + direction * reach, in 16.16 per axis (func_8006B23C:340-342).
+        // The range is a raw word; the retail endpoint uses the shift order in func_8006B23C:340-342.
         var half = new ShotDefinition(
             SectionId: 0x3F, Half: 0, Action: 0x0A, Flags: 0, ModelId: 1, ObjWord00: 0,
             DamageWord: 0, SpeedWord: 0, AltSpeed: 0, ArcWord: 6144, ObjWord0E: 0, ObjWord12: 0,
@@ -81,8 +81,29 @@ public sealed class LobAndBeamTests
 
         Assert.Equal(100, beam.End.X);
         Assert.Equal(200, beam.End.Y);
-        Assert.Equal(300 + 6144, beam.End.Z);
+        Assert.Equal(300 + 98304, beam.End.Z);
         Assert.Equal(6144, beam.Length);
+    }
+
+    [Theory]
+    // func_8006B23C:340-342: v38 = v58 + (((axis >> 4) * signedRange) >> 8).
+    [InlineData(0, 65536, 6144, 0, 98304)]
+    [InlineData(-12345, 23457, 17, -52, 97)]
+    [InlineData(65536, -65536, -16, -256, 256)]
+    [InlineData(1, -1, 255, 0, -1)]
+    [InlineData(16777216, -16777216, 6144, -8388608, -8388608)]
+    public void BeamEndUsesTheRetailShiftOrder(int axisX, int axisZ, int range, int dx, int dz)
+    {
+        var half = new ShotDefinition(
+            SectionId: 0x3F, Half: 0, Action: 0x0A, Flags: 0, ModelId: 1, ObjWord00: 0,
+            DamageWord: 0, SpeedWord: 0, AltSpeed: 0, ArcWord: range, ObjWord0E: 0, ObjWord12: 0,
+            SoundId: 0, SecondaryColumn: 0, Burst: 0, ReloadTicks: 0, GapTicks: 0, RecordOffset: 0,
+            Resources: Array.Empty<ResourceReference>());
+
+        var beam = new Beam(half, 100, 200, 300, new[] { axisX, 0, axisZ }, range);
+
+        Assert.Equal((100 + dx, 200, 300 + dz), beam.End);
+        Assert.Equal(range, beam.Length);
     }
 
     [Fact]

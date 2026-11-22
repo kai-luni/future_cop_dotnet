@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using FutureCop.Assets;
@@ -64,10 +65,26 @@ public sealed class MenuFlow
     /// <summary>Short diagnostic from the last failed mission load, cleared on menu change or load start.</summary>
     public string? LastLoadError { get; private set; }
 
+    /// <summary>Retail front-end menu SE ids (80078DD0.c:238-294, 8007C80C.c:59-74, FE.MIS D_800A18D0).</summary>
+    public const byte MenuSoundMove = 0x46;
+    public const byte MenuSoundChange = 0x47;
+    public const byte MenuSoundConfirm = 0x48;
+    public const byte MenuSoundBack = 0x49;
+    /// <summary>func_800588D4.c:259-264: walker/hover transform SE id.</summary>
+    public const byte TransformSoundId = 0x15;
+
     /// <summary>Raised after a scene replaced the menu (the window stops the menu music).</summary>
     public event Action? SceneEntered;
     /// <summary>Raised after Escape returned from the scene to the loadout (music restarts).</summary>
     public event Action? SceneLeft;
+    /// <summary>Raised when a front-end menu action triggers a retail SE id (0x46..0x49).</summary>
+    public event Action<byte>? MenuSoundTriggered;
+    /// <summary>Raised after loading, for the menu confirmation that started a scene.</summary>
+    public event Action<byte>? SceneStartSoundTriggered;
+    /// <summary>Raised when level weapons or mech transform emit a retail SE/loop trigger.</summary>
+    public event Action<WeaponSoundEvent>? WeaponSoundTriggered;
+    /// <summary>Raised after level locomotion/weapons advance by retail ticks (for 30-tick loop expiry).</summary>
+    public event Action<int>? LevelTicksAdvanced;
 
     /// <param name="missionDirectory">Directory of the Precinct Assault maps; default is the disc
     /// layout, i.e. "PA" next to the "CW" directory that holds <paramref name="frontEndPath"/>.</param>
@@ -125,9 +142,15 @@ public sealed class MenuFlow
         switch (Screen)
         {
             case MenuScreen.Main:
-                if (vertical != 0) Menu.Move(vertical);
+                if (vertical != 0)
+                {
+                    int before = Menu.SelectedIndex;
+                    Menu.Move(vertical);
+                    if (Menu.SelectedIndex != before) MenuSoundTriggered?.Invoke(MenuSoundMove);
+                }
                 else if (accept && Menu.SelectedIndex == 3)
                 {
+                    MenuSoundTriggered?.Invoke(MenuSoundConfirm);
                     pa.SelectPrecinctAssault1P(3);
                     if (pa.DeferredTransition == 5)
                     {
@@ -137,15 +160,16 @@ public sealed class MenuFlow
                     }
                 }
                 else if (accept) _out.WriteLine($"Not implemented: {Menu.Entries[Menu.SelectedIndex].Text}");
-                else if (back) Screen = MenuScreen.Quit;
+                else if (back) { MenuSoundTriggered?.Invoke(MenuSoundBack); Screen = MenuScreen.Quit; }
                 break;
             case MenuScreen.Setup:
-                if (back) { Screen = MenuScreen.Main; Selected = 0; }
-                else if (vertical != 0) Selected = (Selected + vertical + 3) % 3;
-                else if (Selected == 2 && horizontal != 0) pa.PlayerSelection = (pa.PlayerSelection + (horizontal > 0 ? -1 : 1) + 3) % 3;
+                if (back) { MenuSoundTriggered?.Invoke(MenuSoundBack); Screen = MenuScreen.Main; Selected = 0; }
+                else if (vertical != 0) { Selected = (Selected + vertical + 3) % 3; MenuSoundTriggered?.Invoke(MenuSoundMove); }
+                else if (Selected == 2 && horizontal != 0) { pa.PlayerSelection = (pa.PlayerSelection + (horizontal > 0 ? -1 : 1) + 3) % 3; MenuSoundTriggered?.Invoke(MenuSoundChange); }
                 else if (Selected == 1 && key == KeyBackspace && PlayerName.Length > 0) PlayerName = PlayerName[..^1];
                 else if (accept && Selected == 0)
                 {
+                    MenuSoundTriggered?.Invoke(MenuSoundConfirm);
                     pa.HandlePlayerJoinSelection(3, 0); pa.ActiveMenu = PrecinctAssaultMenus.Hub1P;
                     pa.MenuDepth[0] = 0; Screen = MenuScreen.Hub; Selected = 0;
                 }
@@ -158,15 +182,21 @@ public sealed class MenuFlow
             case MenuScreen.Hub:
                 if (back)
                 {
+                    MenuSoundTriggered?.Invoke(MenuSoundBack);
                     if (pa.MenuDepth[0] > 0) pa.MenuDepth[0]--;
                     else { Screen = MenuScreen.Setup; Selected = 0; }
                 }
                 else if (vertical != 0 || horizontal != 0)
                 {
-                    if (pa.MenuDepth[0] > 0) pa.HandleProfileListItem((vertical != 0 ? vertical : horizontal) > 0 ? 5 : 4);
+                    if (pa.MenuDepth[0] > 0)
+                    {
+                        pa.HandleProfileListItem((vertical != 0 ? vertical : horizontal) > 0 ? 5 : 4);
+                        MenuSoundTriggered?.Invoke(MenuSoundMove);
+                    }
                 }
                 else if (accept)
                 {
+                    MenuSoundTriggered?.Invoke(MenuSoundConfirm);
                     int before = pa.PushedMenus.Count;
                     pa.HandleProfileListItem(3);
                     if (pa.PushedMenus.Count > before && pa.PushedMenus[^1] == PrecinctAssaultMenus.Loadout1P)
@@ -177,8 +207,8 @@ public sealed class MenuFlow
                 }
                 break;
             case MenuScreen.Loadout:
-                if (back) { LastLoadError = null; Screen = MenuScreen.Hub; pa.ActiveMenu = PrecinctAssaultMenus.Hub1P; pa.MenuDepth[0] = 1; Selected = 0; }
-                else if (vertical != 0) { LastLoadError = null; Selected = (Selected + vertical + 4) % 4; }
+                if (back) { MenuSoundTriggered?.Invoke(MenuSoundBack); LastLoadError = null; Screen = MenuScreen.Hub; pa.ActiveMenu = PrecinctAssaultMenus.Hub1P; pa.MenuDepth[0] = 1; Selected = 0; }
+                else if (vertical != 0) { LastLoadError = null; Selected = (Selected + vertical + 4) % 4; MenuSoundTriggered?.Invoke(MenuSoundMove); }
                 else if (horizontal != 0 && Selected > 0)
                 {
                     LastLoadError = null;
@@ -186,17 +216,21 @@ public sealed class MenuFlow
                     int value = pa.LoadoutSelection[col, 0] + horizontal;
                     if (value < c.Min) value = c.Count - 1; else if (value >= c.Count) value = c.Min;
                     pa.LoadoutSelection[col, 0] = (sbyte)value;
+                    MenuSoundTriggered?.Invoke(MenuSoundMove);
                 }
                 else if (accept && Selected == 0)
                 {
                     pa.FinalizeMissionLoadout(3, 0);
                     if (pa.ScreenState == 5) StartScene(key);
+                    if (Screen == MenuScreen.Scene) SceneStartSoundTriggered?.Invoke(MenuSoundConfirm);
+                    else MenuSoundTriggered?.Invoke(MenuSoundConfirm);
                 }
                 break;
             case MenuScreen.Scene:
                 if (back)
                 {
                     LeaveScene();
+                    MenuSoundTriggered?.Invoke(MenuSoundBack);
                 }
                 else if (Preview != null)
                 {
@@ -403,6 +437,14 @@ public sealed class MenuFlow
         Level.HeldButtons = buttons;
         Level.HeldPadWord = flags;
         Level.AdvanceWalker(steps, flags, externalPad);
+        if (Level.Weapons != null)
+        {
+            foreach (var ev in Level.Weapons.DrainSoundEvents())
+                WeaponSoundTriggered?.Invoke(ev);
+        }
+        if (Level.FormChanged)
+            WeaponSoundTriggered?.Invoke(new WeaponSoundEvent(WeaponSoundKind.OneShot, TransformSoundId, -1));
+        LevelTicksAdvanced?.Invoke(steps * RetailClock.LocomotionTicks);
     }
 
     /// <summary>
@@ -459,15 +501,48 @@ public sealed class MenuFlow
         };
     }
 
+    /// <summary>Set from FC_FRAME_LOG: fills the per-section timing fields of the scene render.</summary>
+    public static bool Profile;
+
+    /// <summary>Split of the last <see cref="RenderScene"/> call: raster, HUD and window blit (ms).</summary>
+    public static double MsLevel, MsHud, MsBlit;
+
+    /// <summary>Allocation of the last <see cref="RenderScene"/> call per section (bytes).</summary>
+    public static long BytesLevel, BytesHud, BytesBlit;
+
+    /// <summary>Primitive and cell counters of the last level frame.</summary>
+    public static int Packets, Cells;
+
     /// <summary>Renders the running scene into a BGRX window buffer, scaled by <paramref name="scale"/>.</summary>
     public void RenderScene(byte[] bgrx, int scale)
     {
         if (Preview != null) { Preview.Render(0); Preview.CopyToBgrx(bgrx, scale); }
         else if (Level != null)
         {
+            if (!Profile)
+            {
+                Level.Render(Camera);
+                InGameHud.Paint(Level.Rgb, BuildHud(), Session, Globals, Level.Vram);
+                FrameBlit.RgbToBgrx(Level.Rgb, LevelScene.Width, LevelScene.Height, bgrx, scale);
+                return;
+            }
+            long t = Stopwatch.GetTimestamp();
+            long a = GC.GetAllocatedBytesForCurrentThread();
             Level.Render(Camera);
+            BytesLevel = GC.GetAllocatedBytesForCurrentThread() - a;
+            MsLevel = Stopwatch.GetElapsedTime(t).TotalMilliseconds;
+            Packets = Level.TilePackets;
+            Cells = Level.VisibleCells;
+            t = Stopwatch.GetTimestamp();
+            a = GC.GetAllocatedBytesForCurrentThread();
             InGameHud.Paint(Level.Rgb, BuildHud(), Session, Globals, Level.Vram);
+            BytesHud = GC.GetAllocatedBytesForCurrentThread() - a;
+            MsHud = Stopwatch.GetElapsedTime(t).TotalMilliseconds;
+            t = Stopwatch.GetTimestamp();
+            a = GC.GetAllocatedBytesForCurrentThread();
             FrameBlit.RgbToBgrx(Level.Rgb, LevelScene.Width, LevelScene.Height, bgrx, scale);
+            BytesBlit = GC.GetAllocatedBytesForCurrentThread() - a;
+            MsBlit = Stopwatch.GetElapsedTime(t).TotalMilliseconds;
         }
     }
 

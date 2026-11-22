@@ -4,6 +4,16 @@ using FutureCop.Game.Mech;
 
 namespace FutureCop.View;
 
+public enum WeaponSoundKind
+{
+    /// <summary>One-shot SE via gPlayNonpositionalSoundEffect (80046C84.c, D_800A1880).</summary>
+    OneShot,
+    /// <summary>Continuous/looping weapon sound via gRefreshPlayerWeaponSound (80046CF0.c, D_800A1830).</summary>
+    WeaponLoopRefresh
+}
+
+public readonly record struct WeaponSoundEvent(WeaponSoundKind Kind, byte SoundId, int Slot);
+
 /// <summary>
 /// The player's fire path inside a level: which button fires which slot, where the shot starts and
 /// which way it flies - the parts of func_8006BA50 and func_8006ACB0 a level without opponents needs.
@@ -31,10 +41,16 @@ namespace FutureCop.View;
 /// </remarks>
 public sealed class LevelWeapons
 {
+    /// <summary>gWeaponSlotUpdate (8006BA50.c:181): empty-ammo click SE id.</summary>
+    public const byte EmptyAmmoSoundId = 0x0D;
+    /// <summary>gWeaponSlotUpdate (8006BA50.c:186): low-ammo warning SE id when counter == 5.</summary>
+    public const byte LowAmmoSoundId = 0x0E;
+
     private readonly MisFile _file;
     private readonly Dictionary<int, Model> _models = new();
     private readonly double _shotSlowMotion;
     private readonly WeaponInput _input = new();
+    private readonly List<WeaponSoundEvent> _soundEvents = new();
 
     /// <summary>The retail registry the slot ids resolve against (gRegistryFind / D_800A3340).</summary>
     public IReadOnlyDictionary<byte, WeaponRecord> Registry { get; }
@@ -92,6 +108,15 @@ public sealed class LevelWeapons
 
     /// <summary>Short description of the last fire attempt, for the log line and the HUD.</summary>
     public string LastShot { get; private set; } = "no weapon fired yet";
+
+    /// <summary>Drains sound triggers emitted since the last call (gPlayNonpositionalSoundEffect / gRefreshPlayerWeaponSound).</summary>
+    public IReadOnlyList<WeaponSoundEvent> DrainSoundEvents()
+    {
+        if (_soundEvents.Count == 0) return Array.Empty<WeaponSoundEvent>();
+        var copy = _soundEvents.ToArray();
+        _soundEvents.Clear();
+        return copy;
+    }
 
     /// <summary>Actions func_8006ACB0 sends to a direct-fire spawner (1, 2, 3, 0x12, 0x13, 0x15).</summary>
     private static readonly HashSet<int> DirectFireActions = new() { 1, 2, 3, 0x12, 0x13, 0x15 };
@@ -184,7 +209,14 @@ public sealed class LevelWeapons
         if (counter <= 0)
         {
             LastShot = $"slot {slot} ({record.Name}) is empty";
+            // func_8006BA50:180-182: empty slot plays SE 0x0D and returns.
+            _soundEvents.Add(new WeaponSoundEvent(WeaponSoundKind.OneShot, EmptyAmmoSoundId, slot));
             return 0;
+        }
+        if (counter == 5)
+        {
+            // func_8006BA50:185-187: low-ammo warning plays SE 0x0E.
+            _soundEvents.Add(new WeaponSoundEvent(WeaponSoundKind.OneShot, LowAmmoSoundId, slot));
         }
 
         // func_8006ACB0:157-158: action 2 becomes 1 when the owner has no target object.
@@ -196,8 +228,13 @@ public sealed class LevelWeapons
         // instead of spawning a projectile.
         if (BeamType(half))
         {
+            if (half.SoundId > 0)
+                _soundEvents.Add(new WeaponSoundEvent(WeaponSoundKind.WeaponLoopRefresh, (byte)half.SoundId, slot));
             return FireBeam(body, parts, slot, half, record, ref counter);
         }
+        // gWeaponFireDispatch (8006ACB0.c:159-163) plays before action and model checks.
+        if (half.SoundId > 0)
+            _soundEvents.Add(new WeaponSoundEvent(WeaponSoundKind.OneShot, (byte)half.SoundId, slot));
 
         // The actions the port can fly: the direct shots and the two lob actions. Beam weapons
         // (types 10..12, 14) go to gBeamPartUpdate and the remaining spawners are not ported;
@@ -274,9 +311,9 @@ public sealed class LevelWeapons
 
         MuzzleSide = counter & 1;
         var muzzle = Muzzle(body, parts, MuzzleSide);
-        var direction = Facing(body);
-        // func_8006B23C:340-342: the far end is the muzzle plus the axis scaled by s3->unk16.
-        int reach = Math.Max(1, half.ArcWord);
+        var direction = new[] { body.AxisX, body.AxisY, body.AxisZ };
+        // func_8006B23C:340-342 uses the raw owner axis and the signed s16 definition word.
+        int reach = half.ArcWord;
         var beam = new Beam(half, muzzle.X, muzzle.Y, muzzle.Z, direction, reach);
         Beams.Add(beam);
 

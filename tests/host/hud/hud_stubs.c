@@ -67,6 +67,7 @@ void gDrawTargetMarkers(void *g) { (void)g; put("MARKERS"); }
    true advance is somewhere in 1..7. */
 #define GLYPH_ADVANCE 4
 s32 func_80049340(u8 *s) { return (s32)strlen((char *)s) * GLYPH_ADVANCE * 2; }
+s32 gMeasureTextWidthPx(u8 *s) { return func_80049340(s); }
 void gDrawAlignedString(u8 *text, s32 x, s32 y, s32 colour)
 { put("TEXT \"%s\" %d %d %d", (char *)text, (int)x, (int)y, (int)colour); }
 /* The rectangle path is the ORIGINAL func_8001C214 (game/8001C214.c): it halves x/y/w/h and
@@ -80,9 +81,8 @@ void gEmitSolidTileRect(u8 red, u8 green, u8 blue, void *rect, u8 blend)
 /* The retail func_8008CD30 is a full printf implementation (8008CD3C.c) over 32-bit arguments - on
    the PS1 a long is 32 bits wide. The host libc treats long as 64 bits, so the conversion is rewritten
    to the int form; without this the varargs read past the argument and print garbage. */
-void func_8008CD30(void *buf, void *fmt, ...)
+static void format_retail(void *buf, void *fmt, va_list ap)
 {
-    va_list ap;
     char host[32];
     char *s = (char *)fmt;
     int i = 0;
@@ -91,8 +91,20 @@ void func_8008CD30(void *buf, void *fmt, ...)
         host[i++] = *s++;
     }
     host[i] = 0;
-    va_start(ap, fmt);
     vsnprintf((char *)buf, 32, host, ap);
+}
+void func_8008CD30(void *buf, void *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    format_retail(buf, fmt, ap);
+    va_end(ap);
+}
+void gSpillVarargsArguments(void *buf, void *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    format_retail(buf, fmt, ap);
     va_end(ap);
 }
 

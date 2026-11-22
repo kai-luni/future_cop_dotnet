@@ -46,6 +46,7 @@ internal sealed class MenuApp : NUIApplication
     private Tizen.NUI.Timer timer;
     private Tizen.NUI.Timer focusTimer;
     private MenuAudio audio;
+    private SoundMixer frontEndMixer;
     private int focusTicks = 100;
     private int frame;
     private static readonly string AssetDir = Path.Combine(AppContext.BaseDirectory, "assets");
@@ -65,8 +66,12 @@ internal sealed class MenuApp : NUIApplication
             gamepad = new EvdevGamepadAdapter(new LinuxEvdevSystem(), Stopwatch.GetTimestamp, Stopwatch.Frequency, Log);
             control = new TvLevelControl(flow, gamepad: gamepad, log: Log);
             menu = flow.Menu;
-            flow.SceneEntered += StopAudio;
+            flow.SceneEntered += StartLevelAudio;
             flow.SceneLeft += StartAudio;
+            flow.MenuSoundTriggered += id => { if (flow.Screen != MenuScreen.Scene) audio?.PlayMenuSound(id); };
+            flow.SceneStartSoundTriggered += id => { if (frontEndMixer != null) audio?.PlayTransferredMenuSound(id, frontEndMixer); };
+            flow.WeaponSoundTriggered += ev => audio?.HandleWeaponSound(ev);
+            flow.LevelTicksAdvanced += ticks => audio?.StepTicks(ticks);
             try { text = FrontEndText.FromMisFile(fe); }
             catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException) { Log("menu text unavailable " + ex.Message); }
             window = Window.Instance;
@@ -102,8 +107,18 @@ internal sealed class MenuApp : NUIApplication
 
     private void StartAudio()
     {
-        audio = new MenuAudio();
-        audio.Start();
+        StopAudio();
+        audio = MenuAudio.TryCreate(Path.Combine(AssetDir, "FE.MIS"), true);
+        frontEndMixer = audio?.Mixer ?? frontEndMixer;
+        audio?.Start();
+    }
+
+    private void StartLevelAudio()
+    {
+        StopAudio();
+        if (flow.Level == null) return;
+        audio = MenuAudio.TryCreate(flow.Level.MissionPath, false);
+        audio?.Start();
     }
 
     private void Focus()

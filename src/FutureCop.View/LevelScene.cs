@@ -30,6 +30,21 @@ public sealed class LevelScene
     private readonly TextureBank _textures;
     private IReadOnlyList<PlayerPart> _parts;
     private readonly Dictionary<int, Dictionary<int, TextureRecord>> _texByModel = new();
+    // Per-frame scratch storage. The old draw queue allocated closures and used a LINQ sort; the
+    // terrain vertex buffer and packet lists were also recreated. Reuse them between frames.
+    private readonly List<DrawItem> _drawQueue = new();
+    private readonly byte[] _vertexBuffer = new byte[TerrainRender.VertexBufferBytes];
+    private readonly List<uint[]> _packets = new();
+
+    /// <summary>One queued primitive of the painter's-order pass: a terrain packet or a model face.</summary>
+    private struct DrawItem
+    {
+        public int Key;
+        public int Order;
+        public uint[]? Packet;
+        public TexturedFace Face;
+        public Model? Model;
+    }
     private readonly uint[] _texpages = TerrainRender.DefaultTexpages();
     private readonly int _mechCx, _mechCy, _mechCz;
 
@@ -413,7 +428,8 @@ public sealed class LevelScene
         int originZ = (pivotWorld.Z >> 17) - 2, originX = (pivotWorld.X >> 17) - 2;
         var window = CellWindow.Sample(Map, eye.Item1, eye.Item2, eye.Item3, originZ, originX, 1, rotation);
 
-        var faces = new List<(int Key, Action Draw)>();
+        _drawQueue.Clear();
+        int drawOrder = 0;
         var ctx = new TerrainRender.EmitContext(_texpages, Ramp, 0);
         var drawn = new List<int>();
         int packetsTotal = 0;
@@ -428,12 +444,13 @@ public sealed class LevelScene
                 // is drawn as empty instead of failing the whole frame.
                 if (Map.Section(entry.SectionId) is not { } section) continue;
                 drawn.Add(entry.SectionId);
-                var buffer = new byte[TerrainRender.VertexBufferBytes];
+                var buffer = _vertexBuffer;
                 TerrainRender.ProjectGrid(section, buffer, entry.X, entry.Y, entry.Z, (uint)entry.Mask << 16, gte);
                 // func_8006531C: camera position relative to the region in 1/16 tile units.
                 int a = (eye.Item3 >> 9) - (originZ << 8) - 0x100 * i;
                 int b = (eye.Item1 >> 9) - (originX << 8) - 0x100 * j;
-                var packets = new List<uint[]>();
+                _packets.Clear();
+                var packets = _packets;
                 uint mask = (uint)entry.Mask;
                 for (int ra = 0xC0; ra >= 0; ra -= 0x40)
                     for (int rb = 0xC; rb >= 0; rb -= 4)
@@ -442,10 +459,15 @@ public sealed class LevelScene
                         mask >>= 1;
                     }
                 packetsTotal += packets.Count;
-                foreach (var p in packets)
+                foreach (var packet in packets)
                 {
-                    var packet = p;
-                    faces.Add(((int)(packet[0] & 0xFFFFFF) << 8 >> 8, () => DrawPacket(packet)));
+                    // Packet depth: the 24-bit field of the tag word, sign-extended like the original.
+                    _drawQueue.Add(new DrawItem
+                    {
+                        Key = (int)(packet[0] & 0xFFFFFF) << 8 >> 8,
+                        Order = drawOrder++,
+                        Packet = packet,
+                    });
                 }
             }
         }
@@ -472,9 +494,7 @@ public sealed class LevelScene
             var widths = part.Model.Widths.TryGetValue(1, out var pw) ? pw.ToArray() : Array.Empty<short>();
             foreach (var face in ModelRender.WalkTextured(part.Model.Polygons, projected, widths, part.Mask, 0))
             {
-                var f = face;
-                var model = part.Model;
-                faces.Add((f.Work.Z, () => DrawModelFace(f, model)));
+                _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = part.Model });
                 mechFaces++;
             }
         }
@@ -493,11 +513,7 @@ public sealed class LevelScene
                     : ModelRender.Project(Gte.Load(shotMatrix), shotVerts, Focal, Ofx, Ofy, 1);
                 var shotWidths = shot.Model.Widths.TryGetValue(1, out var sw) ? sw.ToArray() : Array.Empty<short>();
                 foreach (var face in ModelRender.WalkTextured(shot.Model.Polygons, projected, shotWidths, 0xFF, 0))
-                {
-                    var f = face;
-                    var model = shot.Model;
-                    faces.Add((f.Work.Z, () => DrawModelFace(f, model)));
-                }
+                    _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = shot.Model });
             }
         }
 
@@ -517,11 +533,7 @@ public sealed class LevelScene
                     : ModelRender.Project(Gte.Load(pickupMatrix), verts, Focal, Ofx, Ofy, 1);
                 var widths = model.Widths.TryGetValue(1, out var pw) ? pw.ToArray() : Array.Empty<short>();
                 foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
-                {
-                    var f = face;
-                    var m = model;
-                    faces.Add((f.Work.Z, () => DrawModelFace(f, m)));
-                }
+                    _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });
             }
         }
 
@@ -540,25 +552,35 @@ public sealed class LevelScene
                         : ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1);
                     var widths = model.Widths.TryGetValue(1, out var ow) ? ow.ToArray() : Array.Empty<short>();
                     foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
-                    {
-                        var f = face;
-                        var m = model;
-                        faces.Add((f.Work.Z, () => DrawModelFace(f, m)));
-                    }
+                        _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });
                 }
         }
 
         // Painter's order, far first, stable for equal keys (submission order). Viewer convention:
         // retail sorts into an ordering table whose bucket mapping is not ported; both keys are SZ3
         // averages. An unstable sort reorders coplanar terrain packets whenever the mech is added.
-        var ordered = faces.Select((f, i) => (f.Key, f.Draw, Index: i))
-            .OrderByDescending(f => f.Key).ThenBy(f => f.Index).ToList();
-        foreach (var f in ordered) f.Draw();
+        _drawQueue.Sort(DrawOrder);
+        foreach (var item in _drawQueue)
+        {
+            if (item.Packet is { } packet) DrawPacket(packet);
+            else DrawModelFace(item.Face, item.Model!);
+        }
 
         // Live beams (func_8006B23C) are drawn after the sorted faces: the ribbon builder retail uses
         // is not ported, so each beam is one line from muzzle to far end and must sit on top.
         if (_weapons is { Beams.Count: > 0 } beams) BeamLines(beams, view);
-        return faces.Count;
+        return _drawQueue.Count;
+    }
+
+    /// <summary>
+    /// Painter's order, far first, ties in submission order. Equivalent to the former
+    /// <c>OrderByDescending(key).ThenBy(index)</c>, but without the two LINQ passes and their lists;
+    /// <see cref="DrawItem.Order"/> is unique, so the comparison is a total order.
+    /// </summary>
+    private static int DrawOrder(DrawItem a, DrawItem b)
+    {
+        int byKey = b.Key.CompareTo(a.Key);
+        return byKey != 0 ? byKey : a.Order.CompareTo(b.Order);
     }
 
     private static int Sx(uint xy) => (short)(xy & 0xFFFF);
@@ -570,7 +592,8 @@ public sealed class LevelScene
         byte code = (byte)(p[1] >> 24);
         bool semi = (code & 2) != 0;
         ushort clut = (ushort)(p[3] >> 16);
-        byte[] Rgb3(uint w) => new[] { (byte)w, (byte)(w >> 8), (byte)(w >> 16) };
+        // Packed 0xRRGGBB from a packet colour word (low byte = red, as the GPU reads it).
+        static uint Rgb3(uint w) => (w & 0xFF) << 16 | (w & 0xFF00) | (w >> 16) & 0xFF;
         switch (code & ~2)
         {
             case 0x24:
@@ -605,7 +628,7 @@ public sealed class LevelScene
     }
 
     /// <summary>Textured, colour-modulated triangle; xy = packed screen word, uv = low 16 bits (u | v &lt;&lt; 8).</summary>
-    private void Tri(uint xy0, uint uv0, byte[] c0, uint xy1, uint uv1, byte[] c1, uint xy2, uint uv2, byte[] c2,
+    private void Tri(uint xy0, uint uv0, uint c0, uint xy1, uint uv1, uint c1, uint xy2, uint uv2, uint c2,
         ushort tpage, ushort clut, bool semi)
     {
         int x0 = Sx(xy0), y0 = Sy(xy0), x1 = Sx(xy1), y1 = Sy(xy1), x2 = Sx(xy2), y2 = Sy(xy2);
@@ -618,9 +641,9 @@ public sealed class LevelScene
         if (Sink is not null)
         {
             Sink.TexturedTriangle(
-                x0, y0, u0, v0, c0[0], c0[1], c0[2],
-                x1, y1, u1, v1, c1[0], c1[1], c1[2],
-                x2, y2, u2, v2, c2[0], c2[1], c2[2],
+                x0, y0, u0, v0, (byte)(c0 >> 16), (byte)(c0 >> 8), (byte)c0,
+                x1, y1, u1, v1, (byte)(c1 >> 16), (byte)(c1 >> 8), (byte)c1,
+                x2, y2, u2, v2, (byte)(c2 >> 16), (byte)(c2 >> 8), (byte)c2,
                 tpage, clut, semi);
             return;
         }
@@ -630,6 +653,9 @@ public sealed class LevelScene
         int abr = (tpage >> 5) & 3;
         double inv = 1.0 / area;
         Span<int> rgb = stackalloc int[3];
+        int r0 = (int)(c0 >> 16) & 0xFF, g0 = (int)(c0 >> 8) & 0xFF, b0c = (int)c0 & 0xFF;
+        int r1 = (int)(c1 >> 16) & 0xFF, g1 = (int)(c1 >> 8) & 0xFF, b1c = (int)c1 & 0xFF;
+        int r2 = (int)(c2 >> 16) & 0xFF, g2 = (int)(c2 >> 8) & 0xFF, b2c = (int)c2 & 0xFF;
         for (int y = minY; y <= maxY; y++)
             for (int x = minX; x <= maxX; x++)
             {
@@ -646,7 +672,12 @@ public sealed class LevelScene
                 rgb[0] = tr; rgb[1] = tg; rgb[2] = tb;
                 for (int ch = 0; ch < 3; ch++)
                 {
-                    double cm = b0 * c0[ch] + b1 * c1[ch] + b2 * c2[ch];
+                    double cm = ch switch
+                    {
+                        0 => b0 * r0 + b1 * r1 + b2 * r2,
+                        1 => b0 * g0 + b1 * g1 + b2 * g2,
+                        _ => b0 * b0c + b1 * b1c + b2 * b2c,
+                    };
                     int value = Math.Min(255, (int)(rgb[ch] * cm / 128.0));
                     if (semi && (raw & 0x8000) != 0)
                     {
@@ -792,11 +823,12 @@ public sealed class LevelScene
         bool flat = hasRec && rec.TypeLoaded is 0 or 1;
         if (!hasRec || flat)
         {
-            byte[] c = hasRec ? new[] { (byte)(rec.Rgb >> 16), (byte)(rec.Rgb >> 8), (byte)rec.Rgb } : new byte[] { 255, 0, 255 };
+            // Packed 0xRRGGBB; magenta marks a face whose texture record is missing.
+            uint c = hasRec ? rec.Rgb & 0xFFFFFF : 0xFF00FF;
             FlatFace(face, c);
             return;
         }
-        var w = new byte[] { 0x80, 0x80, 0x80 };
+        const uint w = 0x808080;
         uint a = (uint)face.Work.Xy0, b = (uint)face.Work.Xy1, c2 = (uint)face.Work.Xy2, d = (uint)face.Work.Xy3;
         if (face.Type == 3)
             Tri(a, UV(0), w, b, UV(1), w, c2, UV(2), w, rec.Tpage, rec.Clut, false);
@@ -813,7 +845,7 @@ public sealed class LevelScene
         }
     }
 
-    private void FlatFace(TexturedFace face, byte[] colour)
+    private void FlatFace(TexturedFace face, uint colour)
     {
         void Fill(uint p0, uint p1, uint p2)
         {
@@ -822,7 +854,8 @@ public sealed class LevelScene
             if (area == 0) return;
             if (Sink is not null)
             {
-                Sink.FlatTriangle(x0, y0, x1, y1, x2, y2, colour[0], colour[1], colour[2]);
+                Sink.FlatTriangle(x0, y0, x1, y1, x2, y2,
+                    (byte)(colour >> 16), (byte)(colour >> 8), (byte)colour);
                 return;
             }
             for (int y = Math.Max(0, Math.Min(y0, Math.Min(y1, y2))); y <= Math.Min(Height - 1, Math.Max(y0, Math.Max(y1, y2))); y++)
@@ -833,7 +866,7 @@ public sealed class LevelScene
                     int w2 = (x0 - x) * (y1 - y) - (y0 - y) * (x1 - x);
                     if (area > 0 ? (w0 < 0 || w1 < 0 || w2 < 0) : (w0 > 0 || w1 > 0 || w2 > 0)) continue;
                     int o = (y * Width + x) * 3;
-                    Rgb[o] = colour[0]; Rgb[o + 1] = colour[1]; Rgb[o + 2] = colour[2];
+                    Rgb[o] = (byte)(colour >> 16); Rgb[o + 1] = (byte)(colour >> 8); Rgb[o + 2] = (byte)colour;
                 }
         }
         uint a = (uint)face.Work.Xy0, b = (uint)face.Work.Xy1, c = (uint)face.Work.Xy2, d = (uint)face.Work.Xy3;

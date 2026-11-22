@@ -46,6 +46,36 @@ public class MenuFlowTests
     private static MenuFlow NewFlow(string fe, SceneKind kind = SceneKind.Level) =>
         new MenuFlow(fe, kind, TextWriter.Null, TextWriter.Null, enableLevelMovement: true);
 
+    [RetailFact]
+    public void SceneStartConfirmIsIssuedAfterLevelLoading()
+    {
+        // Accept triggers sound 0x48 (80078DD0.c:235-238); keep it after synchronous loading.
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        var events = new List<string>();
+        flow.SceneEntered += () => events.Add("scene");
+        flow.SceneStartSoundTriggered += id => events.Add($"sound:{id:X2}");
+        flow.HandleKey(Enter);
+        Assert.Equal(new[] { "scene", "sound:48" }, events);
+    }
+
+    [RetailFact]
+    public void MenuConfirmRetainsItsSampleWhenSceneChanges()
+    {
+        // Accept plays 0x48 before the front end changes screens (80078DD0.c:235-238).
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        var menu = new SoundMixer(SoundBank.FromMisFile(FrontEndPath()!), MenuMusic.SampleRate);
+        SoundMixer? level = null;
+        flow.SceneEntered += () => level = new SoundMixer(SoundBank.FromMisFile(flow.Level!.MissionPath));
+        flow.SceneStartSoundTriggered += id => Assert.True(level!.PlayTransferredHigh(id, menu));
+        flow.HandleKey(Enter);
+        Assert.NotNull(level);
+        short[] audio = new short[2048];
+        level!.MixInto(audio);
+        Assert.Contains(audio, value => value != 0);
+    }
+
     [Fact]
     public void AcceptingTheLoadoutOpensTheFirstZoneAsLevelScene()
     {

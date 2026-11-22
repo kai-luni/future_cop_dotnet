@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using FutureCop.Assets;
+using FutureCop.View;
 using FcMainMenu;
 
 const int width = 640, height = 480;
@@ -29,59 +30,248 @@ string Label(ushort id, string fallback) => (text?.Lookup(id) ?? fallback).Repla
 using var window = MenuWindow.Open(width, height);
 if (window == null) { Console.Error.WriteLine("Cannot open X11 display."); return; }
 MenuAudio? audio = MenuAudio.TryStart(path);
-flow.SceneEntered += () => { audio?.Dispose(); audio = null; };
-flow.SceneLeft += () => audio = MenuAudio.TryStart(path);
+SoundMixer? frontEndMixer = audio?.Mixer;
+LevelAudio? levelAudio = null;
+flow.SceneEntered += () => {
+    audio?.Dispose(); audio = null;
+    levelAudio?.Dispose(); levelAudio = null;
+    if (flow.Level != null)
+        levelAudio = LevelAudio.TryStart(flow.Level.MissionPath);
+};
+flow.SceneLeft += () => {
+    levelAudio?.Dispose(); levelAudio = null;
+    audio = MenuAudio.TryStart(path);
+    frontEndMixer = audio?.Mixer ?? frontEndMixer;
+};
+flow.MenuSoundTriggered += id => audio?.PlayMenuSound(id);
+flow.SceneStartSoundTriggered += id => { if (frontEndMixer != null) levelAudio?.PlayMenuSound(id, frontEndMixer); };
+flow.WeaponSoundTriggered += ev => levelAudio?.HandleWeaponSound(ev);
+flow.LevelTicksAdvanced += ticks => levelAudio?.StepTicks(ticks);
 Console.WriteLine("Arrows: navigate / move and turn in the level; Space: jump; Enter: accept; Escape: back; Q: quit.");
+// The loop holds a 60 Hz frame budget instead of sleeping a fixed 16 ms after the work: that sleep
+// used to add its full length to the render time (a 10-12 ms level frame became a 28 ms frame, i.e.
+// 36 fps). FC_FRAME_LOG=<file> writes one CSV line per frame so pacing is measured, not guessed.
+const double TargetFrameMs = 1000.0 / 60.0;
+MenuFlow.Profile = Environment.GetEnvironmentVariable("FC_FRAME_LOG") is { Length: > 0 };
+using var frameLog = MenuFlow.Profile
+    ? new StreamWriter(Environment.GetEnvironmentVariable("FC_FRAME_LOG")!) { AutoFlush = false }
+    : null;
+frameLog?.WriteLine("frame,period_ms,draw_ms,render_ms,present_ms,level_ms,hud_ms,blit_ms,alloc_lvl_kb,alloc_hud_kb,alloc_blit_kb,packets,cells,alloc_mb,gc0,gc2,scene");
+long frameIndex = 0;
 long lastFrame = Stopwatch.GetTimestamp();
+long previousFrameStart = lastFrame;
 while (true) {
     long now = Stopwatch.GetTimestamp();
+    double periodMs = Stopwatch.GetElapsedTime(previousFrameStart, now).TotalMilliseconds;
+    previousFrameStart = now;
     var priorLevel = flow.Level;
     var priorPreview = flow.Preview;
     if (!window.Pump(flow)) break;
     var screen = flow.Screen;
     if (screen == MenuScreen.Quit) break;
+    double drawMs = 0;
     if (screen == MenuScreen.Main) window.Draw(menu);
     else if (screen == MenuScreen.Scene) {
         if (ReferenceEquals(priorLevel, flow.Level) && ReferenceEquals(priorPreview, flow.Preview))
             flow.Advance(Stopwatch.GetElapsedTime(lastFrame, now).TotalSeconds);
+        long drawStart = Stopwatch.GetTimestamp();
         window.DrawScene(flow);
+        drawMs = Stopwatch.GetElapsedTime(drawStart).TotalMilliseconds;
     }
     else if (flow.Panel(Label) is { } panel) window.DrawPanel(panel.Heading, panel.Entries, panel.Selected, panel.Hint, flow.LastLoadError);
+    if (frameLog != null) {
+        frameLog.WriteLine($"{frameIndex},{periodMs:F2},{drawMs:F2},{MenuWindow.LastSceneRenderMs:F2},{MenuWindow.LastScenePresentMs:F2},{MenuFlow.MsLevel:F2},{MenuFlow.MsHud:F2},{MenuFlow.MsBlit:F2},{MenuFlow.BytesLevel / 1024.0:F1},{MenuFlow.BytesHud / 1024.0:F1},{MenuFlow.BytesBlit / 1024.0:F1},{MenuFlow.Packets},{MenuFlow.Cells},{GC.GetTotalAllocatedBytes(false) / 1048576.0:F3},{GC.CollectionCount(0)},{GC.CollectionCount(2)},{screen}");
+        if ((++frameIndex % 60) == 0) frameLog.Flush();
+    }
     lastFrame = now;
-    Thread.Sleep(16);
+    // Wait only for the rest of the budget. An overrun skips the wait and starts the next frame.
+    double busyMs = Stopwatch.GetElapsedTime(now).TotalMilliseconds;
+    if (busyMs < TargetFrameMs - 1.0) Thread.Sleep((int)(TargetFrameMs - busyMs - 1.0));
+    while (Stopwatch.GetElapsedTime(now).TotalMilliseconds < TargetFrameMs) Thread.SpinWait(200);
 }
+frameLog?.Flush();
+levelAudio?.Dispose();
 audio?.Dispose();
 
 sealed class MenuAudio : IDisposable
 {
+    private const int ChunkFrames = 285; // ~20 ms at 14260 Hz
     private readonly Process process;
+    private readonly short[] musicSamples;
+    private readonly SoundMixer? sfxMixer;
+    private readonly CancellationTokenSource cts = new();
     private readonly Task writer;
-    private MenuAudio(Process process, Task writer) { this.process = process; this.writer = writer; }
+
+    private MenuAudio(Process process, short[] musicSamples, SoundMixer? sfxMixer)
+    {
+        this.process = process;
+        this.musicSamples = musicSamples;
+        this.sfxMixer = sfxMixer;
+        this.writer = Task.Run(WriteLoop);
+    }
+
     public static MenuAudio? TryStart(string path)
     {
-        try {
-            var samples = MenuMusic.Decode(File.ReadAllBytes(path));
-            var bytes = new byte[samples.Length * 2];
-            Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
+        try
+        {
+            byte[] bytes = File.ReadAllBytes(path);
+            short[] samples = Array.Empty<short>();
+            try { samples = MenuMusic.Decode(bytes); }
+            catch (InvalidDataException ex) { Console.Error.WriteLine($"Menu music unavailable: {ex.Message}"); }
+            SoundMixer? mixer = null;
+            try
+            {
+                var bank = SoundBank.FromMisBytes(bytes);
+                if (bank.HighTable.Count > 0)
+                    mixer = new SoundMixer(bank, MenuMusic.SampleRate);
+            }
+            catch (Exception ex) when (ex is IOException || ex is InvalidDataException)
+            {
+                Console.Error.WriteLine($"Menu SFX unavailable: {ex.Message}");
+            }
+            if (samples.Length == 0 && mixer == null) return null;
             var start = new ProcessStartInfo("pw-play") { RedirectStandardInput = true, UseShellExecute = false };
-            foreach (var arg in new[] { "--raw", "--rate", MenuMusic.SampleRate.ToString(), "--channels", "2", "--format", "s16", "-" }) start.ArgumentList.Add(arg);
+            foreach (var arg in new[] { "--raw", "--rate", MenuMusic.SampleRate.ToString(), "--channels", "2", "--format", "s16", "--latency", "40ms", "-" })
+                start.ArgumentList.Add(arg);
             var proc = Process.Start(start) ?? throw new InvalidOperationException("Could not start pw-play.");
-            var task = Task.Run(() => {
-                try { while (!proc.HasExited) { proc.StandardInput.BaseStream.Write(bytes); proc.StandardInput.BaseStream.Flush(); } }
-                catch (IOException) { }
-                catch (ObjectDisposedException) { }
-                catch (InvalidOperationException) { }
-            });
-            return new MenuAudio(proc, task);
-        } catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is System.ComponentModel.Win32Exception || ex is InvalidOperationException) {
+            if (!LinuxAudioPipe.TryLimit(proc.StandardInput.BaseStream))
+                Console.Error.WriteLine("Audio pipe size could not be limited; effects may be delayed.");
+            return new MenuAudio(proc, samples, mixer);
+        }
+        catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is System.ComponentModel.Win32Exception || ex is InvalidOperationException)
+        {
             Console.Error.WriteLine($"Menu music unavailable: {ex.Message}");
             return null;
         }
     }
-    public void Dispose() {
+
+    public SoundMixer? Mixer => sfxMixer;
+    public void PlayMenuSound(byte soundId) => sfxMixer?.PlayEffect(soundId);
+
+    private void WriteLoop()
+    {
+        var pcm = new short[ChunkFrames * 2];
+        var bytes = new byte[pcm.Length * 2];
+        int musicPos = 0;
+        try
+        {
+            while (!cts.IsCancellationRequested && !process.HasExited)
+            {
+                if (musicSamples.Length >= 2)
+                {
+                    int remaining = pcm.Length;
+                    int dst = 0;
+                    while (remaining > 0)
+                    {
+                        int avail = Math.Min(remaining, musicSamples.Length - musicPos);
+                        Array.Copy(musicSamples, musicPos, pcm, dst, avail);
+                        dst += avail;
+                        remaining -= avail;
+                        musicPos += avail;
+                        if (musicPos >= musicSamples.Length) musicPos = 0;
+                    }
+                }
+                else
+                {
+                    Array.Clear(pcm, 0, pcm.Length);
+                }
+                sfxMixer?.MixAdditive(pcm);
+                Buffer.BlockCopy(pcm, 0, bytes, 0, bytes.Length);
+                process.StandardInput.BaseStream.Write(bytes);
+                process.StandardInput.BaseStream.Flush();
+            }
+        }
+        catch (IOException) { }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    public void Dispose()
+    {
+        cts.Cancel();
+        sfxMixer?.StopAll();
         try { if (!process.HasExited) process.Kill(); } catch (InvalidOperationException) { }
         try { writer.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
         process.Dispose();
+        cts.Dispose();
+    }
+}
+
+sealed class LevelAudio : IDisposable
+{
+    private const int ChunkFrames = 441; // 20 ms at 22050 Hz
+    private readonly Process process;
+    private readonly SoundMixer mixer;
+    private readonly CancellationTokenSource cts = new();
+    private readonly Task writer;
+
+    private LevelAudio(Process process, SoundMixer mixer)
+    {
+        this.process = process;
+        this.mixer = mixer;
+        this.writer = Task.Run(WriteLoop);
+    }
+
+    public static LevelAudio? TryStart(string missionPath)
+    {
+        try
+        {
+            var bank = SoundBank.FromMisFile(missionPath);
+            var mixer = new SoundMixer(bank, SoundMixer.DefaultOutputSampleRate);
+            var start = new ProcessStartInfo("pw-play") { RedirectStandardInput = true, UseShellExecute = false };
+            foreach (var arg in new[] { "--raw", "--rate", SoundMixer.DefaultOutputSampleRate.ToString(), "--channels", "2", "--format", "s16", "--latency", "40ms", "-" })
+                start.ArgumentList.Add(arg);
+            var proc = Process.Start(start) ?? throw new InvalidOperationException("Could not start pw-play.");
+            if (!LinuxAudioPipe.TryLimit(proc.StandardInput.BaseStream))
+                Console.Error.WriteLine("Audio pipe size could not be limited; effects may be delayed.");
+            return new LevelAudio(proc, mixer);
+        }
+        catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is System.ComponentModel.Win32Exception || ex is InvalidOperationException)
+        {
+            Console.Error.WriteLine($"Level SFX unavailable: {ex.Message}");
+            return null;
+        }
+    }
+
+    public void PlayMenuSound(byte id, SoundMixer frontEnd) => mixer.PlayTransferredHigh(id, frontEnd);
+
+    public void HandleWeaponSound(WeaponSoundEvent ev)
+    {
+        if (ev.Kind == WeaponSoundKind.WeaponLoopRefresh)
+            mixer.RefreshWeaponLoop(ev.SoundId);
+        else
+            mixer.PlayEffect(ev.SoundId);
+    }
+
+    public void StepTicks(int ticks) => mixer.StepTicks(ticks);
+
+    private void WriteLoop()
+    {
+        var pcm = new short[ChunkFrames * 2];
+        var bytes = new byte[pcm.Length * 2];
+        try
+        {
+            while (!cts.IsCancellationRequested && !process.HasExited)
+            {
+                mixer.MixInto(pcm);
+                Buffer.BlockCopy(pcm, 0, bytes, 0, bytes.Length);
+                process.StandardInput.BaseStream.Write(bytes);
+                process.StandardInput.BaseStream.Flush();
+            }
+        }
+        catch (IOException) { }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    public void Dispose()
+    {
+        cts.Cancel();
+        mixer.StopAll();
+        try { if (!process.HasExited) process.Kill(); } catch (InvalidOperationException) { }
+        try { writer.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
+        process.Dispose();
+        cts.Dispose();
     }
 }
 
@@ -151,6 +341,8 @@ sealed class MenuWindow : IDisposable
         _needsRedraw = false;
         return wanted;
     }
+    /// <summary>Split of the last <see cref="DrawScene"/> call: scene render and X11 present (ms).</summary>
+    public static double LastSceneRenderMs, LastScenePresentMs;
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private readonly byte[] ev = new byte[192];
     private readonly byte[] nextEvent = new byte[192];
@@ -319,9 +511,13 @@ sealed class MenuWindow : IDisposable
                 scenePin.AddrOfPinnedObject(), (uint)width, (uint)height, 32, 0);
             if (sceneImage == IntPtr.Zero) { scenePin.Free(); throw new InvalidOperationException("Could not create X11 image."); }
         }
+        long renderStart = Stopwatch.GetTimestamp();
         flow.RenderScene(scenePixels!, 2);
+        LastSceneRenderMs = Stopwatch.GetElapsedTime(renderStart).TotalMilliseconds;
+        long presentStart = Stopwatch.GetTimestamp();
         XPutImage(display, Target, DrawGc, sceneImage, 0, 0, 0, 0, (uint)width, (uint)height);
         Present();
+        LastScenePresentMs = Stopwatch.GetElapsedTime(presentStart).TotalMilliseconds;
     }
     public void Dispose() {
         if (pixmapPicture != IntPtr.Zero) XRenderFreePicture(display, pixmapPicture);

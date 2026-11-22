@@ -14,7 +14,7 @@ namespace FutureCop.View;
 /// <para>
 /// With no target object (c == 0) the far end is
 /// <c>v38 = v58 + ((owner-&gt;axis &gt;&gt; 4) * s3-&gt;unk16 &gt;&gt; 8)</c> (func_8006B23C:340-342) -
-/// the muzzle pushed out along the walker's facing axis. The original then clips that segment with
+/// the muzzle pushed out along the owner's unnormalised facing axis. The original then clips that segment with
 /// <c>gTraceMapRay</c> (func_8006B23C:346) and uses the hit point when it hits; the port clips against
 /// the level height field's floor along the same line, which is the same limit for an exactly
 /// horizontal beam over ground.
@@ -42,10 +42,13 @@ public sealed class Beam
         Direction = direction;
         Length = length;
         End = (
-            x + (int)((long)direction[0] * length >> 16),
-            y + (int)((long)direction[1] * length >> 16),
-            z + (int)((long)direction[2] * length >> 16));
+            unchecked(x + Offset(direction[0], length)),
+            unchecked(y + Offset(direction[1], length)),
+            unchecked(z + Offset(direction[2], length)));
     }
+
+    // func_8006B23C:340-342: the MIPS multiply keeps the low signed 32 bits before shifting.
+    private static int Offset(int axis, int length) => unchecked(((axis >> 4) * length) >> 8);
 
     /// <summary>The firing half of the weapon record.</summary>
     public ShotDefinition Definition { get; }
@@ -55,10 +58,10 @@ public sealed class Beam
     public int Y { get; }
     public int Z { get; }
 
-    /// <summary>Unit direction of the beam, 16.16 per axis.</summary>
+    /// <summary>Owner's facing axis, in 16.16 per axis (not renormalized).</summary>
     public int[] Direction { get; }
 
-    /// <summary>Reach of the beam along the axis, in position units (<c>s3-&gt;unk16</c>).</summary>
+    /// <summary>Signed range word from the definition (<c>s3-&gt;unk16</c>), in 1/16 position units.</summary>
     public int Length { get; }
 
     /// <summary>Far end of the beam, world position units (<c>v38</c>).</summary>
@@ -84,15 +87,15 @@ public sealed class Beam
     public void ClipToGround(LevelMap map)
     {
         ArgumentNullException.ThrowIfNull(map);
-        if (Length <= 0) return;
-        // Walk the segment in sixteen steps; the first sample the floor reaches is the hit point.
+        if (Length == 0) return;
+        // Walk the actual start-to-end segment in sixteen steps; the first floor contact is kept.
         const int Steps = 16;
+        var far = End;
         for (int i = 1; i <= Steps; i++)
         {
-            int t = (int)((long)Length * i / Steps);
-            int x = X + (int)((long)Direction[0] * t >> 16);
-            int y = Y + (int)((long)Direction[1] * t >> 16);
-            int z = Z + (int)((long)Direction[2] * t >> 16);
+            int x = X + (int)(((long)far.X - X) * i / Steps);
+            int y = Y + (int)(((long)far.Y - Y) * i / Steps);
+            int z = Z + (int)(((long)far.Z - Z) * i / Steps);
             int ground = LevelGround.Height(map, x, y + 0x1000, z, out _);
             if (y <= ground)
             {

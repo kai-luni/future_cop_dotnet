@@ -31,16 +31,20 @@ void gDrawAlignedString(u8 *text, s32 x, s32 y, s32 colour) {
 /* The retail func_8008CD30 is a full printf over 32-bit arguments - on the PS1 a long is 32
    bits wide. The host libc treats long as 64, so "%ld" would read past the passed int and print
    garbage; the conversion is rewritten to the int form, exactly like tests/host/hud/hud_stubs.c. */
-void func_8008CD30(void *buf, void *fmt, ...) {
-    va_list ap; char host[32]; char *s = (char*)fmt; int i = 0;
+static void format_retail(void *buf, void *fmt, va_list ap) {
+    char host[32]; char *s = (char*)fmt; int i = 0;
     while (*s && i < (int)sizeof host - 3) {
         if (*s == 'l') { s++; continue; }
         host[i++] = *s++;
     }
     host[i] = 0;
-    va_start(ap, fmt);
     vsnprintf((char*)buf, 32, host, ap);
-    va_end(ap);
+}
+void func_8008CD30(void *buf, void *fmt, ...) {
+    va_list ap; va_start(ap, fmt); format_retail(buf, fmt, ap); va_end(ap);
+}
+void gSpillVarargsArguments(void *buf, void *fmt, ...) {
+    va_list ap; va_start(ap, fmt); format_retail(buf, fmt, ap); va_end(ap);
 }
 void gRegistryFind(u8 id) { put("REGISTRY %d", (int)id); }
 
