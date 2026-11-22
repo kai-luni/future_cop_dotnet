@@ -31,6 +31,15 @@ jobs:
       - name: Run xUnit test suite (asset-free tests; asset-dependent tests skip)
         run: |
           # Discover test projects the same way as the build step.
+          total=0
           for p in $(git ls-files 'tests/*/*.csproj' | sed 's|/[^/]*$||' | sort -u); do
-            dotnet test "$p" --no-build -v q
+            out=$(dotnet test "$p" -v q)
+            echo "$out"
+            t=$(echo "$out" | grep -oP 'Total: \K[0-9]+' | paste -sd+ | bc)
+            total=$((total + ${t:-0}))
           done
+          # fail if no tests ran at all (silent zero-test pass guard)
+          if [ "$total" -eq 0 ]; then
+            echo "ERROR: no tests executed - CI is green but proves nothing"
+            exit 1
+          fi
