@@ -37,6 +37,8 @@ public sealed class MenuFlow
     // Fire buttons, mapped to the two pad buttons gWeaponSlotInput reads: X11 keycode 52 is Z and 53 is
     // X on the evdev+8 mapping this window delivers (xmodmap -pk confirms both).
     private const uint KeyZ = 52, KeyX = 53, KeyC = 54;
+    // Keycodes 50/62 are the left and right Shift, 18 the E key; Q is already 24 above.
+    private const uint KeyLeftShift = 50, KeyRightShift = 62, KeyEKey = 18;
 
     private readonly string _frontEndPath;
     private readonly string _missionDir;
@@ -359,6 +361,14 @@ public sealed class MenuFlow
         KeyX => PadButtons.Cross,
         // The third slot (49a, the lob) sits on Circle; C is the free key next to Z and X.
         KeyC => PadButtons.Circle,
+        // func_80055988 changes the mech's form on the L1 + R1 chord (:177-189). On the keyboard the
+        // shoulders are the two shift keys, so the chord is both of them at once.
+        KeyLeftShift => PadButtons.L1,
+        KeyRightShift => PadButtons.R1,
+        // gUpdatePlayerFormAndMotion masks with L2 + R2 too (:266-269); they cancel both strafe
+        // bits. Q and E are free next to the movement keys.
+        KeyQ => PadButtons.L2,
+        KeyEKey => PadButtons.R2,
         _ => PadButtons.None,
     };
 

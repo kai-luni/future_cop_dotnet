@@ -143,14 +143,23 @@ public sealed class LevelScene
     {
         if (_walker is null || _walkerWorld is null) throw new InvalidOperationException("Attach a walker first");
         _walkerWorld.Pads[0] = pad;
-        int result = MechWalker.Tick(_walker, _walkerWorld, steps, flags);
-        WalkerSteps += steps;
-        MechWorld = (_walker.X, _walker.Y, _walker.Z);
-        // The trigger and the projectile clock run on retail frames, not on locomotion substeps: the
-        // wireframe viewer ticks once per 1/60 s frame and subtracts RetailClock.TicksPerFrame from
-        // the reload timer (func_8006C3E0). Passing substeps here made both run eight times too fast.
+        // func_800588D4:259 runs the player unit update, not the bare walker: func_80055988 applies the
+        // position shift, the L1+R1 form change, the control masks, and then dispatches to the walker
+        // or the hover integrator by the form. The trigger below reads the pad word it masks in place.
         int ticks = steps * RetailClock.LocomotionTicks;
         int frames = ticks / RetailClock.TicksPerFrame;
+        // In retail there is one word: state + 0x30 carries the translated buttons, the walker
+        // integrate reads it, and :260-266 masks it in place before :288 gWeaponSlotInput reads the
+        // masked result. HeldPadWord is that word for the trigger; the flags argument is the same
+        // word for callers that only drive locomotion, so the step uses the union and the trigger
+        // gets what the masking left of it.
+        uint padWord = flags | _padWord;
+        int result = FutureCop.Game.Mech.MechPlayer.Update(_walker, _walkerWorld, ticks, steps,
+            ref padWord, out bool formChanged);
+        // Bit 0 of the out word is per call (func_800588D4:260-265 spawns on it that frame only).
+        FormChanged = formChanged;
+        WalkerSteps += steps;
+        MechWorld = (_walker.X, _walker.Y, _walker.Z);
         _weapons?.AdvanceShots(frames);
         // Beams live on the 60 Hz frame, like the trigger that spawns them.
         for (int f = 0; f < frames; f++) _weapons?.AdvanceBeams();
@@ -165,9 +174,15 @@ public sealed class LevelScene
         // arm - a kick stamped by the shot itself first moves the arm on the next frame.
         _weapons?.AdvanceRecoil(RetailClock.TicksPerFrame * frames);
         UpdateWalkerPose();
-        _weapons?.Advance(_walker, _parts, _padWord, RetailClock.TicksPerFrame * frames);
+        _weapons?.Advance(_walker, _parts, padWord, RetailClock.TicksPerFrame * frames);
         return result;
     }
+
+    /// <summary>
+    /// Set when func_80055988 completed a transform this step: :258-268 spawns the type-4 effect
+    /// and plays sound 0x15, which the viewer treats as a latch for its own effects.
+    /// </summary>
+    public bool FormChanged { get; private set; }
 
     /// <summary>
     /// Pad buttons held this frame, for the HUD and for callers that only need the raw set.
@@ -189,10 +204,22 @@ public sealed class LevelScene
 
     private void UpdateWalkerPose()
     {
-        if (_animateWalker && _walker is { } walker && _parts[0].Frame != walker.Track.Frame)
-            RebuildParts(walker.Track.Frame);
+        if (_animateWalker && _walker is { } walker)
+        {
+            // func_800518A8 interpolates the pose by state + 0xBC: PlayerForm.Build already blends the
+            // rest clip against the hover clip on that word (:216-230, PlayerForm.Frame), so the pose
+            // has to follow the progress too, not just the track frame. Without this the mech keeps
+            // its walking legs while the transform runs (:191-205) and floats on them afterwards.
+            if (_parts[0].Frame != walker.Track.Frame || _poseProgress != walker.Progress)
+            {
+                _poseProgress = walker.Progress;
+                RebuildParts(walker.Track.Frame);
+            }
+        }
         ApplyRecoil();
     }
+
+    private int _poseProgress = -1;
 
     /// <summary>The matrices <see cref="PlayerAssembly"/> composed, before any recoil of this frame.</summary>
     private Gte.Mat[] _poseMatrices = Array.Empty<Gte.Mat>();
@@ -200,7 +227,10 @@ public sealed class LevelScene
     /// <summary>Rebuilds the five instances and caches their unrecoiled matrices.</summary>
     private void RebuildParts(int mainFrame)
     {
-        _parts = PlayerAssembly.Build(Actor, _file.Models, mainFrame: mainFrame);
+        // progress -1 means "no form state yet": the initial assembly is the progress-0 one.
+        _parts = _poseProgress < 0
+            ? PlayerAssembly.Build(Actor, _file.Models, mainFrame: mainFrame)
+            : PlayerForm.Build(Actor, _file.Models, _poseProgress);
         _poseMatrices = _parts.Select(p => p.Matrix).ToArray();
     }
 
