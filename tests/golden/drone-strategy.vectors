@@ -1,0 +1,37 @@
+# fcop-drone-strategy-golden/v1
+# family: Precinct Assault economy and targeting / func_800336DC
+# Columns (signed decimal):
+#   case shape mode level f68 f74 f78 f84 f88 alternate a0[0..3] posBX targetX targetZ aa rng sqrtReturn
+#   -> mode f9C f68 f74 f78 fB0 fB4 fB8 fBC fE0 a0[0..3] c00 c01 c10 c11 c21 c31
+#      singlePlayerAiS4C fa aq6 attackID pursuitID dcX dcZ rngCalls sqrtCalls sqrtInput
+# Shape 0: empty; 1: ten own type-8 units; 2: own type-0x1C; 3: opposing type-5;
+# 4: own type-9 sub=10; 5: ten own type-8 units and an own type-0x1C.
+# Own/opposing team = 2/1, player ID = 2, list IDs = 3+, frame stamp = 1234.
+# posA = (32769, 0, -65537), self = (0, 0, 0); positions not given are zero.
+# From unchanged 800336DC.c, 80033608.c, 800336A8.c, 800330E8.c under qemu-mipsel.
+# Fixed RNG and root responses are inputs; root arguments are checked, not the COP2 lookup.
+# Not compared: f84/f88 (inputs), c20/c30 (not written), dcY (fixed zero), mirror
+# banks/retry values, intermediate candidate scores, or retail PRNG/root implementations.
+m0_claim_exact 1 2 6 30 20 20 0 0 0 1 1 1 0 0 0 0 0 0 0 -> 0 0 0 20 20 0 0 0 0 0 1 1 1 2 0 0 0 0 0 0 1234 1 4 0 0 16384 -32769 0 0 0
+m0_claim_below 1 2 6 29 20 20 0 0 1 1 0 1 1 0 0 0 0 0 0 -> 0 0 29 20 20 0 0 0 0 0 1 0 1 1 0 0 0 0 0 0 0 1 4 0 0 16384 -32769 0 0 0
+m0_alt_claim 1 0 6 30 20 20 0 0 1 0 0 0 0 0 0 0 0 0 0 -> 0 0 0 20 20 0 0 0 0 0 0 2 0 0 0 0 0 0 0 0 1234 1 4 0 0 16384 -32769 0 0 0
+m0_builder_exact 1 0 6 50 20 20 0 0 0 1 1 1 1 0 0 0 0 0 0 -> 0 0 0 20 20 0 0 1 0 0 1 1 1 1 0 0 0 0 0 0 0 1 4 0 0 16384 -32769 0 0 0
+m0_builder_below 1 0 6 49 20 20 0 0 0 1 1 1 1 0 0 0 0 0 0 -> 0 0 49 20 20 0 0 0 0 0 1 1 1 1 0 0 0 0 0 0 0 1 4 0 0 16384 -32769 0 0 0
+m0_special_seed 1 0 4 70 0 0 4 0 0 1 1 1 1 0 0 0 0 1 0 -> 0 0 1 17 2 17 2 1 0 0 1 1 1 1 0 0 0 0 0 0 0 1 4 0 0 16384 -32769 2 0 0
+m1_purchase_exact 2 1 8 14 13 20 0 0 0 2 1 1 1 0 0 0 0 0 0 -> 1 1 0 20 20 0 0 0 0 0 2 1 1 1 7 0 0 0 0 0 0 0 4 0 3 0 0 2 0 0
+m1_purchase_below 2 1 8 13 13 20 0 0 0 2 1 1 1 0 0 0 0 0 0 -> 1 1 13 13 20 0 0 0 0 0 2 1 1 1 0 0 0 0 0 0 0 0 4 0 3 0 0 2 0 0
+m1_secondary_exact 2 1 8 8 20 16 0 0 0 2 1 1 1 0 0 0 0 0 0 -> 1 1 0 20 20 0 0 0 0 0 2 1 1 1 0 4 0 0 0 0 0 0 4 0 3 0 0 2 0 0
+m1_caps 2 1 8 200 20 20 0 0 0 2 2 1 1 0 0 0 0 3 0 -> 1 1 200 20 20 0 0 0 0 0 2 2 1 1 0 0 0 0 0 0 0 0 4 0 3 0 0 4 0 0
+m2_upkeep_exact 0 2 9 65 20 20 0 0 0 0 0 0 0 0 0 0 0 0 0 -> 2 2 65 20 20 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4 0 2 0 0 1 0 0
+m2_upkeep_above 0 2 9 66 20 20 0 0 0 0 0 0 0 0 0 0 0 0 0 -> 2 2 16 20 20 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 4 0 2 0 0 1 0 0
+m2_upkeep_blocked 4 2 9 66 20 20 0 0 0 0 0 0 0 0 0 0 0 0 0 -> 2 2 66 20 20 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4 0 2 0 0 0 0 0
+m2_defend_fmul 3 0 9 75 19 0 0 0 0 0 0 2 0 0 -70004 30007 8192 3 30000 -> 2 2 59 20 12 1 9 0 0 0 0 0 2 0 0 0 0 0 3 0 0 0 0 3 3 0 0 3 1 88515
+m2_defend_cap_strict_range 3 2 9 75 20 20 0 0 0 0 0 0 0 0 -70004 30007 7500 0 30000 -> 2 2 25 20 20 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 4 0 3 0 0 1 1 88515
+m2_far_slots 0 2 4 15 0 0 0 0 0 0 0 2 2 1048576 0 0 0 3 0 -> 2 2 5 0 5 0 0 0 0 0 0 0 2 2 0 0 0 0 3 2 0 0 4 0 2 0 0 2 0 0
+m2_signed_fmul_wrap 3 2 9 0 20 20 0 0 0 0 0 0 0 12582913 12582913 -4097 0 0 1 -> 2 2 0 20 20 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4 0 3 0 0 0 1 -1879047552
+m0_slot_production 1 0 4 76 0 20 0 1 0 2 1 1 1 0 0 0 0 4 0 -> 0 0 0 13 20 0 0 1 0 0 2 1 1 1 13 0 0 0 0 0 0 1 4 0 0 16384 -32769 1 0 0
+m1_transition 5 0 8 14 13 20 0 0 0 2 1 1 1 0 0 0 0 0 0 -> 1 1 0 20 20 0 0 0 0 1 2 1 1 1 7 0 0 0 0 0 0 0 4 0 13 32769 -65537 2 0 0
+m2_upkeep_below 0 2 9 64 20 20 0 0 0 0 0 0 0 0 0 0 0 0 0 -> 2 2 64 20 20 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4 0 2 0 0 1 0 0
+m2_near_budget_below 0 2 4 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -> 2 2 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4 0 2 0 0 2 0 0
+m2_near_budget_exact 0 2 4 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -> 2 2 2 0 1 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4 0 2 0 0 2 0 0
+m2_upkeep_unsigned 0 2 9 -1 20 20 0 0 0 0 0 0 0 0 0 0 0 0 0 -> 2 2 -51 20 20 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 4 0 2 0 0 1 0 0
