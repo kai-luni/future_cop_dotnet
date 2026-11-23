@@ -80,6 +80,70 @@ public sealed class SkyCaptainSystem
     /// <summary>The scheduler env (D_800A8F90). Free slots &gt;= 10 so Step passes its budget gate.</summary>
     public EnemyWorld AttackEnv { get; } = new(0, 64);
 
+    private LevelMap? _map;
+
+    /// <summary>
+    /// Mode-3 line-of-sight probe (func_8004E80C / 8004E80C.c:156-158) wired by <see cref="BindMap"/>.
+    /// Null when no <see cref="LevelMap"/> is bound so unmodelled headless calls fail loudly.
+    /// </summary>
+    public Func<EnemyEntity, EnemyEntity, bool>? LineOfSightProbe { get; private set; }
+
+    /// <summary>
+    /// Wires the enemy attack cluster's terrain raycast hooks (<see cref="LineOfSightProbe"/> and
+    /// <see cref="EnemyWorld.OnTraceMapRay"/>) to <see cref="MechCollision.Ray"/> against the loaded
+    /// <see cref="LevelMap"/>.
+    /// </summary>
+    /// <remarks>
+    /// Retail call-site semantics verified against the decomp C and MIPS assembly:
+    /// <list type="bullet">
+    /// <item>
+    /// Mode-3 target search (<c>func_8004E80C</c>, <c>src/game/8004E80C.c:150-158</c>,
+    /// <c>asm/us/main.s:73612-73638</c>): calls <c>gTraceMapRay(ctx+0x5C, o+0x5C, 0, 0, 0)</c>
+    /// with <c>floors = false</c> (<c>sw $zero, 0x10($sp)</c> at <c>main.s:73633</c>); any
+    /// non-zero result rejects the candidate (<c>bnez $v0, .L8004EAD0</c> at <c>main.s:73638</c>),
+    /// so clear LOS is <c>Result == 0</c>. The endpoints are entity <c>+0x5C</c> (<c>Vec5C</c>,
+    /// <c>addiu $a0, $s7, 0x5C</c> / <c>addiu $a1, $s0, 0x5C</c> at <c>main.s:73632, 73634</c>).
+    /// At the call site, <c>$s1</c> holds the non-negative range score <c>r</c> returned by
+    /// <c>func_8004E5F0</c> (<c>addu $s1, $v0, $zero</c> / <c>bltz $s1</c> at
+    /// <c>main.s:73614-73615</c>). Because <see cref="EnemyEntity.LineOfSightProbe"/> does not
+    /// receive <c>r</c> and only checks <c>Result == 0</c> (whereas <c>callerS1</c> only affects
+    /// tie-breaking among multiple wall hits in the same cell, <c>MechCollision.cs:327-345</c>,
+    /// never changing hit vs. miss), <c>callerS1 = 0</c> is passed conservatively.
+    /// </item>
+    /// <item>
+    /// Weapon fire ray (<c>func_8005F6E8</c>, <c>src/game/8005F6E8.c:328, 398</c>,
+    /// <c>asm/us/main.s:93005-93012, 93155-93162</c>): calls
+    /// <c>gTraceMapRay(pos, (u8*)s1+0x5C, ..., 1)</c> with <c>floors = true</c>
+    /// (<c>addiu $v0, $zero, 1; sw $v0, 0x10($sp)</c> at <c>main.s:93005-93006, 93155-93156</c>).
+    /// In the prologue (<c>main.s:92741</c>), <c>$s1</c> is loaded with the target entity pointer
+    /// <c>a0-&gt;unk18</c> (a PS1 RAM address in <c>0x80000000..0x801FFFFF</c>, i.e. negative signed
+    /// 32-bit, matching <c>func_800549F0</c>), so <c>callerS1 = unchecked((int)0x80000000)</c> is
+    /// passed. <see cref="EnemyWorld.OnTraceMapRay"/> receives <c>(actor, target)</c> rather than
+    /// the transformed muzzle <c>pos</c>, so <c>actor.Vec5C</c> is used as the ray origin until
+    /// muzzle transform (<c>func_80017668</c>) is wired.
+    /// </item>
+    /// </list>
+    /// </remarks>
+    public void BindMap(LevelMap map)
+    {
+        ArgumentNullException.ThrowIfNull(map);
+        _map = map;
+        LineOfSightProbe = (ctx, target) =>
+            MechCollision.Ray(
+                map,
+                new Vec3(ctx.Vec5CX, ctx.Vec5CY, ctx.Vec5CZ),
+                new Vec3(target.Vec5CX, target.Vec5CY, target.Vec5CZ),
+                floors: false,
+                callerS1: 0).Result == 0;
+        AttackEnv.OnTraceMapRay = (actor, target) =>
+            MechCollision.Ray(
+                map,
+                new Vec3(actor.Vec5CX, actor.Vec5CY, actor.Vec5CZ),
+                new Vec3(target.Vec5CX, target.Vec5CY, target.Vec5CZ),
+                floors: true,
+                callerS1: unchecked((int)0x80000000)).Result;
+    }
+
     /// <summary>The drone is drawn unless it is in the dead state 5 (800324E0.c:292-295).</summary>
     public bool Visible => Drone is not null && Drone.Body.FA != 5;
 
@@ -198,10 +262,11 @@ public sealed class SkyCaptainSystem
         }
     }
 
-    /// <summary>Message 6 against the live scene: terrain height from the level map.</summary>
+    /// <summary>Message 6 against the live scene: terrain height and LOS/fire raycasts from the level map.</summary>
     public void Advance(int dt, LevelScene scene)
     {
         ArgumentNullException.ThrowIfNull(scene);
+        if (!ReferenceEquals(_map, scene.Map)) BindMap(scene.Map);
         Advance(dt, pos => LevelGround.Height(scene.Map, pos[0], pos[1], pos[2], out _));
     }
 
@@ -362,7 +427,12 @@ public sealed class SkyCaptainSystem
                 State1C = o.F1C,
                 FlagWord24 = o.Flags24,
                 PositionX = o.Pos[0], PositionY = o.Pos[1], PositionZ = o.Pos[2],
+                // Retail updates entity +0x5C via gGteTransformVerticesWide (800324E0.c:384) from
+                // the model vertex table; HoverEnemy has no model transform yet, so +0x50 is used
+                // as the world-space aim/visibility anchor.
+                Vec5CX = o.Pos[0], Vec5CY = o.Pos[1], Vec5CZ = o.Pos[2],
                 HeadingX = o.Dir[0], HeadingY = o.Dir[1], HeadingZ = o.Dir[2],
+                LineOfSightProbe = _sys.LineOfSightProbe,
             };
             EnemyAttackScheduler.Step(slot, delta, owner, null, 1, _sys.AttackEnv);
         }
