@@ -164,7 +164,6 @@ public sealed class LevelScene
         if (body.Port != 0) throw new NotSupportedException("Only player port 0 is integrated");
         _animateWalker = false;
         _walker = body;
-        _hudMaxHealth = body.Health;
         _walkerWorld = new FutureCop.Game.Mech.MechWorld(Map);
         MechWorld = (body.X, body.Y, body.Z);
     }
@@ -622,91 +621,7 @@ public sealed class LevelScene
             skyCaptain++;
         }
         SkyCaptainPrimitives = skyCaptain;
-
-        // The 2D HUD goes over the finished world pass, exactly where the retail frame puts it:
-        // gRunRegionPass (world) then gDrawInGameHud in the one-player update (800271A4.c:194,198)
-        // and in the split-screen update (80027510.c:250-251), before gEndSubScreenFrame.
-        DrawHud();
         return _drawQueue.Count;
-    }
-
-    // ---- In-game HUD (func_80047F30 in the frame of func_800271A8 / func_80027510) ----
-
-    /// <summary>
-    /// The HUD globals (D_8009FA00 screen state, D_8009FA0C player count, D_8009FAA4 frame stamp,
-    /// D_800A8EA4 slot page word). Null keeps the HUD off, which is what static previews and the
-    /// terrain pixel checks rely on; <see cref="EnableHud"/> switches it on for the running level.
-    /// The screen-state gate itself stays in <see cref="HudDraw.Draw"/> (80047F30.c:189).
-    /// </summary>
-    public HudGlobals? HudGlobals { get; set; }
-
-    /// <summary>
-    /// The match block D_8009FA94 handed to the HUD. <see cref="Render"/> passes it through
-    /// <see cref="ScoreSession"/>, so a live level shows its own score words.
-    /// </summary>
-    public HudSession HudSession { get; set; } = new();
-
-    /// <summary>
-    /// Player block template (+0x64 fill state, +0xA4/+0xAE label, +0xC1 slot, +0x326 effect
-    /// timer). The gauge words +0x58/+0x5C and the slot words +0x84/+0x8A/+0x90 are filled from the
-    /// walker and the fire path by <see cref="HudGame"/>.
-    /// </summary>
-    public HudPlayerBlock HudPlayer { get; set; } = new() { Value64 = 2 };
-
-    /// <summary>
-    /// The device the HUD is sequenced into. Null uses <see cref="InGameHud"/> over <see cref="Rgb"/>
-    /// while the scene rasterises; a recording device lets a test observe the call list.
-    /// </summary>
-    public IHudDevice? HudDevice { get; set; }
-
-    private int _hudMaxHealth;
-
-    /// <summary>
-    /// Switches the in-game HUD on: screen state 4 (a running match, D_8009FA00) and the slot page
-    /// word of this mission (<see cref="HudTexpageWord"/>). An already set <see cref="HudGlobals"/> is
-    /// kept.
-    /// </summary>
-    public void EnableHud() => HudGlobals ??= new HudGlobals { EnvMapTexpageWord = HudTexpageWord };
-
-    /// <summary>
-    /// The game block of the HUD (D_8009FA58 entry handed to func_80047F30): health and the gauge
-    /// words from the walker, slot counters and ids from the fire path's control block. The gauge
-    /// divisor is the walker health at attach time, the same rule the menu tool uses
-    /// (tools/FcMainMenu/MenuFlow.cs:277), because the retail max-health word +0x1E is not decoded.
-    /// </summary>
-    public HudGameBlock HudGame()
-    {
-        int health = _walker?.Health ?? 0;
-        int max = _hudMaxHealth > 0 ? _hudMaxHealth : Math.Max(health, 1);
-        // The gauge record scales its value onto 0..0x60: value * (0x600000 / divisor) >> 16
-        // (func_8005A0C4.c:44-48), so health and the reciprocal of max health give the retail height.
-        int reciprocal = 0x600000 / max;
-        var player = HudPlayer with { Value58 = health, Value5C = reciprocal };
-        // func_8006C080 reads the three slot ids at +0x90 and their counters at +0x84/+0x8A.
-        if (_weapons?.Slots is { } slots)
-        {
-            player = player with
-            {
-                Value84 = slots.Ammo.ToArray(),
-                Value8A = slots.Reserve.ToArray(),
-                Value90 = slots.SlotIds.Select(id => (int)id).ToArray(),
-            };
-        }
-        return new HudGameBlock { Health = health, MaxHealth = max, Player = player };
-    }
-
-    /// <summary>
-    /// gDrawInGameHud for player 0 (800271A4.c:198). Not ported: the call-site gate
-    /// <c>gFocusPositions[0] == 0 || ->unk11F == 0</c> (800271A4.c:196-197) - the port has no focus
-    /// block, so the HUD is drawn whenever it is enabled.
-    /// </summary>
-    private void DrawHud()
-    {
-        if (HudGlobals is not { } globals) return;
-        // The GPU bridge (Sink) consumes primitives, not Rgb; the HUD has no primitive emitter yet.
-        var device = HudDevice ?? (Sink is null ? new InGameHud(Rgb, globals.FrameTime, null, Vram) : null);
-        if (device is null) return;
-        HudDraw.Draw(device, HudGame(), ScoreSession(HudSession), globals);
     }
 
     /// <summary>
