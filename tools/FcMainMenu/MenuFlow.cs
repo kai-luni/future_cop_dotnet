@@ -437,6 +437,8 @@ public sealed class MenuFlow
         Level.HeldButtons = buttons;
         Level.HeldPadWord = flags;
         Level.AdvanceWalker(steps, flags, externalPad);
+        // Message 6 of the Sky Captain with the same tick count the walker ran (800271A4.c:180).
+        Level.AdvanceSkyCaptain(steps * RetailClock.LocomotionTicks);
         if (Level.Weapons != null)
         {
             foreach (var ev in Level.Weapons.DrainSoundEvents())
