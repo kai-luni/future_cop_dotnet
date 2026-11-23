@@ -24,8 +24,14 @@ jobs:
           dotnet-version: '10.0.x'
       - name: Build all projects
         run: |
-          # Tizen projects need TV framework DLLs (gitignored, local only) - skip them.
-          for p in $(git ls-files '*.csproj' | grep -v '^tests/' | grep -vi 'tizen' | sed 's|/[^/]*$||' | sort -u); do
+          # Tizen projects need TV framework DLLs (gitignored, local only).
+          # Match by project content, not file name: any csproj referencing a
+          # Tizen framework assembly is skipped wherever it lives.
+          for p in $(git ls-files '*.csproj' | grep -v '^tests/' | sed 's|/[^/]*$||' | sort -u); do
+            if grep -qiE 'Tizen(\.[A-Za-z0-9_.]+)?\.dll|Include="Tizen' "$p"/*.csproj 2>/dev/null; then
+              echo "skip (Tizen deps): $p"
+              continue
+            fi
             dotnet build "$p"
           done
       - name: Run xUnit test suite (asset-free tests; asset-dependent tests skip)
