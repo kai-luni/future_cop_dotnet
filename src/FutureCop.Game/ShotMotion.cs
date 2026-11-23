@@ -68,12 +68,19 @@ public static class ShotMotion
         ArgumentNullException.ThrowIfNull(a);
         ArgumentNullException.ThrowIfNull(b);
         if (a.Length < 3 || b.Length < 3) throw new ArgumentException("points need three words");
-        int x = Math.Abs(a[0] - b[0]);
-        int y = Math.Abs(a[1] - b[1]);
-        int z = Math.Abs(a[2] - b[2]);
-        if (x < y) (x, y) = (y, x);
-        if (x < z) (x, z) = (z, x);
-        return x + ((y + z) >> 2);
+        unchecked
+        {
+            int x = a[0] - b[0];
+            int y = a[1] - b[1];
+            int z = a[2] - b[2];
+            // Retail negation wraps at INT_MIN; Math.Abs would throw for that delta.
+            if (x < 0) x = -x;
+            if (y < 0) y = -y;
+            if (z < 0) z = -z;
+            if (x < y) (x, y) = (y, x);
+            if (x < z) (x, z) = (z, x);
+            return x + ((y + z) >> 2);
+        }
     }
 
     /// <summary>

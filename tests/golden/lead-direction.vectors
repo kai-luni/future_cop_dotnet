@@ -1,0 +1,33 @@
+# fcop-lead-direction-golden/v1
+# family: combat targeting / func_8005E2A0
+# tags: immediate-distance max-range loop-cap short-cap fixed-point wrap half-step
+# Columns (signed decimal; all 12 inputs passed by both harnesses):
+#   case targetX targetY targetZ arg2 arg3 startX startY startZ dirX dirY dirZ scale -> aimX aimY aimZ
+# Both assert all three signed Q16.16 output words, not internal counters. The
+# C output was emitted by qemu-mipsel running the unchanged 8005E2A0.c with the
+# original octagonal distance, normalization, and reciprocal-table builder.
+# Independent arithmetic check: wrap products before signed >>10, wrap both
+# left shifts and each traveled addition, then subtract signed step >>1 before
+# normalizing. Initial index = (signed(scale << 4) < arg2) << 3. Pre-increment
+# followed by while (i < 9) means nine marches from 0, one from 8 (not two).
+# distance_first / range_limit / loop_cap exercise each exit for both starts;
+# strict_start_boundary keeps the long budget when (scale << 4) == arg2.
+# wrapped_* cover product, INT_MIN delta, cap selector, and traveled wrap.
+# fire_lead* are also checked at the .NET spawn boundary. fire_direct uses a
+# stationary step to measure the direct aim vector (target aim point - muzzle).
+distance_first_0 100 -50 25 16 4000 12 34 -56 16385 -32769 4097 8 -> -19164 -35134 -51903
+range_limit_0 10000 -6500 3500 16 1500 -120 410 -230 -36789 45678 -13001 4 -> -51519 35772 -18971
+loop_cap_0 80000 -40000 25000 16 12000 -200 25 300 65535 -12019 29129 16 -> -55933 30058 -16296
+distance_first_8 -200 600 -350 32 8000 100 -100 350 -49999 13007 -31001 1 -> 17853 -44894 44310
+range_limit_8 12000 35000 -45000 32 1024 0 300 -400 21001 -45201 60999 1 -> -13595 -39368 50601
+loop_cap_8 -72000 34000 -24000 32 10000 350 700 1800 -44001 18001 -51001 1 -> 56648 -26074 20187
+strict_start_boundary 30000 17000 -13000 64 32000 -312 112 31 -32001 -22003 25001 4 -> -53388 -29947 23500
+wrapped_direction_products -3500000 4100000 -3500000 32 1000000 2000 4000 -8000 131073 -222223 333333 95535 -> 1748 -7363 65160
+wrapped_min_distance 0 0 0 16 20000 -2147483643 6000 -3000 -5 1000000 -1000000 1024 -> -65504 15 -16
+zero_residual 32 -16 8 16 8000 0 0 0 65536 -32768 16384 1 -> 0 0 0
+fire_lead 4000 -300 21 16 1040 1000 -300 21 -24577 65537 -32769 33 -> -50039 37842 -18934
+fire_lead_signed_limit 4000 -300 21 16 -16 1000 -300 21 -24577 65537 -32769 33 -> -61924 19255 -9628
+fire_lead_signed_step 4000 -300 21 -16 1040 1000 -300 21 -24577 65537 -32769 33 -> -28631 52769 -26409
+fire_direct 4000 -300 21 16 8000 1000 -300 21 0 0 0 0 -> -65532 0 0
+wrapped_scale_shift 200000 400000 600000 16 1000000 100 -200 300 17 -11 -13 134217728 -> -35523 -33666 -43593
+wrapped_travel 200000 400000 -600000 33554434 256 200 -100 -300 17 -11 13 4000000 -> -7950 -36861 53627

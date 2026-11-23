@@ -129,6 +129,7 @@ public sealed class LevelScene
         // Sky Captain (type 0x25): the earliest point that has both the records and, in the live level
         // (EnableMechMovement before EnableFiring), the attached walker for func_800331CC.c:236.
         _skyCaptain = new SkyCaptainSystem();
+        _skyCaptain.BindMap(Map);
         _skyCaptain.SpawnFromRecords(records, MechWorld,
             pos => LevelGround.Height(Map, pos[0], pos[1], pos[2], out _));
     }

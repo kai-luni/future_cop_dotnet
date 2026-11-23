@@ -110,16 +110,11 @@ public static class EnemyWeaponFire
                     goto AimReady;
                 case 3: // type 2: lead prediction (8005F6E8.c:241-257)
                     if (s1 is null) goto ActorVector;
-                    if (s1.Mode16 == 1 && s1.Timer324 > 0) goto TargetDelta;
-                    if (s1.Mode16 == 0x12 && s1.TimerB4Sub324 > 0) goto TargetDelta;
-                    goto TargetDelta; // gSolveLeadDirection: geometry solver 8005E2A0.c is not ported; the
-                                      // two timer gates above decide between it and the plain delta, and the
-                                      // plain delta is the only path this headless port implements (documented).
-                TargetDelta:
-                    vec[0] = s1.Vec5CX - pos[0];
-                    vec[1] = s1.Vec5CY - pos[1];
-                    vec[2] = s1.Vec5CZ - pos[2];
-                    MechMath.Normalize(vec);
+                    if (s1.Mode16 == 1 && s1.Timer324 > 0) goto case 1;
+                    if (s1.Mode16 == 0x12 && s1.TimerB4Sub324 > 0) goto case 1;
+                    LeadDirectionSolver.Solve(pos, vec, (short)s2.W12 << 4, (short)s2.W16 << 4,
+                        new[] { s1.Vec5CX, s1.Vec5CY, s1.Vec5CZ },
+                        new[] { s1.HeadingX, s1.HeadingY, s1.HeadingZ }, s1.State84);
                     goto AimReady;
                 case 5: // types 4/20 (8005F6E8.c:259-267)
                     if ((a3 & 0xFF) == 0) goto SoundTail;
