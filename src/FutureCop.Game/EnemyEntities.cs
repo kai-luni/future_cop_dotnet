@@ -162,7 +162,7 @@ public sealed class EnemyEntity
     public int Vec5CY { get; set; }
     public int Vec5CZ { get; set; }
     public int HeadingX { get; set; }             // +0x78
-    public int HeadingY { get; set; }             // +0x7C (unused by the port cluster, kept for layout)
+    public int HeadingY { get; set; }             // +0x7C read by the lead solver (8005F6E8.c:255)
     public int HeadingZ { get; set; }             // +0x80
     public int AltHeadingX { get; set; }          // +0xA0
     public int AltHeadingY { get; set; }
@@ -174,18 +174,22 @@ public sealed class EnemyEntity
     public short TimerB4Sub324 { get; set; }
     public AttackCommandQueue Queue { get; set; } = new(); // +0x0C command queue
     public SpawnBlock? SpawnBlock { get; set; }   // +0x9C
-    /// <summary>Mode-3 line-of-sight verdict of func_800684AC per candidate (stub: see HasLineOfSightTo).</summary>
+    /// <summary>
+    /// Mode-3 line-of-sight verdict of func_800684AC per candidate; SkyCaptainSystem.BindMap wires it
+    /// to MechCollision.Ray (see HasLineOfSightTo).
+    /// </summary>
     public Func<EnemyEntity, EnemyEntity, bool>? LineOfSightProbe { get; set; }
 
     /// <summary>
     /// Mode-3 visibility test of gFindTargetEntity: func_800684AC(ctx+0x5C, o+0x5C, 0,0,0) != 0
-    /// means an obstruction and disqualifies the candidate (8004E80C.c:156-158). The ray
-    /// tracer itself is not part of this headless port, so a probe must be supplied.
+    /// means an obstruction and disqualifies the candidate (8004E80C.c:156-158). The probe is
+    /// supplied by the scene (SkyCaptainSystem.BindMap wires MechCollision.Ray with floors=0);
+    /// headless callers without a probe still fail loudly.
     /// </summary>
     public bool HasLineOfSightTo(EnemyEntity other) =>
         LineOfSightProbe?.Invoke(this, other)
         ?? throw new NotImplementedException(
-            "EnemyAttackScheduler.cs: func_800684AC line-of-sight trace (8004E80C.c:157) is not part of this headless port");
+            "EnemyAttackScheduler.cs: func_800684AC line-of-sight trace (8004E80C.c:157) needs a probe; SkyCaptainSystem.BindMap supplies one in the scene");
 }
 
 /// <summary>
@@ -268,7 +272,7 @@ public sealed class EnemyWorld
     internal int TraceMapRay(EnemyEntity self, EnemyEntity target) =>
         OnTraceMapRay?.Invoke(self, target)
         ?? throw new NotImplementedException(
-            "EnemyWeaponFire.cs: func_800684AC map ray (8005F6E8.c:328, 398) is not part of this headless port");
+            "EnemyWeaponFire.cs: func_800684AC map ray (8005F6E8.c:328, 398) needs OnTraceMapRay; SkyCaptainSystem.BindMap supplies one in the scene");
 
     internal int SpawnDirectShot(DirectSpawnArgs args)
     {

@@ -122,6 +122,7 @@ public class EnemyLineOfSightSceneTests
     public void ScenePath_Mode3LineOfSight_BlocksBehindWallAndFiresWithClearSight()
     {
         string? misPath = FindConftMis();
+        if (misPath is null) Assert.NotEqual("1", Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL"));
         if (misPath is null) return;
 
         var scene = CreateArmedScene(misPath, out var sky, out var origin, out var blocked, out var clear);
@@ -163,6 +164,7 @@ public class EnemyLineOfSightSceneTests
     public void ScenePath_WeaponFireTraceMapRay_AbortsShotBehindWallAndFiresWithClearSight()
     {
         string? misPath = FindConftMis();
+        if (misPath is null) Assert.NotEqual("1", Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL"));
         if (misPath is null) return;
 
         var scene = CreateArmedScene(misPath, out var sky, out var origin, out var blocked, out var clear);
