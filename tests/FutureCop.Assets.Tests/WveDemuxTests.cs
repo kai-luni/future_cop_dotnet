@@ -5,12 +5,7 @@ namespace FutureCop.Assets.Tests;
 
 public class WveDemuxTests
 {
-    private static string FixturePath()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "tests/golden/wve-demux.vectors"))) dir = dir.Parent;
-        return Path.Combine(dir?.FullName ?? throw new Exception("fixture not found"), "tests/golden/wve-demux.vectors");
-    }
+    private static string FixturePath() => Path.Combine(AppContext.BaseDirectory, "golden", "wve-demux.vectors");
 
     private sealed class Sink : IWveDemuxSink
     {

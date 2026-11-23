@@ -7,5 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../FutureCop.Assets/FutureCop.Assets.csproj" />
+    <ProjectReference Include="../FutureCop.Game/FutureCop.Game.csproj" />
+    <ProjectReference Include="../FutureCop.Render/FutureCop.Render.csproj" />
   </ItemGroup>
 </Project>

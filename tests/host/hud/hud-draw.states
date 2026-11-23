@@ -1,0 +1,24 @@
+# Input states for the gDrawInGameHud harness; every line is one CASE.
+CASE A_mode0_60of100 screen=4 players=1 frame=0x10 mode=0 health=60 maxhealth=100 w58=0x10000 w5c=0x10000 w64=5
+CASE B_mode1_full_blink screen=4 players=1 frame=0x90 mode=1 health=100 maxhealth=100 w58=0x10000 w5c=0x10000 w64=1 score0=1234 count1=2 count2=5 count3=1 count4=3 total1=1 total2=1
+CASE C_lowhealth_label_noflash screen=4 players=1 frame=0x10 mode=1 health=20 maxhealth=100 w58=0x8000 w5c=0x8000 w64=9 a4=3 ae=1 score0=29
+CASE D_2p_first_score5000 screen=4 players=2 frame=0x10 mode=1 health=100 maxhealth=100 w58=0x10000 w5c=0x10000 w64=4 score0=5000
+CASE D2_2p_second_player screen=4 players=2 frame=0x10 mode=1 health=40 maxhealth=80 w58=0x4000 w5c=0x4000 w64=1 c1=1 score1=42 count3=7 count4=9
+CASE E_effect_bar_and_second_block screen=4 players=1 frame=0x90 mode=1 health=50 maxhealth=50 w58=0x10000 w5c=0x8000 w64=1 w326=5 score0=999 stage=2 second=30 secondmax=60 extraa4=100 extraa8=200
+CASE F_gate_closed screen=3 players=1 frame=0x10 mode=1 health=100 maxhealth=100 w58=0x10000 w5c=0x10000 w64=2
+CASE F2_mode2_no_score screen=4 players=1 frame=0x10 mode=2 health=60 maxhealth=100 w58=0x10000 w5c=0x10000 w64=5
+CASE G0_health0 screen=4 players=1 frame=0x10 mode=1 health=0 maxhealth=100 w58=0 w5c=0x10000 w64=0
+CASE G1_health1 screen=4 players=1 frame=0x10 mode=1 health=1 maxhealth=100 w58=0 w5c=0x10000 w64=0
+CASE H_flash_score_high screen=4 players=1 frame=0x90 mode=1 health=100 maxhealth=100 w58=0x10000 w5c=0x10000 w64=3 score0=42 total1=1 total2=1
+CASE I_noflash_totals4 screen=4 players=1 frame=0x90 mode=1 health=100 maxhealth=100 w58=0x10000 w5c=0x10000 w64=3 score0=42 total1=2 total2=2
+CASE J_label_2p_center screen=4 players=2 frame=0x10 mode=0 health=70 maxhealth=100 w58=0x10000 w5c=0x10000 w64=4 a4=1 ae=1 c1=1
+CASE K_2p_second_score_mode1 screen=4 players=2 frame=0x10 mode=1 health=40 maxhealth=80 w58=0x10000 w5c=0x40 w64=2 c1=1 score0=500 score1=42 count1=2 count2=5 count3=7 count4=9 total1=1 total2=1
+CASE L_second_gauge_negative screen=4 players=1 frame=0x10 mode=1 health=80 maxhealth=100 w58=0x10000 w5c=0x60 w64=2 score0=10 stage=0 second=30 secondmax=60 extraa4=-1 extraa8=0x10000
+CASE M_2p_score_width screen=4 players=2 frame=0x90 mode=1 health=100 maxhealth=100 w58=0x10000 w5c=0x7F w64=5 c1=1 score1=1234 count3=1 count4=2 total1=3 total2=3
+CASE N_label_out_of_table screen=4 players=1 frame=0x10 mode=1 health=100 maxhealth=100 w58=0x10000 w5c=0x7F w64=2 a4=9 ae=1 score0=1
+CASE O_negative_score screen=4 players=1 frame=0x10 mode=1 health=100 maxhealth=100 w58=100 w5c=0x600000/100 w64=2 score0=-5 count1=-5 count2=-12 stage=-1
+CASE P_label_last_entry screen=4 players=1 frame=0x10 mode=1 health=100 maxhealth=100 w58=100 w5c=0x600000/100 w64=2 a4=6 ae=1 score0=1
+CASE Q_label_past_table screen=4 players=1 frame=0x10 mode=1 health=100 maxhealth=100 w58=100 w5c=0x600000/100 w64=2 a4=7 ae=1 score0=1
+CASE R_2p_flash_label screen=4 players=2 frame=0x90 mode=1 health=100 maxhealth=100 w58=100 w5c=0x600000/100 w64=1 c1=1 a4=3 ae=1 score0=500 score1=42 count3=7 count4=9 total1=1 total2=1
+CASE S_1p_second_flash screen=4 players=1 frame=0x90 mode=1 health=100 maxhealth=100 w58=100 w5c=0x600000/100 w64=1 score0=1234 score1=5000 count1=2 count2=5 count3=1 count4=3 total1=1 total2=2
+CASE T_2p_flash_off_totals screen=4 players=2 frame=0x90 mode=1 health=100 maxhealth=100 w58=100 w5c=0x600000/100 w64=1 c1=1 score1=5000 total1=2 total2=2

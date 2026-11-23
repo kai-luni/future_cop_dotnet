@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>10</LangVersion>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.6.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.4" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../tools/FcLevelGl.Tizen/RenderBurst.cs" Link="RenderBurst.cs" />
+    <Compile Include="../../tools/Tizen.Shared/AtspiStartEnvironment.cs" Link="AtspiStartEnvironment.cs" />
+    <Compile Include="../../tools/FcMainMenu/MenuFlow.cs" Link="MenuFlow.cs" />
+    <Compile Include="../../tools/FcMainMenu/FrameBlit.cs" Link="FrameBlit.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/TvLevelControl.cs" Link="TvLevelControl.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/LinuxEvdevInterop.cs" Link="LinuxEvdevInterop.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/EvdevGamepadProfile.cs" Link="EvdevGamepadProfile.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/EvdevGamepadAdapter.cs" Link="EvdevGamepadAdapter.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/GpuLevelSession.cs" Link="GpuLevelSession.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/GpuLevelMetrics.cs" Link="GpuLevelMetrics.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/FpsHudLayout.cs" Link="FpsHudLayout.cs" />
+    <Compile Include="../../tools/FcMainMenu.Tizen/WindowPresentationObserver.cs" Link="WindowPresentationObserver.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AtspiNativeProbe/AtspiNativeProbe.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Gpu/FutureCop.Gpu.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Gpu.SceneBridge/FutureCop.Gpu.SceneBridge.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>FcLevelGlTizen</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>10</LangVersion>
+    <TizenFrameworkDir Condition="'$(TizenFrameworkDir)' == ''">$(MSBuildThisFileDirectory)../../tizen/framework</TizenFrameworkDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Tizen.Shared/AtspiStartEnvironment.cs" Link="AtspiStartEnvironment.cs" />
+    <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
+    <ProjectReference Include="../../src/FutureCop.View/FutureCop.View.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Gpu/FutureCop.Gpu.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Gpu.SceneBridge/FutureCop.Gpu.SceneBridge.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="Tizen.NUI"><HintPath>$(TizenFrameworkDir)/Tizen.NUI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Tizen.Applications.Common"><HintPath>$(TizenFrameworkDir)/Tizen.Applications.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Tizen"><HintPath>$(TizenFrameworkDir)/Tizen.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Tizen.Tracer"><HintPath>$(TizenFrameworkDir)/Tizen.Tracer.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Tizen.System"><HintPath>$(TizenFrameworkDir)/Tizen.System.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

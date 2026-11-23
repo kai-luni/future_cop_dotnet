@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>10</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../FutureCop.Assets/FutureCop.Assets.csproj" />
+    <ProjectReference Include="../FutureCop.Gpu/FutureCop.Gpu.csproj" />
+    <ProjectReference Include="../FutureCop.View/FutureCop.View.csproj" />
+  </ItemGroup>
+</Project>

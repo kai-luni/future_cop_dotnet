@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>FcGpuProbe</AssemblyName>
+    <RootNamespace>FcGpuProbe</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>10</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Host-only diagnostic tool (Linux x86-64). Not part of the Tizen deployment. -->
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/FutureCop.Gpu/FutureCop.Gpu.csproj" />
+    <ProjectReference Include="../../src/FutureCop.Assets/FutureCop.Assets.csproj" />
+  </ItemGroup>
+</Project>

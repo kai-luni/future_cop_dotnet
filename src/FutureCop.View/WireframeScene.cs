@@ -820,6 +820,7 @@ public sealed class WireframeScene
 
     private static (int Cx, int Cy, int Cz, int Radius) BoundsOf((double X, double Y, double Z)[] points)
     {
+        if (points.Length == 0) return (0, 0, 0, 1);   // an actor without vertices has no extent
         return BoundsFrom(
             (int)Math.Floor(points.Min(p => p.X)), (int)Math.Ceiling(points.Max(p => p.X)),
             (int)Math.Floor(points.Min(p => p.Y)), (int)Math.Ceiling(points.Max(p => p.Y)),

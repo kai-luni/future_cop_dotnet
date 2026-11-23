@@ -1,0 +1,11 @@
+# name count enabledMask groupMask start direction target previous expected
+first 7 91 0 0 1 0 6 0
+skip_locked 7 91 0 2 1 0 1 3
+wrap_forward 7 91 0 7 1 0 6 0
+wrap_backward 7 91 0 -1 -1 0 0 6
+back_skip 7 91 0 5 -1 0 6 4
+zero_invalid 7 91 0 2 0 0 4 4
+none_enabled 7 0 0 0 1 0 4 4
+group_forward 7 127 42 0 1 1 6 1
+group_backward 7 127 42 0 -1 1 0 5
+all_enabled 7 127 0 2 1 0 1 2
