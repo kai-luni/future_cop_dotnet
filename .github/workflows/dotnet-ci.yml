@@ -6,9 +6,17 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: dotnet-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -18,7 +26,22 @@ jobs:
         run: |
           # Tizen projects need TV framework DLLs (gitignored, local only) - skip them.
           for p in $(git ls-files '*.csproj' | grep -v '^tests/' | grep -vi 'tizen' | sed 's|/[^/]*$||' | sort -u); do
-            dotnet build "$p" -v q
+            dotnet build "$p"
           done
       - name: Run xUnit test suite (asset-free tests; asset-dependent tests skip)
-        run: dotnet test tests/FutureCop.Assets.Tests -v q
+        run: |
+          # Discover test projects the same way as the build step.
+          total=0
+          for p in $(git ls-files 'tests/*/*.csproj' | sed 's|/[^/]*$||' | sort -u); do
+            rm -rf "$p/TestResults"
+            dotnet test "$p" --logger "trx" -v q
+            # every executed test lands a UnitTestResult entry in the trx; zero means CI proved nothing
+            t=$(grep -c "<UnitTestResult" "$p"/TestResults/*.trx 2>/dev/null || echo 0)
+            echo "tests executed: $t"
+            total=$((total + t))
+          done
+          # fail if no tests ran at all (silent zero-test pass guard)
+          if [ "$total" -eq 0 ]; then
+            echo "ERROR: no tests executed - CI is green but proves nothing"
+            exit 1
+          fi
