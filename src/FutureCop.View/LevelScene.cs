@@ -126,7 +126,23 @@ public sealed class LevelScene
         _playerTeam = records.FirstOrDefault(r => r.Type == 1 && r.Id == Actor.Id)?.Team ?? 0;
         _objectives = ObjectiveField.FromRecords(records,
             (x, z) => LevelGround.Height(Map, x, 0x100000, z, out _), new MatchScore(_playerTeam));
+        // Sky Captain (type 0x25): the earliest point that has both the records and, in the live level
+        // (EnableMechMovement before EnableFiring), the attached walker for func_800331CC.c:236.
+        _skyCaptain = new SkyCaptainSystem();
+        _skyCaptain.SpawnFromRecords(records, MechWorld,
+            pos => LevelGround.Height(Map, pos[0], pos[1], pos[2], out _));
     }
+
+    private SkyCaptainSystem? _skyCaptain;
+
+    /// <summary>The 1P Precinct Assault Sky Captain, or null until the live level is enabled.</summary>
+    public SkyCaptainSystem? SkyCaptain => _skyCaptain;
+
+    /// <summary>Message 6 of the Sky Captain (800271A4.c:180) for <paramref name="dt"/> clock ticks.</summary>
+    public void AdvanceSkyCaptain(int dt) => _skyCaptain?.Advance(dt, this);
+
+    /// <summary>Faces and marker lines the last <see cref="Render"/> drew for the Sky Captain.</summary>
+    public int SkyCaptainPrimitives { get; private set; }
 
     /// <summary>
     /// The HUD session with the live score words (D_8009FA94 + 0x64). +0x5C is 1 in a Precinct Assault
@@ -556,6 +572,29 @@ public sealed class LevelScene
                 }
         }
 
+        // Sky Captain: its record model placed with the body basis (+0x2C rows) at +0x50. First light;
+        // the row/column convention of the basis against the GTE matrix is not verified yet.
+        int skyCaptain = 0;
+        if (_skyCaptain is { Visible: true } sky && _file.Models.FirstOrDefault(m => m.Id == sky.ModelId) is { } skyModel
+            && skyModel.Vertices.TryGetValue(1, out var skyVerts) && skyVerts.Count > 0)
+        {
+            var body = sky.Drone!.Body;
+            var r = body.BasisRows;
+            var local = new Gte.Mat(new[] { r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2] },
+                ((body.Pos[0] - MechWorld.X) >> 4) << 4, ((body.Pos[1] - MechWorld.Y) >> 4) << 4,
+                ((body.Pos[2] - MechWorld.Z) >> 4) << 4);
+            var matrix = ScriptRender.Compose(local, view);
+            var projected = skyModel.IsScripted
+                ? ScriptRender.Project(skyModel, skyVerts, 0, matrix, Focal, Ofx, Ofy, 1)
+                : ModelRender.Project(Gte.Load(matrix), skyVerts, Focal, Ofx, Ofy, 1);
+            var widths = skyModel.Widths.TryGetValue(1, out var kw) ? kw.ToArray() : Array.Empty<short>();
+            foreach (var face in ModelRender.WalkTextured(skyModel.Polygons, projected, widths, 0xFF, 0))
+            {
+                _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = skyModel });
+                skyCaptain++;
+            }
+        }
+
         // Painter's order, far first, stable for equal keys (submission order). Viewer convention:
         // retail sorts into an ordering table whose bucket mapping is not ported; both keys are SZ3
         // averages. An unstable sort reorders coplanar terrain packets whenever the mech is added.
@@ -569,6 +608,18 @@ public sealed class LevelScene
         // Live beams (func_8006B23C) are drawn after the sorted faces: the ribbon builder retail uses
         // is not ported, so each beam is one line from muzzle to far end and must sit on top.
         if (_weapons is { Beams.Count: > 0 } beams) BeamLines(beams, view);
+        // Sky Captain marker (basis axes at the body), on top like the beams so it is always visible.
+        var markers = _skyCaptain?.MarkerSegments();
+        for (int m = 0; markers is not null && m < markers.Count; m++)
+        {
+            var (a, b) = markers[m];
+            var pa = ProjectWorld(a.X, a.Y, a.Z, view);
+            var pb = ProjectWorld(b.X, b.Y, b.Z, view);
+            if (pa is null || pb is null) continue;
+            Line(pa.Value.X, pa.Value.Y, pb.Value.X, pb.Value.Y, new byte[] { 0xFF, 0x40, 0x40 });
+            skyCaptain++;
+        }
+        SkyCaptainPrimitives = skyCaptain;
         return _drawQueue.Count;
     }
 

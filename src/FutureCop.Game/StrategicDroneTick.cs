@@ -11,6 +11,8 @@ public sealed class StrategicDroneTick
         public byte Mode;                  // +0x1A AI mode (1 and 2 halve the limit)
         public short Limit;                // +0x1E approach limit
         public short PromoteTo;            // +0x20 the +0xF8 promotion word
+        public int BaseF4;                 // +0x24 scaled +0xF4 (800331CC.c:177, restored by 80035698.c:127)
+        public byte InitialFA;             // +0x1D spawn +0xFA (800331CC.c:200, restored by 80035698.c:158)
         public int A4Mirror;               // +0xA4 mirror of entity +0x1C
     }
 
@@ -25,6 +27,7 @@ public sealed class StrategicDroneTick
     public sealed class DroneEntity
     {
         public int Unk1C;                  // +0x1C approach word
+        public int[] BodyPos = new int[3]; // +0x50/+0x54/+0x58 body position (distance source, 8003532C.c:29-31)
         public int[] Pos = new int[3];    // +0xDC position copy taken from targets
         public int UnkF4;                  // +0xF4 charge word
         public short UnkF8;                // +0xF8 cached promotion word
@@ -63,11 +66,11 @@ public sealed class StrategicDroneTick
 
             if (self.Unk1C < limit)
             {
-                // Planar octagonal distance entity -> AI node (:144-166).
-                int adx = self.Pos[0] - ai.Pos[0];
+                // Planar octagonal distance body (+0x50/+0x58, not +0xDC) -> AI node (:144-166).
+                int adx = self.BodyPos[0] - ai.Pos[0];
                 int sign = adx >> 31;
                 int ax = (sign + adx) ^ sign;
-                int adz = self.Pos[2] - ai.Pos[2];
+                int adz = self.BodyPos[2] - ai.Pos[2];
                 sign = adz >> 31;
                 int az = (sign + adz) ^ sign;
                 int min = ax < az ? ax : az;

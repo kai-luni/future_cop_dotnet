@@ -39,6 +39,7 @@ public sealed class StrategicDroneTests
         var d = new StrategicDroneTick.DroneEntity
         {
             Unk1C = 0,
+            BodyPos = new[] { 0x10000, 0, 0x10000 },
             Pos = new[] { 0x10000, 0, 0x10000 },
             UnkF4 = 0x100,
             UnkF8 = 0x1F,
@@ -53,6 +54,25 @@ public sealed class StrategicDroneTests
     }
 
     // ---- Approach limit + distance gate (8003532C.c:136-170) ----
+
+    [Fact]
+    public void Distance_UsesBodyPosition_NotTheDCTarget()
+    {
+        // 8003532C.c:28-37: dist reads self->unk50 / self->unk58 (struct Entity +0x50/+0x58),
+        // the target copy self->pos lives at +0xDC (:33) and must not feed the gate.
+        var (d, w) = New();
+        d.BodyPos = new[] { 0x20010, 0, 0x20000 };  // 0x10 from the node -> reset
+        d.Pos = new[] { 0x90000, 0, 0x90000 };      // far away target copy
+        StrategicDroneTick.Tick(d, w, 1);
+        Assert.Equal(1, w.ResetCalls);
+
+        var (d2, w2) = New();
+        d2.BodyPos = new[] { 0x90000, 0, 0x90000 }; // far body -> no reset, acquire instead
+        d2.Pos = new[] { 0x20000, 0, 0x20000 };     // target copy on the node
+        StrategicDroneTick.Tick(d2, w2, 1);
+        Assert.Equal(0, w2.ResetCalls);
+        Assert.Equal(1, d2.UnkFA);
+    }
 
     [Fact]
     public void NearNode_ResetsApproach_RunsTimerAndFinal()
