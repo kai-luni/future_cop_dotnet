@@ -1,0 +1,24 @@
+name: dotnet-ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build all projects
+        run: |
+          # Tizen projects need TV framework DLLs (gitignored, local only) - skip them.
+          for p in $(git ls-files '*.csproj' | grep -v '^tests/' | grep -vi 'tizen' | sed 's|/[^/]*$||' | sort -u); do
+            dotnet build "$p" -v q
+          done
+      - name: Run xUnit test suite (asset-free tests; asset-dependent tests skip)
+        run: dotnet test tests/FutureCop.Assets.Tests -v q
