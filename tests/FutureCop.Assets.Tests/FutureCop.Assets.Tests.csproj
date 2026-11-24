@@ -55,5 +55,6 @@
     <None Include="../golden/hud-draw.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/hud-draw.vectors" />
     <None Include="../golden/slots-bar.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/slots-bar.vectors" />
     <None Include="../golden/capture-objective.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/capture-objective.vectors" />
+    <None Include="../golden/outpost-message5.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/outpost-message5.vectors" />
   </ItemGroup>
 </Project>

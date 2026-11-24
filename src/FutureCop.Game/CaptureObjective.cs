@@ -381,6 +381,15 @@ public sealed class MatchScore
     /// Scores a type-0x24 outpost's message 5 (8002D664.c:183-223), separately from the claiming
     /// side in <see cref="RecordCapture"/> (8002D1A0.c:213-237).
     /// </summary>
+    /// <remarks>
+    /// Message 5 is the teardown call of gSweepRetiredEntities (8004D598.c:54) for an entity whose id
+    /// was cleared. A scoring outpost gets there by damage: health below 0 writes +0x8C
+    /// (8002AA1C.c:114-121), the frame sweep sends message 4 (8004CE04.c:59-60), and the base retire
+    /// clears the id (8002AD58.c:89, 8004D958.c:59). The level-reset teardown sets 0x4000000 first
+    /// (8004CCDC.c:53), so it never scores. The scene has no caller yet because outposts take no damage
+    /// and are never retired in the port. Verified against unchanged C by
+    /// tests/golden/outpost-message5.vectors.
+    /// </remarks>
     /// <param name="objective">The type-0x24 outpost receiving the message.</param>
     /// <param name="sourceUnitWord">
     /// The outpost's raw +0x8C word (8002D664.c:197), written by damage handling (8002AA1C.c:114-121).
@@ -424,7 +433,13 @@ public sealed class MatchScore
             else
             {
                 int otherSlot = i ^ 1;                                           // 8002D664.c:220
-                // Retail assumes this block exists (8002D664.c:220); an empty port slot has no counter.
+                // 8002D664.c:220 is `players[i ^ 1]->unkAC->unk10++` with no null test. Retail only
+                // reaches it with an empty slot in a one-player match without gSinglePlayerEntity
+                // (published by 800331CC.c:243, cleared only by 800247A8.c:64; slots are filled by
+                // 800579D4.c:189 and cleared only by 8004CCDC.c:59-60 after its sweep). The PS1 has no
+                // MMU, so that load reads the word at address 0xAC and bumps a u16 16 bytes past
+                // whatever it holds - unmodellable, so the port keeps the score of :214-215 and drops
+                // only this counter. The golden vectors leave this row out for the same reason.
                 if (PlayerTeams[otherSlot] >= 0 && PlayerScoreIndices[otherSlot].HasValue)
                     OutpostCaptures[otherSlot] = unchecked((ushort)(OutpostCaptures[otherSlot] + 1));
             }
