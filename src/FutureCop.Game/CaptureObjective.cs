@@ -293,8 +293,20 @@ public sealed class MatchScore
     /// <summary>Per player index: captures (player block +0x12, func_8002D1A0:219).</summary>
     public int[] Captures { get; } = new int[2];
 
+    /// <summary>Message-5 counter at player block +0x10 (u16), by player slot (8002D664.c:25-29,195,220).</summary>
+    public int[] OutpostCaptures { get; } = new int[2];
+
+    /// <summary>Message-5 count at state+0x134-&gt;unk38 (u16; 8002D664.c:39-52,216-218).</summary>
+    public int OutpostStateCount { get; private set; }
+
     /// <summary>Team of the player in slot 0 / 1 of D_8009FA58, or -1 for an empty slot.</summary>
     public int[] PlayerTeams { get; }
+
+    /// <summary>
+    /// Message-5 score index (0 or 1 at player block +0xC1) by player slot; null means no +0xAC block
+    /// (8002D664.c:213-215). <see cref="PlayerTeams"/> still marks absent player entities.
+    /// </summary>
+    public int?[] PlayerScoreIndices { get; } = { 0, 1 };
 
     /// <summary>gPlayerCount (D_8009FA0C): explicit player count tested by func_8002D1A0:204.</summary>
     public int PlayerCount { get; }
@@ -313,14 +325,16 @@ public sealed class MatchScore
     public int SinglePlayerCaptures { get; private set; }
 
     /// <summary>
-    /// Callback for 8002D1A0.c:209 (<c>e-&gt;unk134-&gt;unk18 = 0</c>): resets the strategic drone's
-    /// strategy timer (<see cref="StrategicDroneTick.AiState.TickTimer"/>) on every 1P branch capture.
+    /// Callback for 8002D1A0.c:221 (<c>e-&gt;unk134-&gt;unk18 = 0</c>): resets the strategic drone's
+    /// strategy timer (<see cref="StrategicDroneTick.AiState.TickTimer"/>). Outpost message 5 also
+    /// uses this reset in its 1P branch (8002D664.c:196).
     /// </summary>
     public Action? OnSinglePlayerCapture { get; set; }
 
     /// <summary>
-    /// Callback for 8002D1A0.c:210 (<c>m-&gt;unkE0 = 6</c>): fired when the capturer's masked id
+    /// Callback for 8002D1A0.c:222 (<c>m-&gt;unkE0 = 6</c>): fired when the capturer's masked id
     /// (<c>other-&gt;unk14 &amp; 0x3FFF</c>) matches <see cref="SinglePlayerEntityId"/>.
+    /// Also used for message-5 modes 7 and 8 (8002D664.c:199-202,216-218).
     /// </summary>
     public Action<int>? OnSessionE0Changed { get; set; }
 
@@ -360,6 +374,60 @@ public sealed class MatchScore
             Score[i]++;
             Total[i]++;
             Captures[i]++;
+        }
+    }
+
+    /// <summary>
+    /// Scores a type-0x24 outpost's message 5 (8002D664.c:183-223), separately from the claiming
+    /// side in <see cref="RecordCapture"/> (8002D1A0.c:213-237).
+    /// </summary>
+    /// <param name="objective">The type-0x24 outpost receiving the message.</param>
+    /// <param name="sourceUnitWord">
+    /// The outpost's raw +0x8C word (8002D664.c:197), written by damage handling (8002AA1C.c:114-121).
+    /// </param>
+    /// <param name="findUnitEntityId">
+    /// Resolves the masked +0x8C lookup key to the active unit's +0x14 id, or null if not found
+    /// (8004D664.c:36-45; 8002D664.c:197-199).
+    /// </param>
+    public void RecordOutpostMessage5(CaptureObjective objective, uint sourceUnitWord, Func<int, int?> findUnitEntityId)
+    {
+        ArgumentNullException.ThrowIfNull(objective);
+        if (objective.CaptureMode == 0 || (objective.Flags & 0x4000000u) != 0) return; // 8002D664.c:183
+
+        int kind = objective.CaptureMode == 1 ? objective.TeamB : objective.TeamA; // 8002D664.c:184
+        bool hasState = SinglePlayerTeam >= 0;                                    // 8002D664.c:189,209
+        if (PlayerCount == 1 && hasState && SinglePlayerTeam == kind)             // 8002D664.c:185-191
+        {
+            Score[1]++;                                                          // 8002D664.c:192
+            Total[1]++;                                                          // 8002D664.c:193
+            OutpostCaptures[0] = unchecked((ushort)(OutpostCaptures[0] + 1));       // 8002D664.c:195
+            OnSinglePlayerCapture?.Invoke();                                      // 8002D664.c:196
+            if (findUnitEntityId((int)(sourceUnitWord & 0x3FFFFFFFu)) is int foundId
+                && (foundId & 0x3FFF) == SinglePlayerEntityId)                     // 8002D664.c:197-199
+                OnSessionE0Changed?.Invoke(7);                                    // 8002D664.c:202
+            return;                                                              // 8002D664.c:205
+        }
+
+        // 8002D664.c:208-223: a missing or nonmatching 1P state falls through to both player slots.
+        for (int i = 0; i < 2; i++)
+        {
+            if (PlayerTeams[i] < 0 || PlayerScoreIndices[i] is not int index
+                || PlayerTeams[i] != kind) continue;                             // 8002D664.c:213
+
+            Score[index]++;                                                      // 8002D664.c:214
+            Total[index]++;                                                      // 8002D664.c:215
+            if (hasState)                                                        // 8002D664.c:216
+            {
+                OutpostStateCount = unchecked((ushort)(OutpostStateCount + 1));   // 8002D664.c:217
+                OnSessionE0Changed?.Invoke(8);                                    // 8002D664.c:218
+            }
+            else
+            {
+                int otherSlot = i ^ 1;                                           // 8002D664.c:220
+                // Retail assumes this block exists (8002D664.c:220); an empty port slot has no counter.
+                if (PlayerTeams[otherSlot] >= 0 && PlayerScoreIndices[otherSlot].HasValue)
+                    OutpostCaptures[otherSlot] = unchecked((ushort)(OutpostCaptures[otherSlot] + 1));
+            }
         }
     }
 }

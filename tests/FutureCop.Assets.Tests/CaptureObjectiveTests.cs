@@ -255,6 +255,184 @@ public class CaptureObjectiveTests
         Assert.Equal(0, twoPlayerEmptySlot1.SinglePlayerCaptures);
     }
 
+    // ---- outpost message-5 scoring, 8002D664.c:183-223 ------------------------------------------
+
+    [Theory]
+    [InlineData(1, 2)]
+    [InlineData(2, 1)]
+    public void OutpostMessage5SinglePlayerUsesOpposingTeamAndResetsStateBeforeLookup(int claimantTeam, int kind)
+    {
+        var outpost = Outpost();
+        Assert.Equal(claimantTeam, outpost.TryCapture(new CaptureCandidate(50, 5, claimantTeam, 0, 0, 0, 0)));
+        var score = new MatchScore(player0Team: kind, singlePlayerTeam: kind, singlePlayerEntityId: 0x123);
+        int timer = 42;
+        var uiModes = new List<int>();
+        score.OnSinglePlayerCapture = () =>
+        {
+            // 8002D664.c:192-197: both words and player 0's +0x10 precede the reset and lookup.
+            Assert.Equal(new[] { 0, 1 }, score.Score);
+            Assert.Equal(new[] { 0, 1 }, score.Total);
+            Assert.Equal(1, score.OutpostCaptures[0]);
+            timer = 0;
+        };
+        score.OnSessionE0Changed = uiModes.Add;
+
+        score.RecordOutpostMessage5(outpost, 0xC0004321u, key =>
+        {
+            Assert.Equal(0x4321, key);                 // 8002D664.c:197: lookup uses obj+0x8C, not the claimant id.
+            Assert.Equal(0, timer);
+            Assert.Empty(uiModes);
+            return 0xC123;                            // 8002D664.c:199: mask the found entity's +0x14.
+        });
+
+        Assert.Equal(new[] { 7 }, uiModes);
+        Assert.Equal(new[] { 0, 1 }, score.Score);      // 8002D664.c:205: skip the player loop even when its team matches.
+        Assert.Equal(new[] { 0, 0 }, score.Captures);  // 8002D1A0.c:231 is claim-side only.
+        Assert.Equal(0, score.SinglePlayerCaptures);   // 8002D1A0.c:220 is claim-side only.
+        Assert.Equal(0, score.OutpostStateCount);
+    }
+
+    [Theory]
+    [InlineData(null, 0x123)]
+    [InlineData(0xC124, 0x123)]
+    [InlineData(0xC123, 0xC123)]
+    public void OutpostMessage5SinglePlayerDoesNotChangeUiWithoutAMatchingFoundId(int? foundId, int stateId)
+    {
+        var score = new MatchScore(player0Team: 2, singlePlayerTeam: 2, singlePlayerEntityId: stateId);
+        var outpost = Outpost();
+        outpost.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0));
+        var uiModes = new List<int>();
+        score.OnSessionE0Changed = uiModes.Add;
+
+        score.RecordOutpostMessage5(outpost, 50, _ => foundId);
+
+        Assert.Equal(new[] { 0, 1 }, score.Score);     // 8002D664.c:192-195: lookup never gates bookkeeping.
+        Assert.Equal(new[] { 1, 0 }, score.OutpostCaptures);
+        Assert.Empty(uiModes);                       // 8002D664.c:198-202: mask only the found id.
+    }
+
+    [Theory]
+    [InlineData(2, 2, 3, 1)]
+    [InlineData(2, 3, 2, 0)]
+    [InlineData(1, 2, 3, 1)]
+    public void OutpostMessage5PlayerLoopUsesScoreIndexAndCreditsExistingState(
+        int playerCount, int team0, int team1, int expectedIndex)
+    {
+        // 8002D664.c:191,208-218: a present but nonmatching 1P state also takes this path.
+        var score = new MatchScore(team0, team1, singlePlayerTeam: playerCount == 1 ? 3 : 2,
+            singlePlayerEntityId: 50, playerCount: playerCount);
+        score.PlayerScoreIndices[0] = 1;
+        score.PlayerScoreIndices[1] = 0;
+        var outpost = Outpost();
+        outpost.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0));
+        var uiModes = new List<int>();
+        score.OnSessionE0Changed = mode =>
+        {
+            Assert.Equal(1, score.OutpostStateCount); // 8002D664.c:217 precedes :218.
+            Assert.Equal(1, score.Total[expectedIndex]);
+            uiModes.Add(mode);
+        };
+
+        score.RecordOutpostMessage5(outpost, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+
+        Assert.Equal(1, score.Score[expectedIndex]);   // 8002D664.c:214-215: +0xC1, not the loop slot.
+        Assert.Equal(0, score.Score[expectedIndex ^ 1]);
+        Assert.Equal(0, score.Total[expectedIndex ^ 1]);
+        Assert.Equal(new[] { 0, 0 }, score.OutpostCaptures);
+        Assert.Equal(new[] { 8 }, uiModes);
+    }
+
+    [Theory]
+    [InlineData(1, 2, 3, 0)]
+    [InlineData(2, 3, 2, 1)]
+    public void OutpostMessage5WithoutStateCreditsOppositePlayerSlot(int playerCount, int team0, int team1, int slot)
+    {
+        var score = new MatchScore(team0, team1, playerCount: playerCount);
+        var outpost = Outpost();
+        outpost.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0));
+        var uiModes = new List<int>();
+        score.OnSessionE0Changed = uiModes.Add;
+
+        score.RecordOutpostMessage5(outpost, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+
+        Assert.Equal(1, score.Score[slot]);
+        Assert.Equal(1, score.Total[slot]);
+        Assert.Equal(0, score.OutpostCaptures[slot]);
+        Assert.Equal(1, score.OutpostCaptures[slot ^ 1]); // 8002D664.c:220: even though the other team did not score.
+        Assert.Equal(0, score.OutpostStateCount);
+        Assert.Empty(uiModes);
+    }
+
+    [Theory]
+    [InlineData(3, 0)]     // Wrong team (8002D664.c:213).
+    [InlineData(-1, 0)]    // No entity (8002D664.c:213).
+    [InlineData(2, null)]  // No score/control block (8002D664.c:213).
+    public void OutpostMessage5SkipsIneligiblePlayers(int team, int? scoreIndex)
+    {
+        var score = new MatchScore(team, player1Team: 3, singlePlayerTeam: 2);
+        score.PlayerScoreIndices[0] = scoreIndex;
+        var outpost = Outpost();
+        outpost.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0));
+        var uiModes = new List<int>();
+        score.OnSessionE0Changed = uiModes.Add;
+
+        score.RecordOutpostMessage5(outpost, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+
+        Assert.Equal(new[] { 0, 0 }, score.Score);
+        Assert.Equal(new[] { 0, 0 }, score.Total);
+        Assert.Equal(new[] { 0, 0 }, score.OutpostCaptures);
+        Assert.Equal(0, score.OutpostStateCount);
+        Assert.Empty(uiModes);
+    }
+
+    [Fact]
+    public void OutpostMessage5SkipsOpenAndExcludedOutposts()
+    {
+        var score = new MatchScore(player0Team: 2, singlePlayerTeam: 2);
+        var open = Outpost();
+        var excluded = new CaptureObjective(112, 0, 0, 0, 1, 2, 1, 2, 60, 0, 0x400, flags: 0x4000001u);
+        Assert.Equal(1, excluded.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0)));
+
+        // 8002D664.c:183: both uncaptured and flag-excluded outposts skip the scoring pass.
+        score.RecordOutpostMessage5(open, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+        score.RecordOutpostMessage5(excluded, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+
+        Assert.Equal(new[] { 0, 0 }, score.Score);
+        Assert.Equal(new[] { 0, 0 }, score.Total);
+        Assert.Equal(new[] { 0, 0 }, score.OutpostCaptures);
+    }
+
+    [Fact]
+    public void OutpostMessage5CreditsBothMatchingSlotsInOrder()
+    {
+        var score = new MatchScore(2, 2, singlePlayerTeam: 3);
+        var outpost = Outpost();
+        outpost.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0));
+        var updates = new List<(int Mode, int Count, int First, int Second)>();
+        score.OnSessionE0Changed = mode => updates.Add((mode, score.OutpostStateCount, score.Score[0], score.Score[1]));
+
+        score.RecordOutpostMessage5(outpost, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+
+        // 8002D664.c:211-223: each matching slot independently writes mode 8 after incrementing.
+        Assert.Equal(new[] { (8, 1, 1, 0), (8, 2, 1, 1) }, updates);
+        Assert.Equal(new[] { 1, 1 }, score.Total);
+    }
+
+    [Fact]
+    public void OutpostMessage5StillBooksScoreWhenOppositeSlotIsEmpty()
+    {
+        var score = new MatchScore(player0Team: 2);
+        var outpost = Outpost();
+        outpost.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0));
+
+        score.RecordOutpostMessage5(outpost, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+
+        // 8002D664.c:214-220: the score is booked before touching the opposite slot's counter.
+        Assert.Equal(new[] { 1, 0 }, score.Score);
+        Assert.Equal(new[] { 1, 0 }, score.Total);
+        Assert.Equal(new[] { 0, 0 }, score.OutpostCaptures);
+    }
+
     // ---- retail records ------------------------------------------------------------------------
 
     private static string? ConftPath()
