@@ -30,6 +30,8 @@ public sealed class LevelScene
     private readonly TextureBank _textures;
     private IReadOnlyList<PlayerPart> _parts;
     private readonly Dictionary<int, Dictionary<int, TextureRecord>> _texByModel = new();
+    private readonly Dictionary<int, Model> _modelsById = new();
+    private readonly Dictionary<int, short[]> _widthsByModelId = new();
     // Per-frame scratch storage. The old draw queue allocated closures and used a LINQ sort; the
     // terrain vertex buffer and packet lists were also recreated. Reuse them between frames.
     private readonly List<DrawItem> _drawQueue = new();
@@ -124,14 +126,20 @@ public sealed class LevelScene
         if (_objectives is not null) return;
         var records = MissionEntities.Load(_file);
         _playerTeam = records.FirstOrDefault(r => r.Type == 1 && r.Id == Actor.Id)?.Team ?? 0;
-        _objectives = ObjectiveField.FromRecords(records,
-            (x, z) => LevelGround.Height(Map, x, 0x100000, z, out _), new MatchScore(_playerTeam));
-        // Sky Captain (type 0x25): the earliest point that has both the records and, in the live level
-        // (EnableMechMovement before EnableFiring), the attached walker for func_800331CC.c:236.
+        var objectives = records.Where(r => r.Type == CaptureObjective.EntityType)
+            .Select(r => CaptureObjective.FromRecord(r, LevelGround.Height(Map, r.X, 0x100000, r.Z, out _)))
+            .ToList();
+        // Sky Captain (type 0x25): spawn before MatchScore so gSinglePlayerEntity's team and id
+        // come from one source of truth (including DebugFallbackSpawn).
         _skyCaptain = new SkyCaptainSystem();
         _skyCaptain.BindMap(Map);
         _skyCaptain.SpawnFromRecords(records, MechWorld,
-            pos => LevelGround.Height(Map, pos[0], pos[1], pos[2], out _), Actor.Id, _objectives?.Objectives);
+            pos => LevelGround.Height(Map, pos[0], pos[1], pos[2], out _), Actor.Id, objectives);
+        int droneTeam = _skyCaptain.Drone is not null ? _skyCaptain.Team : -1;
+        int droneId = _skyCaptain.Record?.Id ?? -1;
+        var score = new MatchScore(_playerTeam, singlePlayerTeam: droneTeam, singlePlayerEntityId: droneId);
+        _skyCaptain.BindScore(score);
+        _objectives = new ObjectiveField(objectives, score);
     }
 
     private SkyCaptainSystem? _skyCaptain;
@@ -144,6 +152,12 @@ public sealed class LevelScene
 
     /// <summary>Faces and marker lines the last <see cref="Render"/> drew for the Sky Captain.</summary>
     public int SkyCaptainPrimitives { get; private set; }
+
+    /// <summary>
+    /// Faces the last <see cref="Render"/> drew for units spawned by <see cref="BuildOrderSpawner"/>
+    /// (port extension beyond retail).
+    /// </summary>
+    public int BuiltUnitPrimitives { get; private set; }
 
     /// <summary>
     /// The HUD session with the live score words (D_8009FA94 + 0x64). +0x5C is 1 in a Precinct Assault
@@ -341,6 +355,11 @@ public sealed class LevelScene
     {
         MissionPath = misPath;
         _file = new MisFile(misPath);
+        foreach (var model in _file.Models)
+        {
+            if (_modelsById.TryAdd(model.Id, model))
+                _widthsByModelId[model.Id] = model.Widths.TryGetValue(1, out var w) ? w.ToArray() : Array.Empty<short>();
+        }
         Map = LevelMap.FromMisFile(misPath);
         _textures = TextureBank.FromMisFile(misPath);
         // D_800A8EA4 = gTexpageBaseTable[9] = the packed word of Cbmp slot 9 (80063C5C.c:144).
@@ -595,6 +614,36 @@ public sealed class LevelScene
                 skyCaptain++;
             }
         }
+
+        // Built units (opt-in port extension beyond retail): tanks and aircraft spawned from
+        // DroneStrategy build-order counters, drawn with their mission Cobj model along heading.
+        int builtUnits = 0;
+        if (_skyCaptain is { EnableBuildOrderSpawner: true, BuiltUnits.Count: > 0 } builtSky)
+        {
+            foreach (var unit in builtSky.BuiltUnits)
+            {
+                if (!_modelsById.TryGetValue(unit.ModelId, out var model)
+                    || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
+                var local = new Gte.Mat(new[]
+                {
+                    unit.DirZ, 0, -unit.DirX,
+                    0, 0x10000, 0,
+                    unit.DirX, 0, unit.DirZ,
+                }, ((unit.X - MechWorld.X) >> 4) << 4, ((unit.Y - MechWorld.Y) >> 4) << 4,
+                    ((unit.Z - MechWorld.Z) >> 4) << 4);
+                var matrix = ScriptRender.Compose(local, view);
+                var projected = model.IsScripted
+                    ? ScriptRender.Project(model, verts, 0, matrix, Focal, Ofx, Ofy, 1)
+                    : ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1);
+                var widths = _widthsByModelId.TryGetValue(model.Id, out var uw) ? uw : Array.Empty<short>();
+                foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
+                {
+                    _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });
+                    builtUnits++;
+                }
+            }
+        }
+        BuiltUnitPrimitives = builtUnits;
 
         // Painter's order, far first, stable for equal keys (submission order). Viewer convention:
         // retail sorts into an ordering table whose bucket mapping is not ported; both keys are SZ3

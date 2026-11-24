@@ -5,7 +5,8 @@
 #   -> mode f9C f68 f74 f78 fB0 fB4 fB8 fBC fE0 a0[0..3] c00 c01 c10 c11 c21 c31
 #      singlePlayerAiS4C fa aq6 attackID pursuitID dcX dcZ rngCalls sqrtCalls sqrtInput
 # Shape 0: empty; 1: ten own type-8 units; 2: own type-0x1C; 3: opposing type-5;
-# 4: own type-9 sub=10; 5: ten own type-8 units and an own type-0x1C.
+# 4: own type-9 sub=10; 5: ten own type-8 units and an own type-0x1C;
+# 6: ten own type-8 units and two own type-5 units at decreasing distance from posA.
 # Own/opposing team = 2/1, player ID = 2, list IDs = 3+, frame stamp = 1234.
 # posA = (32769, 0, -65537), self = (0, 0, 0); positions not given are zero.
 # From unchanged 800336DC.c, 80033608.c, 800336A8.c, 800330E8.c under qemu-mipsel.
@@ -35,3 +36,5 @@ m2_upkeep_below 0 2 9 64 20 20 0 0 0 0 0 0 0 0 0 0 0 0 0 -> 2 2 64 20 20 0 0 0 0
 m2_near_budget_below 0 2 4 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -> 2 2 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4 0 2 0 0 2 0 0
 m2_near_budget_exact 0 2 4 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -> 2 2 2 0 1 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4 0 2 0 0 2 0 0
 m2_upkeep_unsigned 0 2 9 -1 20 20 0 0 0 0 0 0 0 0 0 0 0 0 0 -> 2 2 -51 20 20 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 4 0 2 0 0 1 0 0
+m0_cnt2_exact 6 0 6 0 20 20 0 0 0 1 1 1 1 0 0 0 0 0 0 -> 1 1 0 20 20 0 0 0 0 1 1 1 1 1 0 0 0 0 0 0 0 0 4 0 14 32769 -65537 0 0 0
+m0_default_claim_order 1 0 6 30 20 20 0 0 0 0 0 0 0 0 0 0 0 0 0 -> 0 0 0 20 20 0 0 0 0 0 0 0 0 2 0 0 0 0 0 0 1234 1 4 0 0 16384 -32769 0 0 0

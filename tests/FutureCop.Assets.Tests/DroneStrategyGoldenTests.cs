@@ -14,10 +14,32 @@ public sealed class DroneStrategyGoldenTests
         "rngCalls", "sqrtCalls", "sqrtInput",
     };
 
+    private static string VectorsPath => Path.Combine(AppContext.BaseDirectory, "golden", "drone-strategy.vectors");
+
+    private static readonly int[] HeaderPosA = ReadHeaderPosA(VectorsPath);
+
+    private static int[] ReadHeaderPosA(string path)
+    {
+        const string marker = "posA = (";
+        foreach (var raw in File.ReadLines(path))
+        {
+            var line = raw.Trim();
+            if (!line.StartsWith('#')) continue;
+            int start = line.IndexOf(marker, StringComparison.Ordinal);
+            if (start < 0) continue;
+            start += marker.Length;
+            int end = line.IndexOf(')', start);
+            if (end < 0) break;
+            var coords = line[start..end].Split(',');
+            if (coords.Length != 3) break;
+            return Array.ConvertAll(coords, c => Parse(c.Trim()));
+        }
+        throw new FormatException($"Missing '# posA = (x, y, z)' header in {path}");
+    }
+
     public static IEnumerable<object[]> Rows()
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "golden", "drone-strategy.vectors");
-        foreach (var raw in File.ReadLines(path))
+        foreach (var raw in File.ReadLines(VectorsPath))
         {
             var line = raw.Trim();
             if (line.Length == 0 || line.StartsWith('#')) continue;
@@ -56,7 +78,7 @@ public sealed class DroneStrategyGoldenTests
             Strats = new()
             {
                 Mode = mode, B1B = 1, C1C = alternate,
-                PosA = new[] { 32769, 0, -65537 },
+                PosA = new[] { HeaderPosA[0], HeaderPosA[1], HeaderPosA[2] },
                 PosB = new[] { input[13], 0, 0 },
             },
         };
@@ -88,18 +110,20 @@ public sealed class DroneStrategyGoldenTests
             _random = random;
             _root = root;
             _targets.Add(PlayerEntities, new DroneTarget(2));
-            int count = shape switch { 0 => 0, 1 => 10, 5 => 11, _ => 1 };
+            int count = shape switch { 0 => 0, 1 => 10, 5 => 11, 6 => 12, _ => 1 };
             var units = new List<DroneStrategy.StrategyUnit>(count);
             for (int i = 0; i < count; i++)
             {
                 int type = shape switch
                 {
-                    1 => 8, 2 => 0x1C, 3 => 5, 4 => 9, 5 => i < 10 ? 8 : 0x1C,
+                    1 => 8, 2 => 0x1C, 3 => 5, 4 => 9, 5 => i < 10 ? 8 : 0x1C, 6 => i < 10 ? 8 : 5,
                     _ => throw new ArgumentOutOfRangeException(nameof(shape)),
                 };
+                int ux = shape == 6 && i >= 10 ? HeaderPosA[0] + (i == 10 ? 0x20000 : 0x10000) : x;
+                int uz = shape == 6 && i >= 10 ? HeaderPosA[2] : z;
                 var unit = new DroneStrategy.StrategyUnit
                 {
-                    Active = true, Team = shape == 3 ? 1 : 2, Type = type, Sub = 10, Pos = new[] { x, 0, z },
+                    Active = true, Team = shape == 3 ? 1 : 2, Type = type, Sub = 10, Pos = new[] { ux, 0, uz },
                 };
                 units.Add(unit);
                 _targets.Add(unit, new DroneTarget(i + 3));
