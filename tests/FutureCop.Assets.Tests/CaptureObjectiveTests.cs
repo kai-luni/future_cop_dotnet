@@ -125,6 +125,27 @@ public class CaptureObjectiveTests
         Assert.Equal(new[] { 2, 0 }, score.Score);
     }
 
+    [Fact]
+    public void SinglePlayerTeamCapturesCreditSecondScoreWordAndSkipPlayerLoop()
+    {
+        // 8002D1A0.c:204-210: in 1P (player1Team == -1), captures by gSinglePlayerEntity's team
+        // increment Score[1], Total[1], and SinglePlayerCaptures, skipping the player loop.
+        var score = new MatchScore(player0Team: 1, singlePlayerTeam: 2);
+        var field = new ObjectiveField(new[] { Outpost() }, score);
+        Assert.Equal(1, field.Touch(new CaptureCandidate(287, 0x25, 2, 0, 0, 0, 0)));
+        Assert.Equal(new[] { 0, 1 }, score.Score);
+        Assert.Equal(new[] { 0, 1 }, score.Total);
+        Assert.Equal(new[] { 0, 0 }, score.Captures);
+        Assert.Equal(1, score.SinglePlayerCaptures);
+
+        // In 2P (gPlayerCount != 1, slot 1 occupied), the 1P branch does not run.
+        var twoPlayer = new MatchScore(player0Team: 1, player1Team: 2, singlePlayerTeam: 2);
+        twoPlayer.RecordCapture(2);
+        Assert.Equal(new[] { 0, 1 }, twoPlayer.Score);
+        Assert.Equal(new[] { 0, 1 }, twoPlayer.Captures);
+        Assert.Equal(0, twoPlayer.SinglePlayerCaptures);
+    }
+
     // ---- retail records ------------------------------------------------------------------------
 
     private static string? ConftPath()

@@ -124,8 +124,16 @@ public sealed class LevelScene
         if (_objectives is not null) return;
         var records = MissionEntities.Load(_file);
         _playerTeam = records.FirstOrDefault(r => r.Type == 1 && r.Id == Actor.Id)?.Team ?? 0;
+        // gSinglePlayerEntity (func_800331CC:243) is the strategic drone in a one-player Precinct
+        // Assault match: the same record the Sky Captain spawns from (Cact before Csac), with the
+        // drone's team word at D_8009F9EC+0x18. func_8002D1A0:204-210 credits captures by that team
+        // on the second score word, so MatchScore must know the team before any capture.
+        int droneTeam = records.Where(r => r.Type == SkyCaptainSystem.SkyCaptainType)
+            .OrderBy(r => r.Container == EntityContainer.Cact ? 0 : 1)
+            .FirstOrDefault()?.Team ?? -1;
         _objectives = ObjectiveField.FromRecords(records,
-            (x, z) => LevelGround.Height(Map, x, 0x100000, z, out _), new MatchScore(_playerTeam));
+            (x, z) => LevelGround.Height(Map, x, 0x100000, z, out _),
+            new MatchScore(_playerTeam, singlePlayerTeam: droneTeam));
         // Sky Captain (type 0x25): the earliest point that has both the records and, in the live level
         // (EnableMechMovement before EnableFiring), the attached walker for func_800331CC.c:236.
         _skyCaptain = new SkyCaptainSystem();
@@ -144,6 +152,12 @@ public sealed class LevelScene
 
     /// <summary>Faces and marker lines the last <see cref="Render"/> drew for the Sky Captain.</summary>
     public int SkyCaptainPrimitives { get; private set; }
+
+    /// <summary>
+    /// Faces the last <see cref="Render"/> drew for units spawned by <see cref="BuildOrderSpawner"/>
+    /// (port extension beyond retail).
+    /// </summary>
+    public int BuiltUnitPrimitives { get; private set; }
 
     /// <summary>
     /// The HUD session with the live score words (D_8009FA94 + 0x64). +0x5C is 1 in a Precinct Assault
@@ -595,6 +609,36 @@ public sealed class LevelScene
                 skyCaptain++;
             }
         }
+
+        // Built units (port extension beyond retail): tanks and aircraft spawned from
+        // DroneStrategy build-order counters, drawn with their mission Cobj model along heading.
+        int builtUnits = 0;
+        if (_skyCaptain is { BuiltUnits.Count: > 0 } builtSky)
+        {
+            foreach (var unit in builtSky.BuiltUnits)
+            {
+                var model = _file.Models.FirstOrDefault(m => m.Id == unit.ModelId);
+                if (model is null || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
+                var local = new Gte.Mat(new[]
+                {
+                    unit.DirZ, 0, -unit.DirX,
+                    0, 0x10000, 0,
+                    unit.DirX, 0, unit.DirZ,
+                }, ((unit.X - MechWorld.X) >> 4) << 4, ((unit.Y - MechWorld.Y) >> 4) << 4,
+                    ((unit.Z - MechWorld.Z) >> 4) << 4);
+                var matrix = ScriptRender.Compose(local, view);
+                var projected = model.IsScripted
+                    ? ScriptRender.Project(model, verts, 0, matrix, Focal, Ofx, Ofy, 1)
+                    : ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1);
+                var widths = model.Widths.TryGetValue(1, out var uw) ? uw.ToArray() : Array.Empty<short>();
+                foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
+                {
+                    _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });
+                    builtUnits++;
+                }
+            }
+        }
+        BuiltUnitPrimitives = builtUnits;
 
         // Painter's order, far first, stable for equal keys (submission order). Viewer convention:
         // retail sorts into an ordering table whose bucket mapping is not ported; both keys are SZ3

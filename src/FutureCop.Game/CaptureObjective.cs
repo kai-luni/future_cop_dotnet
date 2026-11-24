@@ -182,18 +182,38 @@ public sealed class MatchScore
     /// <summary>Team of the player in slot 0 / 1 of D_8009FA58, or -1 for an empty slot.</summary>
     public int[] PlayerTeams { get; }
 
-    public MatchScore(int player0Team, int player1Team = -1)
+    /// <summary>
+    /// Team of gSinglePlayerEntity (D_8009F9EC), or -1 when none is active. In a one-player Precinct
+    /// Assault match that entity is the strategic drone itself, set by func_800331CC:243 with the
+    /// drone's team in obj+0x18 - not the human player of D_8009FA58[0].
+    /// </summary>
+    public int SinglePlayerTeam { get; }
+
+    /// <summary>func_8002D1A0:208, e-&gt;unk134-&gt;unk3A of the single-player branch: captures by it.</summary>
+    public int SinglePlayerCaptures { get; private set; }
+
+    public MatchScore(int player0Team, int player1Team = -1, int singlePlayerTeam = -1)
     {
         PlayerTeams = new[] { player0Team, player1Team };
+        SinglePlayerTeam = singlePlayerTeam;
     }
 
     /// <summary>
-    /// func_8002D1A0:211-224 (the loop over D_8009FA58): every player of the capturing team scores one
-    /// point on +0x64 and +0x7C at its own index, and its capture counter rises. The one-player branch
-    /// :204-210 belongs to the computer opponent block D_8009F9EC, which the port does not run.
+    /// func_8002D1A0:201-224. In a one-player match (gPlayerCount == 1, i.e. slot 1 empty) with an
+    /// active gSinglePlayerEntity, captures by that entity's team take the :204-210 branch: the
+    /// second score/total word (+0x64[1] / +0x7C[1]) and e-&gt;unk134-&gt;unk3A increment and the player
+    /// loop :211-224 does not run. Otherwise the loop credits every player in D_8009FA58 whose team
+    /// matches, on +0x64 at its own slot index.
     /// </summary>
     public void RecordCapture(int team)
     {
+        if (PlayerTeams[1] < 0 && SinglePlayerTeam >= 0 && SinglePlayerTeam == team)
+        {
+            Score[1]++;
+            Total[1]++;
+            SinglePlayerCaptures++;                                   // e->unk134->unk3A++
+            return;
+        }
         for (int i = 0; i < 2; i++)
         {
             if (PlayerTeams[i] < 0 || PlayerTeams[i] != team) continue;

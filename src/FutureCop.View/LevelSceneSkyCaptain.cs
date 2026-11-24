@@ -58,6 +58,15 @@ public sealed class SkyCaptainSystem
     /// <summary>The persistent Precinct Assault build-order state (D_8009FA94).</summary>
     public DroneStrategy.Glob Economy { get; } = new() { S4C = 4 };
 
+    /// <summary>
+    /// Conscious port extension beyond retail: spawns visible, moving tank and aircraft units
+    /// whenever <see cref="Economy"/> production counters increase.
+    /// </summary>
+    public BuildOrderSpawner Spawner { get; } = new();
+
+    /// <summary>Units currently spawned by <see cref="Spawner"/> (port extension beyond retail).</summary>
+    public IReadOnlyList<BuiltUnit> BuiltUnits => Spawner.Units;
+
     /// <summary>gGameSession +0x4C, clamped at spawn by func_800331CC.</summary>
     public int Difficulty { get => Economy.S4C; set => Economy.S4C = value; }
 
@@ -187,6 +196,9 @@ public sealed class SkyCaptainSystem
         Team = record.Team;
         BuildStrategyUnits(records, playerId, playerPos, objectives);
         Drone = Create(record, playerPos, groundHeight);
+        Spawner.ConfigureFromRecords(records, Team,
+            (Drone.Body.Pos[0], Drone.Body.Pos[1], Drone.Body.Pos[2]), playerPos);
+        Spawner.Reset(Economy);
     }
 
     private void BuildStrategyUnits(IReadOnlyList<EntityRecord> records, int? playerId,
@@ -380,6 +392,22 @@ public sealed class SkyCaptainSystem
         if (Drone is not null && score is not null) Economy.F68 = score[1];
         Advance(dt, pos => LevelGround.Height(scene.Map, pos[0], pos[1], pos[2], out _));
         if (Drone is not null && score is not null) score[1] = Economy.F68;
+        // Message 10 of func_8002D664 hands the touching entity to gTryCaptureObjective. The strategic
+        // drone is gSinglePlayerEntity (func_800331CC:243): a type-0x25 candidate whose entity id is
+        // Record.Id (source +0x00 -> obj+0x14, 8002A5F4.c:116). func_8002D1A0:160-163 tests 0x25 on
+        // the ground plane only; the instance radius (obj+0x68) is not derived yet so 0 is passed.
+        if (Drone is { Body.FA: not 5 } drone && scene.Objectives is { } field && field.Objectives.Count > 0)
+        {
+            var body = drone.Body;
+            int taken = field.Touch(new CaptureCandidate(Record?.Id ?? 0, SkyCaptainType, Team,
+                body.Pos[0], body.Pos[1], body.Pos[2], 0));
+            if (taken > 0 && score is not null)
+            {
+                // Keep Economy.F68 immediately aligned with score[1] and mirror 8002D1A0.c:210.
+                Economy.F68 = score[1];
+                Economy.FE0 = 6;
+            }
+        }
     }
 
     /// <summary>Message 6 with an explicit func_80066F78 probe (testable without a mission).</summary>
@@ -391,6 +419,10 @@ public sealed class SkyCaptainSystem
         if (d.Body.FA == 5) return;
         PullFromBody(d);
         StrategicDroneTick.Tick(d.Drone, new TickWorld(this, d, groundHeight), dt);
+        // Port extension beyond retail: materialize build-order production into visible moving units.
+        Func<int, int, int> sampleGround = (x, z) => groundHeight(new[] { x, 0x100000, z });
+        Spawner.SyncFromEconomy(Economy, Team, sampleGround);
+        Spawner.AdvanceUnits(dt, sampleGround);
     }
 
     /// <summary>Copies the words the tick shares with the body (+0x1C/+0xDC/+0xF4/+0xF8/+0xFA).</summary>

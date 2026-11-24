@@ -88,18 +88,20 @@ public sealed class DroneStrategyGoldenTests
             _random = random;
             _root = root;
             _targets.Add(PlayerEntities, new DroneTarget(2));
-            int count = shape switch { 0 => 0, 1 => 10, 5 => 11, _ => 1 };
+            int count = shape switch { 0 => 0, 1 => 10, 5 => 11, 6 => 12, _ => 1 };
             var units = new List<DroneStrategy.StrategyUnit>(count);
             for (int i = 0; i < count; i++)
             {
                 int type = shape switch
                 {
-                    1 => 8, 2 => 0x1C, 3 => 5, 4 => 9, 5 => i < 10 ? 8 : 0x1C,
+                    1 => 8, 2 => 0x1C, 3 => 5, 4 => 9, 5 => i < 10 ? 8 : 0x1C, 6 => i < 10 ? 8 : 5,
                     _ => throw new ArgumentOutOfRangeException(nameof(shape)),
                 };
+                int ux = shape == 6 && i >= 10 ? 32769 + (i == 10 ? 0x20000 : 0x10000) : x;
+                int uz = shape == 6 && i >= 10 ? -65537 : z;
                 var unit = new DroneStrategy.StrategyUnit
                 {
-                    Active = true, Team = shape == 3 ? 1 : 2, Type = type, Sub = 10, Pos = new[] { x, 0, z },
+                    Active = true, Team = shape == 3 ? 1 : 2, Type = type, Sub = 10, Pos = new[] { ux, 0, uz },
                 };
                 units.Add(unit);
                 _targets.Add(unit, new DroneTarget(i + 3));

@@ -55,7 +55,7 @@ typedef char layout_check[
     OFFSET(Ai, s4C) == 0x4C && OFFSET(Glob, fE0) == 0xE0 ? 1 : -1];
 
 static struct Glob globe;
-static struct Unit drone, player, units[11];
+static struct Unit drone, player, units[12];
 static struct Ai ai;
 struct Unit *D_8009FA40;
 struct Glob *D_8009FA94 = &globe;
@@ -120,8 +120,9 @@ static void tick(const s32 *in, s32 *out)
 
     /* 0 = no candidates; 1 = ten nearby own type-8s; 2 = own 0x1c by posA;
      * 3 = opposing type-5; 4 = own high-subtype type-9 (prevents upkeep);
-     * 5 = ten nearby own type-8s followed by an own 0x1c. */
-    count = in[Shape] == 1 ? 10 : in[Shape] == 5 ? 11 : (in[Shape] != 0);
+     * 5 = ten nearby own type-8s followed by an own 0x1c;
+     * 6 = ten nearby own type-8s followed by two own type-5s at decreasing distance from posA. */
+    count = in[Shape] == 1 ? 10 : in[Shape] == 5 ? 11 : in[Shape] == 6 ? 12 : (in[Shape] != 0);
     D_8009FA40 = count ? units : 0;
     for (i = 0; i < count; i++) {
         units[i].next = i + 1 < count ? &units[i + 1] : 0;
@@ -133,10 +134,16 @@ static void tick(const s32 *in, s32 *out)
         case 3: units[i].type = 5; break;
         case 4: units[i].type = 9; break;
         case 5: units[i].type = i < 10 ? 8 : 0x1c; break;
+        case 6: units[i].type = i < 10 ? 8 : 5; break;
         }
         units[i].sub = 10;
-        units[i].pos.x = in[TargetX];
-        units[i].pos.z = in[TargetZ];
+        if (in[Shape] == 6 && i >= 10) {
+            units[i].pos.x = ai.posA.x + (i == 10 ? 0x20000 : 0x10000);
+            units[i].pos.z = ai.posA.z;
+        } else {
+            units[i].pos.x = in[TargetX];
+            units[i].pos.z = in[TargetZ];
+        }
     }
     func_800336DC(&drone);
 
@@ -204,7 +211,7 @@ static int run_row(char *line, int emit)
     if (!name) return 0;
     for (i = 0; i < Inputs; i++)
         if (!number(&line, &input[i])) return -1;
-    if (input[Shape] < 0 || input[Shape] > 5) return -1;
+    if (input[Shape] < 0 || input[Shape] > 6) return -1;
     if (!emit) {
         const char *arrow = token(&line);
         if (!arrow || arrow[0] != '-' || arrow[1] != '>' || arrow[2]) return -1;
