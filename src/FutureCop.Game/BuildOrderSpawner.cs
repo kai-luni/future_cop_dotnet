@@ -86,9 +86,11 @@ public sealed class BuiltUnit
 /// </summary>
 /// <remarks>
 /// Retail parity disclaimer: verified against asm/us/main.s that retail PS1 Future Cop never reads
-/// D_8009FA94+0xA0..0xDF outside func_800336DC and func_800331CC. This spawner is an explicit
-/// gameplay extension, not a retail decompilation. Spawned units only exist, render, and move
-/// toward the opposing base (no AI targeting, collision, or damage).
+/// D_8009FA94+0xA0..0xDF outside func_800336DC and func_800331CC. This spawner is an explicit,
+/// opt-in gameplay extension, not a retail decompilation. Spawned units only exist, render, and move
+/// toward the opposing base (no AI targeting, collision, or damage). Retail mission scripts spend
+/// the same score words (S[25]/S[26]) on units through the mission registry; once that script
+/// channel is ported, enabling this spawner alongside it will double-spawn units.
 /// </remarks>
 public sealed class BuildOrderSpawner
 {
@@ -99,15 +101,22 @@ public sealed class BuildOrderSpawner
 
     private const int LateralSpacing = 0x6000;
 
+    private readonly record struct PendingSpawn(BuiltUnitKind Kind, BuiltUnitTemplate Template, int Team, int SlotIndex);
+
     private readonly List<BuiltUnit> _units = new();
+    private readonly Queue<PendingSpawn> _pending = new();
     private readonly int[,] _seenC = new int[4, 2];
     private int _seenFB0, _seenFB4, _seenFB8, _seenFBC;
     private int _nextId = 10000;
     private (int X, int Y, int Z) _spawnOrigin;
+    private (int X, int Y, int Z) _targetPos;
+    private bool _hasTarget;
     private int _dirX = 0x10000;
     private int _dirZ;
 
     public IReadOnlyList<BuiltUnit> Units => _units;
+    /// <summary>Queued production waiting for active unit slots below <see cref="MaxUnits"/>.</summary>
+    public int PendingCount => _pending.Count;
     public BuiltUnitTemplate? TankTemplate { get; private set; }
     public BuiltUnitTemplate? HeavyTankTemplate { get; private set; }
     public BuiltUnitTemplate? AircraftTemplate { get; private set; }
@@ -127,14 +136,17 @@ public sealed class BuildOrderSpawner
         HeavyTankTemplate = PickTemplate(records, HeavyTankEntityType, team) ?? TankTemplate;
         AircraftTemplate = PickTemplate(records, AircraftEntityType, team);
         _spawnOrigin = basePos;
+        _targetPos = targetPos;
+        _hasTarget = basePos.X != targetPos.X || basePos.Z != targetPos.Z;
         (_dirX, _dirZ) = ComputeHeading(basePos.X, basePos.Z, targetPos.X, targetPos.Z);
     }
 
-    /// <summary>Clears active units and snapshots the current economy counters as baseline.</summary>
+    /// <summary>Clears active and pending units and snapshots the current economy counters as baseline.</summary>
     public void Reset(DroneStrategy.Glob economy)
     {
         ArgumentNullException.ThrowIfNull(economy);
         _units.Clear();
+        _pending.Clear();
         for (int i = 0; i < 4; i++)
         {
             _seenC[i, 0] = economy.C[i][0];
@@ -147,14 +159,15 @@ public sealed class BuildOrderSpawner
     }
 
     /// <summary>
-    /// Spawns units for any positive counter increments in <paramref name="economy"/> since the last
-    /// call and returns the number of units spawned.
+    /// Spawns units for any queued or newly observed positive counter increments in
+    /// <paramref name="economy"/> since the last call, queuing excess beyond <see cref="MaxUnits"/>,
+    /// and returns the number of units spawned.
     /// </summary>
     public int SyncFromEconomy(DroneStrategy.Glob economy, int team, Func<int, int, int> groundHeight)
     {
         ArgumentNullException.ThrowIfNull(economy);
         ArgumentNullException.ThrowIfNull(groundHeight);
-        int spawned = 0;
+        int spawned = DrainPending(groundHeight);
 
         for (int i = 0; i < 4; i++)
         {
@@ -186,11 +199,39 @@ public sealed class BuildOrderSpawner
         return spawned;
     }
 
-    /// <summary>Advances every spawned unit by <paramref name="dt"/> clock ticks.</summary>
+    /// <summary>
+    /// Advances every spawned unit by <paramref name="dt"/> clock ticks and despawns units that
+    /// have reached or passed the target base.
+    /// </summary>
     public void AdvanceUnits(int dt, Func<int, int, int> groundHeight)
     {
         ArgumentNullException.ThrowIfNull(groundHeight);
-        foreach (var unit in _units) unit.Advance(dt, groundHeight);
+        for (int i = _units.Count - 1; i >= 0; i--)
+        {
+            var unit = _units[i];
+            unit.Advance(dt, groundHeight);
+            if (_hasTarget && HasReachedTarget(unit))
+                _units.RemoveAt(i);
+        }
+    }
+
+    private bool HasReachedTarget(BuiltUnit unit)
+    {
+        long dx = (long)unit.X - _targetPos.X;
+        long dz = (long)unit.Z - _targetPos.Z;
+        return dx * _dirX + dz * _dirZ >= 0;
+    }
+
+    private int DrainPending(Func<int, int, int> groundHeight)
+    {
+        int added = 0;
+        while (_pending.Count > 0 && _units.Count < MaxUnits)
+        {
+            var next = _pending.Dequeue();
+            SpawnOne(next.Kind, next.Template, next.Team, next.SlotIndex, added, groundHeight);
+            added++;
+        }
+        return added;
     }
 
     private int SpawnBatch(BuiltUnitKind kind, BuiltUnitTemplate? template, int team, int slotIndex,
@@ -198,23 +239,36 @@ public sealed class BuildOrderSpawner
     {
         if (template is null) return 0;
         int added = 0;
+        for (int k = 0; k < count; k++)
+        {
+            if (_units.Count < MaxUnits)
+            {
+                SpawnOne(kind, template, team, slotIndex, k, groundHeight);
+                added++;
+            }
+            else
+            {
+                _pending.Enqueue(new PendingSpawn(kind, template, team, slotIndex));
+            }
+        }
+        return added;
+    }
+
+    private void SpawnOne(BuiltUnitKind kind, BuiltUnitTemplate template, int team, int slotIndex,
+        int staggerIndex, Func<int, int, int> groundHeight)
+    {
         // Perpendicular right vector in XZ for fanning out units across slots / batches.
         int rightX = _dirZ;
         int rightZ = -_dirX;
-        for (int k = 0; k < count && _units.Count < MaxUnits; k++)
-        {
-            int lane = (slotIndex >= 0 ? slotIndex : (_units.Count & 3)) - 1;
-            long lateral = (long)lane * LateralSpacing;
-            long stagger = (long)k * LateralSpacing;
-            int x = unchecked(_spawnOrigin.X + (int)((rightX * lateral) >> 16) + (int)((_dirX * stagger) >> 16));
-            int z = unchecked(_spawnOrigin.Z + (int)((rightZ * lateral) >> 16) + (int)((_dirZ * stagger) >> 16));
-            int altitude = kind == BuiltUnitKind.Aircraft ? BuiltUnit.AircraftAltitude : 0;
-            int y = groundHeight(x, z) + altitude;
-            _units.Add(new BuiltUnit(_nextId++, kind, template.EntityType, template.ModelId, team, slotIndex,
-                x, y, z, _dirX, _dirZ));
-            added++;
-        }
-        return added;
+        int lane = (slotIndex >= 0 ? slotIndex : (_units.Count & 3)) - 1;
+        long lateral = (long)lane * LateralSpacing;
+        long stagger = (long)staggerIndex * LateralSpacing;
+        int x = unchecked(_spawnOrigin.X + (int)((rightX * lateral) >> 16) + (int)((_dirX * stagger) >> 16));
+        int z = unchecked(_spawnOrigin.Z + (int)((rightZ * lateral) >> 16) + (int)((_dirZ * stagger) >> 16));
+        int altitude = kind == BuiltUnitKind.Aircraft ? BuiltUnit.AircraftAltitude : 0;
+        int y = groundHeight(x, z) + altitude;
+        _units.Add(new BuiltUnit(_nextId++, kind, template.EntityType, template.ModelId, team, slotIndex,
+            x, y, z, _dirX, _dirZ));
     }
 
     private static BuiltUnitTemplate? PickTemplate(IReadOnlyList<EntityRecord> records, int entityType, int team)

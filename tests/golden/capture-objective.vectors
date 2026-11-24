@@ -1,0 +1,11 @@
+# Shared golden vectors for gTryCaptureObjective (func_8002D1A0, 8002D1A0.c:114-228).
+# Verified against unchanged PS1 C via tests/host/capture-objective/run.sh (gcc 2.7.2 + qemu-mipsel).
+# Outpost fixed at (0,0,0), teamA=1, teamB=2, reachWord=0x400, radius=0 (limit=32768).
+# Inputs : name playerCount p0Team p1Team spActive spTeam spId otherId otherType otherTeam otherX otherY otherZ spTimerIn e0In
+# Outputs: -> mode outTeam score0 score1 total0 total1 p0Cap p1Cap spCap spTimerOut e0Out
+1p_drone_capture             1 1 -1 1 2 287   287 37 2 0     0 0 500 4 -> 2 2 0 1 0 1 0 0 1   0 6
+1p_human_capture             1 1 -1 1 2 287    12  1 1 0     0 0 500 4 -> 1 1 1 0 1 0 1 0 0 500 4
+2p_slot1_occupied            2 1  2 1 2 287    16  1 2 0     0 0 500 4 -> 2 2 0 1 0 1 0 1 0 500 4
+1p_capturer_id_mismatch      1 1 -1 1 2 287    75  5 2 0     0 0 500 4 -> 2 2 0 1 0 1 0 0 1   0 4
+1p_drone_id_masked_high_bits 1 1 -1 1 2 287 16671 37 2 0 40000 0 321 2 -> 2 2 0 1 0 1 0 0 1   0 6
+1p_ground_unit_too_high      1 1 -1 1 2 287    75  5 2 0 40000 0 500 4 -> 0 0 0 0 0 0 0 0 0 500 4

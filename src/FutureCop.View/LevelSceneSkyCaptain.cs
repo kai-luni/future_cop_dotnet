@@ -60,9 +60,18 @@ public sealed class SkyCaptainSystem
 
     /// <summary>
     /// Conscious port extension beyond retail: spawns visible, moving tank and aircraft units
-    /// whenever <see cref="Economy"/> production counters increase.
+    /// whenever <see cref="Economy"/> production counters increase. Inactive unless
+    /// <see cref="EnableBuildOrderSpawner"/> is opted into.
     /// </summary>
     public BuildOrderSpawner Spawner { get; } = new();
+
+    /// <summary>
+    /// Opt-in flag for the non-retail <see cref="BuildOrderSpawner"/> extension. Off by default so
+    /// the main scene path remains strictly retail-parity. Retail mission scripts spend the same
+    /// score words (S[25]/S[26]) on units through the mission registry; once that script channel is
+    /// ported, enabling this flag alongside it would produce units twice.
+    /// </summary>
+    public bool EnableBuildOrderSpawner { get; set; }
 
     /// <summary>Units currently spawned by <see cref="Spawner"/> (port extension beyond retail).</summary>
     public IReadOnlyList<BuiltUnit> BuiltUnits => Spawner.Units;
@@ -91,6 +100,7 @@ public sealed class SkyCaptainSystem
 
     private LevelMap? _map;
     private int _frameTime;
+    private readonly int[] _groundProbe = new int[3];
     private readonly List<SceneStrategyUnit> _strategyUnits = new();
     private SceneStrategyUnit? _playerUnit;
     private DroneStrategy.Self _strategy = new();
@@ -403,26 +413,53 @@ public sealed class SkyCaptainSystem
                 body.Pos[0], body.Pos[1], body.Pos[2], 0));
             if (taken > 0 && score is not null)
             {
-                // Keep Economy.F68 immediately aligned with score[1] and mirror 8002D1A0.c:210.
+                // Keep Economy.F68 immediately aligned with score[1]; TickTimer = 0 (8002D1A0.c:209)
+                // and Economy.FE0 = 6 (8002D1A0.c:210) are applied by MatchScore callbacks.
                 Economy.F68 = score[1];
-                Economy.FE0 = 6;
             }
         }
+    }
+
+    /// <summary>
+    /// Wires the retail 1P capture side effects of <c>func_8002D1A0:209-210</c> onto
+    /// <paramref name="score"/>: clearing <see cref="StrategicDroneTick.AiState.TickTimer"/>
+    /// (<c>e-&gt;unk134-&gt;unk18 = 0</c>) and setting <see cref="DroneStrategy.Glob.FE0"/> = 6 when
+    /// the capturer id matches <c>gSinglePlayerEntity-&gt;unk14</c>.
+    /// </summary>
+    public void BindScore(MatchScore score)
+    {
+        ArgumentNullException.ThrowIfNull(score);
+        score.OnSinglePlayerCapture = () =>
+        {
+            if (Drone is { } d) d.Ai.TickTimer = 0;
+        };
+        score.OnSessionE0Changed = value => Economy.FE0 = value;
     }
 
     /// <summary>Message 6 with an explicit func_80066F78 probe (testable without a mission).</summary>
     public void Advance(int dt, Func<int[], int> groundHeight)
     {
         _frameTime = unchecked(_frameTime + dt);
-        if (Drone is not { } d) return;
-        // 800357C0.c:141-144: msg 6 returns 0 while +0xFA == 5, the tick does not run.
-        if (d.Body.FA == 5) return;
-        PullFromBody(d);
-        StrategicDroneTick.Tick(d.Drone, new TickWorld(this, d, groundHeight), dt);
-        // Port extension beyond retail: materialize build-order production into visible moving units.
-        Func<int, int, int> sampleGround = (x, z) => groundHeight(new[] { x, 0x100000, z });
-        Spawner.SyncFromEconomy(Economy, Team, sampleGround);
-        Spawner.AdvanceUnits(dt, sampleGround);
+        // 800357C0.c:141-144: msg 6 returns 0 while +0xFA == 5, the drone tick does not run.
+        if (Drone is { } d && d.Body.FA != 5)
+        {
+            PullFromBody(d);
+            StrategicDroneTick.Tick(d.Drone, new TickWorld(this, d, groundHeight), dt);
+        }
+        // Opt-in port extension beyond retail: materialize build-order production and keep already
+        // spawned units moving even when the drone is inactive or in state 5.
+        if (EnableBuildOrderSpawner)
+        {
+            Func<int, int, int> sampleGround = (x, z) =>
+            {
+                _groundProbe[0] = x;
+                _groundProbe[1] = 0x100000;
+                _groundProbe[2] = z;
+                return groundHeight(_groundProbe);
+            };
+            if (Drone is not null) Spawner.SyncFromEconomy(Economy, Team, sampleGround);
+            Spawner.AdvanceUnits(dt, sampleGround);
+        }
     }
 
     /// <summary>Copies the words the tick shares with the body (+0x1C/+0xDC/+0xF4/+0xF8/+0xFA).</summary>

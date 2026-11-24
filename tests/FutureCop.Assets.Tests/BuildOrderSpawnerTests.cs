@@ -62,10 +62,19 @@ public sealed class BuildOrderSpawnerTests
         economy.C[0][0] = 5;
         Assert.Equal(2, spawner.SyncFromEconomy(economy, team: 2, (_, _) => 0x8000));
         Assert.Equal(2, spawner.Units.Count);
+        Assert.Equal(3, spawner.PendingCount);
 
         int x0 = spawner.Units[0].X;
         spawner.AdvanceUnits(10, (_, _) => 0x9000);
         Assert.True(spawner.Units[0].X < x0, "tank should march in -X toward targetPos");
         Assert.Equal(0x9000, spawner.Units[0].Y);
+
+        // Marching past targetPos despawns active units, and the next sync drains queued production
+        // rather than silently dropping it.
+        spawner.AdvanceUnits(0x200000 / BuiltUnit.TankSpeed + 100, (_, _) => 0x9000);
+        Assert.Empty(spawner.Units);
+        Assert.Equal(2, spawner.SyncFromEconomy(economy, team: 2, (_, _) => 0x9000));
+        Assert.Equal(2, spawner.Units.Count);
+        Assert.Equal(1, spawner.PendingCount);
     }
 }

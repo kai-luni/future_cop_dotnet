@@ -222,7 +222,7 @@ public class SkyCaptainSceneTests
         var outpost = field.Objectives[0];
         drone.Body.Pos[0] = outpost.X;
         drone.Body.Pos[2] = outpost.Z;
-        drone.Ai.TickTimer = 0;
+        drone.Ai.TickTimer = 500; // non-zero: retail 8002D1A0.c:209 must clear it on capture
         drone.Ai.Limit = short.MaxValue; // prevent strategy spend on this tick
 
         scene.AdvanceSkyCaptain(1);
@@ -232,6 +232,7 @@ public class SkyCaptainSceneTests
         Assert.Equal(1, field.Score.SinglePlayerCaptures);
         Assert.Equal(1, sky.Economy.F68);
         Assert.Equal(6, sky.Economy.FE0);
+        Assert.Equal(0, drone.Ai.TickTimer);
     }
 
     [Fact]
@@ -246,6 +247,8 @@ public class SkyCaptainSceneTests
         scene.EnableMechMovement();
         scene.EnableFiring();
         var sky = Assert.IsType<SkyCaptainSystem>(scene.SkyCaptain);
+        Assert.False(sky.EnableBuildOrderSpawner);
+        sky.EnableBuildOrderSpawner = true;
         var drone = Assert.IsType<StrategicDrone>(sky.Drone);
         var field = Assert.IsType<ObjectiveField>(scene.Objectives);
 
@@ -355,6 +358,7 @@ public class SkyCaptainSceneTests
         tankScene.EnableMechMovement();
         tankScene.EnableFiring();
         var tankSky = Assert.IsType<SkyCaptainSystem>(tankScene.SkyCaptain);
+        tankSky.EnableBuildOrderSpawner = true;
         var tankDrone = Assert.IsType<StrategicDrone>(tankSky.Drone);
         var tankField = Assert.IsType<ObjectiveField>(tankScene.Objectives);
         tankDrone.Ai.Limit = short.MaxValue;
@@ -380,7 +384,7 @@ public class SkyCaptainSceneTests
 
         tankScene.AdvanceSkyCaptain(1);
 
-        var tank = Assert.Single(tankSky.BuiltUnits.Where(u => u.Kind == BuiltUnitKind.Tank).Take(1));
+        var tank = Assert.Single(tankSky.BuiltUnits, u => u.Kind == BuiltUnitKind.Tank);
         Assert.Equal(BuildOrderSpawner.TankEntityType, tank.EntityType);
         Assert.Equal(30, tank.ModelId);
         int tx0 = tank.X, tz0 = tank.Z;
@@ -390,5 +394,65 @@ public class SkyCaptainSceneTests
         tankScene.AttachWalker(tankScene.Walker);
         tankScene.Render(new LevelCamera(0.0, 20.0, 0x1200));
         Assert.True(tankScene.BuiltUnitPrimitives > 0, "spawned tank produced no rendered faces");
+    }
+
+    [Fact]
+    public void CaptureByDrone_ClearsTickTimerWithoutPreZeroing_AndNextTickRunsStrategy()
+    {
+        var sys = Spawned();
+        var drone = Assert.IsType<StrategicDrone>(sys.Drone);
+        var outpost = new CaptureObjective(112, drone.Body.Pos[0], 0, drone.Body.Pos[2],
+            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 0, reachWord: 0x400);
+        var score = new MatchScore(player0Team: 1, singlePlayerTeam: sys.Team,
+            singlePlayerEntityId: sys.Record!.Id);
+        sys.BindScore(score);
+        var field = new ObjectiveField(new[] { outpost }, score);
+
+        // Leave TickTimer well above zero so strategy would otherwise wait hundreds of ticks.
+        drone.Ai.TickTimer = 500;
+        drone.Ai.Limit = short.MinValue;
+        int callsBefore = sys.StrategyCalls;
+
+        int taken = field.Touch(new CaptureCandidate(sys.Record.Id, SkyCaptainSystem.SkyCaptainType,
+            sys.Team, drone.Body.Pos[0], drone.Body.Pos[1], drone.Body.Pos[2], 0));
+        Assert.Equal(1, taken);
+        Assert.Equal(0, drone.Ai.TickTimer);
+        Assert.Equal(6, sys.Economy.FE0);
+        Assert.Equal(1, score.Score[1]);
+        Assert.Equal(1, score.SinglePlayerCaptures);
+
+        // Without manually zeroing TickTimer, the very next tick runs strategy.
+        sys.Advance(1, Flat);
+        Assert.Equal(callsBefore + 1, sys.StrategyCalls);
+    }
+
+    [Fact]
+    public void EnableBuildOrderSpawner_DefaultsOff_AndMovesUnitsIndependentlyOfDroneState5()
+    {
+        var tankRecord = new EntityRecord(20, BuildOrderSpawner.TankEntityType, 0, 0, 0, 0, 0x100, 2,
+            EntityContainer.Csac, 0, 0, new byte[0x54], Array.Empty<int>(),
+            new[] { new FutureCop.Assets.ResourceReference("Cobj", 30) });
+        var sys = new SkyCaptainSystem { Random = new RetailRandom(0x457) };
+        Assert.False(sys.EnableBuildOrderSpawner);
+        sys.SpawnFromRecords(new[] { Record(0x25, 0x00400000, 0, 0x00400000), tankRecord }, (0, 0, 0), Flat);
+
+        // Default off: production counter growth does not spawn units.
+        sys.Economy.FB0 += 1;
+        sys.Advance(1, Flat);
+        Assert.Empty(sys.BuiltUnits);
+
+        // Opt in: unit spawns and advances.
+        sys.EnableBuildOrderSpawner = true;
+        sys.Advance(1, Flat);
+        var unit = Assert.Single(sys.BuiltUnits);
+        Assert.Equal(30, unit.ModelId);
+
+        // Drone enters state 5 (dead/inactive): drone stops moving, but built units keep advancing.
+        sys.Drone!.Body.FA = 5;
+        var dronePos = (int[])sys.Drone.Body.Pos.Clone();
+        int ux0 = unit.X, uz0 = unit.Z;
+        sys.Advance(RetailClock.LocomotionTicks * 4, Flat);
+        Assert.Equal(dronePos, sys.Drone.Body.Pos);
+        Assert.True(unit.X != ux0 || unit.Z != uz0, "built unit froze while drone was in state 5");
     }
 }
