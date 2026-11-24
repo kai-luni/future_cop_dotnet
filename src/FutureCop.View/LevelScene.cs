@@ -140,15 +140,43 @@ public sealed class LevelScene
         var score = new MatchScore(_playerTeam, singlePlayerTeam: droneTeam, singlePlayerEntityId: droneId);
         _skyCaptain.BindScore(score);
         _objectives = new ObjectiveField(objectives, score);
+
+        ObjectRegistry.InitMissionSpawnState();
+        ObjectRegistry.LiveObjects.Allocate();
+        _csacSpawner = new CsacUnitSpawner(ObjectRegistry);
+        _csacSpawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(_file.Bytes, r));
+        ObjectRegistry.FinishLevelLoad();
     }
 
     private SkyCaptainSystem? _skyCaptain;
+    private CsacUnitSpawner? _csacSpawner;
+
+    /// <summary>Shared map-object occupancy and live-object registry (D_800A0C70 / D_800A7040 / D_8009F800).</summary>
+    public MapObjectRegistry ObjectRegistry { get; } = new();
+
+    /// <summary>Retail-keyed Csac spawner registered from the mission's Csac records, or null until enabled.</summary>
+    public CsacUnitSpawner? CsacSpawner => _csacSpawner;
+
+    /// <summary>
+    /// Opt-in flag to drain <see cref="CsacSpawner"/> and broadcast message 6 over
+    /// <see cref="ObjectRegistry"/> during <see cref="AdvanceSkyCaptain"/>. Off by default so
+    /// existing scene behaviour is unchanged until callers opt in.
+    /// </summary>
+    public bool EnableCsacSpawner { get; set; }
 
     /// <summary>The 1P Precinct Assault Sky Captain, or null until the live level is enabled.</summary>
     public SkyCaptainSystem? SkyCaptain => _skyCaptain;
 
     /// <summary>Message 6 of the Sky Captain (800271A4.c:180) for <paramref name="dt"/> clock ticks.</summary>
-    public void AdvanceSkyCaptain(int dt) => _skyCaptain?.Advance(dt, this);
+    public void AdvanceSkyCaptain(int dt)
+    {
+        _skyCaptain?.Advance(dt, this);
+        if (EnableCsacSpawner && _csacSpawner is not null)
+        {
+            ObjectRegistry.BroadcastMessage6(dt);
+            _csacSpawner.Drain(dt);
+        }
+    }
 
     /// <summary>Faces and marker lines the last <see cref="Render"/> drew for the Sky Captain.</summary>
     public int SkyCaptainPrimitives { get; private set; }

@@ -81,6 +81,7 @@ public static class MissionEntities
     private static readonly uint Cact = ChunkReader.TagValue("Cact");
     private static readonly uint Csac = ChunkReader.TagValue("Csac");
     private static readonly uint Tact = ChunkReader.TagValue("tACT");
+    private static readonly uint Tsac = ChunkReader.TagValue("tSAC");
     private static readonly uint Arsl = ChunkReader.TagValue("aRSL");
 
     /// <summary>Smallest tACT that still holds the common header up to the team byte (source + 0x1C).</summary>
@@ -162,5 +163,38 @@ public static class MissionEntities
             list.Add(new ResourceReference(ChunkReader.TagName(Word(data, i)),
                 BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(i + 4))));
         return list;
+    }
+
+    /// <summary>
+    /// Reads the <c>tSAC</c> (0x74534143) spawner header associated with a <c>Csac</c>
+    /// <see cref="EntityRecord"/> from raw mission bytes (80060E74.c:124-136, 800616A0.c:4-12).
+    /// Returns null if the record is not a Csac record or has no valid tSAC chunk.
+    /// </summary>
+    public static CsacSpawnerParameters? ReadSpawnerParameters(byte[] data, EntityRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        ArgumentNullException.ThrowIfNull(record);
+        if (record.Container != EntityContainer.Csac) return null;
+        int h = record.HeaderOffset;
+        if (h < 0 || h + 0x30 > data.Length) return null;
+        if (Word(data, h) != Shoc || Word(data, h + 0x10) != Shdr || Word(data, h + 0x18) != Csac) return null;
+        int headerLength = (int)Word(data, h + 4);
+        if (headerLength < 0x30 || headerLength > data.Length - h) return null;
+        int id = (int)Word(data, h + 0x1C);
+
+        int packet = h + headerLength;
+        if (packet + 4 <= data.Length && Word(data, packet) == Fill) packet = (packet / 0x6000 + 1) * 0x6000;
+        if (packet + 20 > data.Length || Word(data, packet) != Shoc || Word(data, packet + 0x10) != Sdat) return null;
+        int packetEnd = Math.Min(data.Length, packet + (int)Word(data, packet + 4));
+        int chunk = FindChunk(data, packet + 20, packetEnd, Tsac, id);
+        if (chunk < 0) return null;
+        int size = (int)Word(data, chunk + 4);
+        if (size < 0x18 || chunk + size > data.Length) return null;
+
+        return new CsacSpawnerParameters(
+            RespawnDelayRaw: BinaryPrimitives.ReadInt16LittleEndian(data.AsSpan(chunk + 0x0C)),
+            MaxConcurrent: BinaryPrimitives.ReadInt16LittleEndian(data.AsSpan(chunk + 0x0E)),
+            InitialFlags: BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(chunk + 0x10)),
+            InitialCount: BinaryPrimitives.ReadInt16LittleEndian(data.AsSpan(chunk + 0x12)));
     }
 }

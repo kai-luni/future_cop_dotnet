@@ -91,6 +91,7 @@ public sealed class BuiltUnit
 /// toward the opposing base (no AI targeting, collision, or damage). Retail mission scripts spend
 /// the same score words (S[25]/S[26]) on units through the mission registry; once that script
 /// channel is ported, enabling this spawner alongside it will double-spawn units.
+/// <see cref="CsacUnitSpawner"/> supersedes this stopgap once the RPNS script VM lands.
 /// </remarks>
 public sealed class BuildOrderSpawner
 {

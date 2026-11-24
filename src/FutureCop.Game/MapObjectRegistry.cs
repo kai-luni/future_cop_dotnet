@@ -1,0 +1,535 @@
+namespace FutureCop.Game;
+
+/// <summary>
+/// One entry of the 256-slot spawn-descriptor table D_800A0C70 (gSlotSpawnDescs):
+/// byte [0] is the primary occupancy column read by func_8003B838, and byte [1] is the
+/// secondary destruction spawn column read by func_8003B7D8.
+/// </summary>
+/// <param name="ColumnKind">entry[0]: primary spawn column (func_8003B838).</param>
+/// <param name="SpawnColumn">entry[1]: secondary destruction spawn column (func_8003B7D8; 0 defaults to 0x5B in func_8002C174).</param>
+public readonly record struct SlotSpawnDescriptor(byte ColumnKind, byte SpawnColumn);
+
+/// <summary>
+/// One deferred spawn request parked by func_800402DC via func_8003FD74 when a map cell's flag
+/// word satisfies <c>(flags &amp; 5) == 4</c> and the owner's +0x08 word is non-zero.
+/// </summary>
+public readonly record struct DeferredSpawnRequest(byte Column, int Row, MapOccupancySubject Owner, int Arg3);
+
+/// <summary>
+/// Entity fields consulted by the retail map-occupancy and spawn-gate functions
+/// (func_8003B838, func_8003B7D8, func_8003BC0C, func_8003BF50, func_800402DC).
+/// </summary>
+public sealed class MapOccupancySubject
+{
+    /// <summary>Flag bit at entity +0x24 that masks D_800A0C70 lookup (func_8003B838.c:59, func_8003B7D8.c:47).</summary>
+    public const uint SelfPositionedFlag = 0x40000;
+
+    /// <summary>Entity id (+0x14).</summary>
+    public int Id { get; set; }
+
+    /// <summary>Entity kind / dispatch type byte (+0x16), read by func_8003BF50.</summary>
+    public byte EntityType { get; set; }
+
+    /// <summary>Index into D_800A0C70 (+0x20); 0 means unassigned.</summary>
+    public byte TableIndex { get; set; }
+
+    /// <summary>Entity flag word (+0x24).</summary>
+    public uint Flags { get; set; }
+
+    /// <summary>Owner word at +0x08; non-zero selects the deferred request path in func_800402DC:88.</summary>
+    public int DeferSpawnWord { get; set; }
+
+    /// <summary>Linked entity at +0xC0, followed by func_8003BF50 for kind 7.</summary>
+    public MapOccupancySubject? LinkC0 { get; set; }
+
+    /// <summary>Linked entity at +0xC8, followed by func_8003BF50 for kinds 2 and 0x0F.</summary>
+    public MapOccupancySubject? LinkC8 { get; set; }
+}
+
+/// <summary>
+/// Live object registered in the shared runtime registry and eligible for per-frame message-6
+/// broadcast (func_8004CD6C).
+/// </summary>
+public interface IRegisteredMapObject
+{
+    /// <summary>Entity id (+0x08 in D_800A8F90 entries); entries with Id &lt;= 0 are skipped by broadcast.</summary>
+    int Id { get; }
+
+    /// <summary>Retail dispatch type byte (+0x16).</summary>
+    int EntityType { get; }
+
+    /// <summary>Dispatches a retail entity message (message 6 = per-frame tick, arg2 = dt, arg3 = 0).</summary>
+    int OnMessage(int message, int arg2, int arg3);
+}
+
+/// <summary>
+/// Retail entity handler identity returned by func_8002AE54 (gGetEntityHandlerForType).
+/// </summary>
+public enum EntityHandlerKind
+{
+    None = 0,
+    Player,
+    Type5Vehicle,
+    LinkedProp,
+    TumblingFlyer,
+    Elevator,
+    Type11,
+    PlacedProp,
+    Type13,
+    TriggerAttachment,
+    RotatingProp,
+    MountedTurretCarrier,
+    Mover,
+    Type26,
+    Type27,
+    Type28MultiTurret,
+    Type29,
+    ForceField,
+    Resupply,
+    PortraitScreen,
+    Type35,
+    StrategicDrone,
+    CameraOverride,
+}
+
+/// <summary>
+/// Port of func_8002AE54 (gGetEntityHandlerForType): maps an entity dispatch type byte to its
+/// retail handler identity.
+/// </summary>
+public static class EntityTypeDispatch
+{
+    /// <summary>Resolves the retail handler for <paramref name="entityType"/> (8002AE54.c:53-105).</summary>
+    public static EntityHandlerKind ResolveHandler(int entityType) => entityType switch
+    {
+        1 => EntityHandlerKind.Player,
+        5 => EntityHandlerKind.Type5Vehicle,
+        6 or 8 or 30 or 33 or 36 => EntityHandlerKind.LinkedProp,
+        9 => EntityHandlerKind.TumblingFlyer,
+        10 => EntityHandlerKind.Elevator,
+        11 => EntityHandlerKind.Type11,
+        12 => EntityHandlerKind.PlacedProp,
+        13 => EntityHandlerKind.Type13,
+        14 or 38 => EntityHandlerKind.TriggerAttachment,
+        16 => EntityHandlerKind.RotatingProp,
+        20 => EntityHandlerKind.MountedTurretCarrier,
+        25 => EntityHandlerKind.Mover,
+        26 => EntityHandlerKind.Type26,
+        27 => EntityHandlerKind.Type27,
+        28 => EntityHandlerKind.Type28MultiTurret,
+        29 => EntityHandlerKind.Type29,
+        31 => EntityHandlerKind.ForceField,
+        32 => EntityHandlerKind.Resupply,
+        34 => EntityHandlerKind.PortraitScreen,
+        35 => EntityHandlerKind.Type35,
+        37 => EntityHandlerKind.StrategicDrone,
+        80 => EntityHandlerKind.CameraOverride,
+        _ => EntityHandlerKind.None,
+    };
+}
+
+/// <summary>
+/// Fixed-capacity 0x80-slot live-object registry modeled on D_8009F800 (0x204 bytes: count word
+/// at +0x00 followed by 0x80 entry pointers; allocated by func_80060E28 and freed by func_80060E50),
+/// paired with the per-frame message-6 broadcast semantics of func_8004CD6C (D_800A8F90).
+/// </summary>
+public sealed class LiveObjectRegistry
+{
+    /// <summary>Fixed slot capacity of D_8009F800 (80060E28.c:6).</summary>
+    public const int Capacity = 0x80;
+
+    /// <summary>Retail per-frame update message id (8004CD6C.c:26, 800271A4.c:180).</summary>
+    public const int MessageFrameTick = 6;
+
+    private IRegisteredMapObject?[]? _entries;
+    private int _count;
+
+    /// <summary>Whether the registry backing table is currently allocated (func_80060E28 vs func_80060E50).</summary>
+    public bool IsAllocated => _entries is not null;
+
+    /// <summary>Live count word (+0x00 of D_8009F800).</summary>
+    public int Count => _count;
+
+    /// <summary>Snapshot of currently registered entries in slot order [0..Count-1].</summary>
+    public IReadOnlyList<IRegisteredMapObject> Entries
+    {
+        get
+        {
+            if (_entries is null || _count == 0) return Array.Empty<IRegisteredMapObject>();
+            var result = new IRegisteredMapObject[_count];
+            for (int i = 0; i < _count; i++) result[i] = _entries[i]!;
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Allocates (or resets) the 0x80-slot table and clears the count word (func_80060E28).
+    /// </summary>
+    public void Allocate()
+    {
+        _entries = new IRegisteredMapObject?[Capacity];
+        _count = 0;
+    }
+
+    /// <summary>
+    /// Releases the table during between-mission teardown (func_80060E50).
+    /// </summary>
+    public void Free()
+    {
+        _entries = null;
+        _count = 0;
+    }
+
+    /// <summary>
+    /// Appends <paramref name="entry"/> at <c>entries[Count++]</c> if the table is allocated and
+    /// below <see cref="Capacity"/>. Returns false when unallocated or full.
+    /// </summary>
+    public bool Register(IRegisteredMapObject entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        if (_entries is null || _count >= Capacity) return false;
+        _entries[_count++] = entry;
+        return true;
+    }
+
+    /// <summary>
+    /// Removes the first registered entry matching <paramref name="id"/> and compacts the tail
+    /// so [0..Count-1] stays dense.
+    /// </summary>
+    /// <remarks>
+    /// Likely: retail D_8009F800 has no confirmed general unlink helper in the audited C units
+    /// (func_8006158C only looks up by id and dispatches to func_800614BC); compacting the array
+    /// keeps the count-bounded iteration invariant of func_800616A0 / func_8004CD6C intact.
+    /// </remarks>
+    public bool Unregister(int id)
+    {
+        if (_entries is null) return false;
+        for (int i = 0; i < _count; i++)
+        {
+            if (_entries[i]!.Id == id)
+            {
+                RemoveAt(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Removes a specific registered instance, compacting [0..Count-1].</summary>
+    public bool Unregister(IRegisteredMapObject entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        if (_entries is null) return false;
+        for (int i = 0; i < _count; i++)
+        {
+            if (ReferenceEquals(_entries[i], entry))
+            {
+                RemoveAt(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Returns the entry at slot <paramref name="index"/> in [0..Count-1].</summary>
+    public IRegisteredMapObject GetAt(int index)
+    {
+        if (_entries is null || (uint)index >= (uint)_count)
+            throw new ArgumentOutOfRangeException(nameof(index));
+        return _entries[index]!;
+    }
+
+    /// <summary>
+    /// Broadcasts <paramref name="message"/> to every registered object whose <see cref="IRegisteredMapObject.Id"/>
+    /// is strictly greater than 0 (func_8004CD6C.c:48-53). Returns the number of objects invoked.
+    /// </summary>
+    public int BroadcastMessage(int message, int arg2, int arg3)
+    {
+        if (_entries is null || _count == 0) return 0;
+        // Walk a snapshot of the current count so callbacks that register or unregister entries
+        // do not corrupt the loop cursor.
+        int snapshotCount = _count;
+        var snapshot = new IRegisteredMapObject[snapshotCount];
+        for (int i = 0; i < snapshotCount; i++) snapshot[i] = _entries[i]!;
+
+        int delivered = 0;
+        for (int i = 0; i < snapshotCount; i++)
+        {
+            var obj = snapshot[i];
+            if (obj.Id > 0)
+            {
+                obj.OnMessage(message, arg2, arg3);
+                delivered++;
+            }
+        }
+        return delivered;
+    }
+
+    /// <summary>Per-frame message-6 broadcast (800271A4.c:180, 8004CD6C.c:41-54).</summary>
+    public int BroadcastMessage6(int dt) => BroadcastMessage(MessageFrameTick, dt, 0);
+
+    private void RemoveAt(int index)
+    {
+        int last = _count - 1;
+        for (int i = index; i < last; i++)
+            _entries![i] = _entries[i + 1];
+        _entries![last] = null;
+        _count = last;
+    }
+}
+
+/// <summary>
+/// Shared map-object spawn and occupancy registry in <c>FutureCop.Game</c>:
+/// combines the 256-slot descriptor table D_800A0C70, the 2x256 map-cell spawn gate D_800A7040,
+/// the immediate-vs-deferred registration queue (D_8009F70C / D_8009F708 / D_8009FA00[0]) with
+/// load-end replay (func_8003FAD4), and the 0x80-slot live-object registry D_8009F800 with
+/// per-frame message-6 broadcast (func_8004CD6C).
+/// </summary>
+public sealed class MapObjectRegistry
+{
+    /// <summary>Slot count of D_800A0C70 and column count of D_800A7040 (8003F79C.c:49,55).</summary>
+    public const int SlotTableSize = 0x100;
+
+    /// <summary>Row (bank) count of D_800A7040 (8003F79C.c:53).</summary>
+    public const int SpawnGridRows = 2;
+
+    /// <summary>Capacity of the deferred-registration node pool D_8009F70C (8003F79C.c:63).</summary>
+    public const int DeferredPoolCapacity = 0x100;
+
+    /// <summary>Fallback spawn column when func_8003B7D8 returns 0 (used by func_8002C174).</summary>
+    public const byte DefaultDestructionSpawnColumn = 0x5B;
+
+    /// <summary>Screen state values that force immediate occupancy registration (8003FA34.c:56).</summary>
+    public const int ScreenStateImmediatePlay = 4;
+    public const int ScreenStateImmediateAlt = 0xD;
+
+    private readonly SlotSpawnDescriptor?[] _slotDescriptors = new SlotSpawnDescriptor?[SlotTableSize];
+    private readonly int[,] _spawnRecordMap = new int[SpawnGridRows, SlotTableSize];
+    private readonly ushort[,] _cellFlags = new ushort[SpawnGridRows, SlotTableSize];
+    private readonly Stack<MapOccupancySubject> _deferredQueue = new();
+    private readonly List<DeferredSpawnRequest> _deferredSpawnRequests = new();
+
+    private int _deferredPoolRemaining;
+
+    /// <summary>D_8009F70C != 0: whether the deferred-registration node pool is active.</summary>
+    public bool HasDeferralPool { get; private set; }
+
+    /// <summary>Remaining nodes in D_8009F70C (starts at 0x100 on <see cref="InitMissionSpawnState"/>).</summary>
+    public int DeferredPoolRemaining => _deferredPoolRemaining;
+
+    /// <summary>Number of nodes currently stacked on D_8009F708.</summary>
+    public int DeferredQueueCount => _deferredQueue.Count;
+
+    /// <summary>D_8009FA00[0]: current screen/game state checked by func_8003FA34:56.</summary>
+    public int ScreenState { get; set; }
+
+    /// <summary>D_8009F31C (gBatchSpawnActive): forwarded to the object constructor by func_800402DC:93.</summary>
+    public byte BatchSpawnActive { get; set; }
+
+    /// <summary>Requests parked by func_800402DC via func_8003FD74 when (cellFlags &amp; 5) == 4.</summary>
+    public IReadOnlyList<DeferredSpawnRequest> DeferredSpawnRequests => _deferredSpawnRequests;
+
+    /// <summary>D_8009F800 live-object registry (0x80 slots + count word + message-6 broadcast).</summary>
+    public LiveObjectRegistry LiveObjects { get; } = new();
+
+    /// <summary>
+    /// Optional factory callback invoked by <see cref="TrySpawnAtOwner"/> (func_800402DC:93) when
+    /// the spawn gate passes. Parameters: (owner, column, row, arg2, arg4, batchSpawnActive) -&gt;
+    /// retail spawn result (non-zero on success). Defaults to returning 1 when null.
+    /// </summary>
+    public Func<MapOccupancySubject?, byte, int, int, int, byte, int>? SpawnFactory { get; set; }
+
+    /// <summary>
+    /// Port of func_8003F79C (gInitMissionSpawnState): clears all 256 slots of D_800A0C70, both
+    /// 256-entry rows of D_800A7040 (and cell flags), clears D_8009F708, and allocates the
+    /// 256-node deferral pool D_8009F70C.
+    /// </summary>
+    public void InitMissionSpawnState()
+    {
+        Array.Clear(_slotDescriptors);
+        Array.Clear(_spawnRecordMap);
+        Array.Clear(_cellFlags);
+        _deferredQueue.Clear();
+        _deferredSpawnRequests.Clear();
+        HasDeferralPool = true;
+        _deferredPoolRemaining = DeferredPoolCapacity;
+    }
+
+    /// <summary>Sets D_800A0C70[<paramref name="slot"/>].</summary>
+    public void SetSlotDescriptor(byte slot, SlotSpawnDescriptor? descriptor) =>
+        _slotDescriptors[slot] = descriptor;
+
+    /// <summary>Reads D_800A0C70[<paramref name="slot"/>].</summary>
+    public SlotSpawnDescriptor? GetSlotDescriptor(byte slot) => _slotDescriptors[slot];
+
+    /// <summary>Sets D_800A7040[<paramref name="row"/>][<paramref name="column"/>].</summary>
+    public void SetSpawnCell(int row, byte column, int value)
+    {
+        ValidateRow(row);
+        _spawnRecordMap[row, column] = value;
+    }
+
+    /// <summary>Reads D_800A7040[<paramref name="row"/>][<paramref name="column"/>].</summary>
+    public int GetSpawnCell(int row, byte column)
+    {
+        ValidateRow(row);
+        return _spawnRecordMap[row, column];
+    }
+
+    /// <summary>Sets the cell flag word read by func_8003B3D8 (D_800A6578) for (row, column).</summary>
+    public void SetCellFlags(int row, byte column, ushort flags)
+    {
+        ValidateRow(row);
+        _cellFlags[row, column] = flags;
+    }
+
+    /// <summary>Reads the cell flag word for (row, column).</summary>
+    public ushort GetCellFlags(int row, byte column)
+    {
+        ValidateRow(row);
+        return _cellFlags[row, column];
+    }
+
+    /// <summary>
+    /// Port of func_8003B838 (gGetSpawnDescColumn): returns entry[0] of D_800A0C70[tableIndex],
+    /// or 0 when tableIndex == 0, flags has bit 0x40000 set, or the slot is null.
+    /// </summary>
+    public byte GetSpawnDescColumn(MapOccupancySubject subject)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        if (subject.TableIndex == 0) return 0;
+        if ((subject.Flags & MapOccupancySubject.SelfPositionedFlag) != 0) return 0;
+        var entry = _slotDescriptors[subject.TableIndex];
+        return entry.HasValue ? entry.Value.ColumnKind : (byte)0;
+    }
+
+    /// <summary>
+    /// Port of func_8003B7D8 (gGetDestructionSpawnColumn): returns entry[1] of D_800A0C70[tableIndex],
+    /// or 0 when tableIndex == 0, flags has bit 0x40000 set, or the slot is null.
+    /// </summary>
+    public byte GetDestructionSpawnColumn(MapOccupancySubject subject)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        if (subject.TableIndex == 0) return 0;
+        if ((subject.Flags & MapOccupancySubject.SelfPositionedFlag) != 0) return 0;
+        var entry = _slotDescriptors[subject.TableIndex];
+        return entry.HasValue ? entry.Value.SpawnColumn : (byte)0;
+    }
+
+    /// <summary>
+    /// Caller convenience matching func_8002C174: resolves <see cref="GetDestructionSpawnColumn"/>
+    /// and substitutes <see cref="DefaultDestructionSpawnColumn"/> (0x5B) when the result is 0.
+    /// </summary>
+    public byte ResolveDestructionSpawnColumn(MapOccupancySubject subject)
+    {
+        byte column = GetDestructionSpawnColumn(subject);
+        return column != 0 ? column : DefaultDestructionSpawnColumn;
+    }
+
+    /// <summary>
+    /// Port of func_8003BF50 (gGetEntitySpawnBank): returns bank 1 for kind 1 or 0x12 directly,
+    /// or when kind 7 links via +0xC0 to kind 0x12, or when kind 2/0x0F links via +0xC8 to kind
+    /// 0x12; returns 0 otherwise.
+    /// </summary>
+    public static int GetEntitySpawnBank(MapOccupancySubject? subject)
+    {
+        if (subject is null) return 0;
+        return subject.EntityType switch
+        {
+            1 or 0x12 => 1,
+            7 => subject.LinkC0?.EntityType == 0x12 ? 1 : 0,
+            2 or 0x0F => subject.LinkC8?.EntityType == 0x12 ? 1 : 0,
+            _ => 0,
+        };
+    }
+
+    /// <summary>
+    /// Port of func_8003FA34 (gQueueOrApplyMapOccupancy): applies occupancy immediately when the
+    /// deferral pool D_8009F70C is absent or D_8009FA00[0] is 4 or 0xD; otherwise checks
+    /// func_8003B838 and prepends a node to the LIFO queue D_8009F708 if a pool node is available.
+    /// Returns true when the registration was applied immediately, false when deferred or skipped.
+    /// </summary>
+    public bool QueueOrApplyMapOccupancy(MapOccupancySubject subject)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        if (!HasDeferralPool || ScreenState == ScreenStateImmediatePlay || ScreenState == ScreenStateImmediateAlt)
+        {
+            ApplyPrimaryOccupancy(subject);
+            return true;
+        }
+
+        if (GetSpawnDescColumn(subject) != 0 && _deferredPoolRemaining > 0)
+        {
+            _deferredPoolRemaining--;
+            _deferredQueue.Push(subject);
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Port of func_8003BC0C (gSpawnEntityPrimaryType): refreshes an entity's map occupancy via
+    /// its resolved column kind (func_8003B838) and spawn bank (func_8003BF50) through
+    /// func_800402DC.
+    /// </summary>
+    public int ApplyPrimaryOccupancy(MapOccupancySubject subject)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        if (subject.TableIndex == 0) return 0;
+        byte kind = GetSpawnDescColumn(subject);
+        if (kind == 0) return 0;
+        return TrySpawnAtOwner(subject, kind, 0, GetEntitySpawnBank(subject), 0);
+    }
+
+    /// <summary>
+    /// Port of func_800402DC (gSpawnTypeAtOwner): map-cell spawn gate.
+    /// Rejects (returns 0) when D_800A7040[row][column] is 0. When (cellFlags &amp; 5) == 4, parks
+    /// a deferred request if <paramref name="owner"/> and <c>owner.DeferSpawnWord</c> (+0x08) are
+    /// non-zero and returns 0. Otherwise constructs/spawns via <see cref="SpawnFactory"/>.
+    /// </summary>
+    public int TrySpawnAtOwner(MapOccupancySubject? owner, byte column, int arg2, int row, int arg4)
+    {
+        ValidateRow(row);
+        if (_spawnRecordMap[row, column] == 0) return 0;
+
+        if ((_cellFlags[row, column] & 5) == 4)
+        {
+            if (owner is null) return 0;
+            if (owner.DeferSpawnWord != 0)
+                _deferredSpawnRequests.Add(new DeferredSpawnRequest(column, row, owner, 0));
+            return 0;
+        }
+
+        return SpawnFactory is not null
+            ? SpawnFactory(owner, column, row, arg2, arg4, BatchSpawnActive)
+            : 1;
+    }
+
+    /// <summary>
+    /// Port of func_8003FAD4 (gFinishLevelLoad) replay and pool teardown: walks the LIFO queue
+    /// D_8009F708 newest-first, calls func_8003BC0C per node, then releases the deferral pool
+    /// D_8009F70C and clears both pool and list.
+    /// Returns the number of queued nodes replayed.
+    /// </summary>
+    public int FinishLevelLoad()
+    {
+        int replayed = 0;
+        while (_deferredQueue.Count > 0)
+        {
+            var subject = _deferredQueue.Pop();
+            ApplyPrimaryOccupancy(subject);
+            replayed++;
+        }
+
+        HasDeferralPool = false;
+        _deferredPoolRemaining = 0;
+        return replayed;
+    }
+
+    /// <summary>Per-frame message-6 broadcast over <see cref="LiveObjects"/> (func_8004CD6C).</summary>
+    public int BroadcastMessage6(int dt) => LiveObjects.BroadcastMessage6(dt);
+
+    private static void ValidateRow(int row)
+    {
+        if ((uint)row >= SpawnGridRows)
+            throw new ArgumentOutOfRangeException(nameof(row), $"Spawn grid row must be 0 or 1, got {row}.");
+    }
+}
