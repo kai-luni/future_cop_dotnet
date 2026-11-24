@@ -1,3 +1,6 @@
+using FutureCop.Assets;
+using FutureCop.Game.Mech;
+
 namespace FutureCop.Game;
 
 /// <summary>
@@ -331,6 +334,86 @@ public sealed class MapObjectRegistry
     /// <summary>D_8009F800 live-object registry (0x80 slots + count word + message-6 broadcast).</summary>
     public LiveObjectRegistry LiveObjects { get; } = new();
 
+    private readonly List<Elevator> _groundElevators = new(24);
+
+    /// <summary>Static terrain query for type-10 initialization; pass the record's full XYZ probe.</summary>
+    public Func<Vec3, int>? GroundHeight { get; set; }
+
+    /// <summary>Resolves an object's primary Cobj model for its 3DBB collision records.</summary>
+    public Func<int, Model?>? ResolveModel { get; set; }
+
+    /// <summary>Resolves either of the two player slots for type-10 message 6.</summary>
+    public Func<int, ElevatorRider?>? ReadElevatorRider { get; set; }
+
+    /// <summary>Host bindings for type-20 dependencies, configured before message 2 if present.</summary>
+    public Action<MountedTurretCarrier>? ConfigureCarrier { get; set; }
+
+    /// <summary>
+    /// Places the supported Cact actors in an allocated live registry (8004D6D4.c).
+    /// Csac templates remain with the spawner until their spawn gate fires (80060E74.c, 8006125C.c).
+    /// </summary>
+    public int PlaceMissionObjects(IReadOnlyList<EntityRecord> records)
+    {
+        int placed = 0;
+        if (!LiveObjects.IsAllocated) return placed;
+        foreach (var record in records)
+        {
+            if (LiveObjects.Count >= LiveObjectRegistry.Capacity) break;
+            if (record.Container != EntityContainer.Cact) continue;
+            if (CreateMissionObject(record, record.Id) is not { } actor) continue;
+            LiveObjects.Register(actor);
+            placed++;
+        }
+        return placed;
+    }
+
+    /// <summary>First registered lift hit, for <see cref="MechWorld.GroundObjects"/> (8006320C.c:51–89).</summary>
+    public GroundObjectHit? ProbeGroundObjects(Vec3 position)
+    {
+        foreach (var lift in _groundElevators)
+        {
+            if (lift.Probe(position) is { } hit) return hit;
+        }
+        return null;
+    }
+
+    internal IRegisteredMapObject? CreateMissionObject(EntityRecord record, int runtimeId)
+    {
+        switch (record.Type)
+        {
+            case Elevator.EntityType:
+                var position = new Vec3(record.X, record.Y, record.Z);
+                var lift = new Elevator(record, GroundHeight?.Invoke(position) ?? 0,
+                    ResolveModel?.Invoke(record.Model()), runtimeId)
+                {
+                    ReadRider = slot => ReadElevatorRider?.Invoke(slot),
+                    Remove = RemoveElevator,
+                };
+                // 80041488.c:120, 8006314C.c:36–47.
+                if (_groundElevators.Count < 24) _groundElevators.Add(lift);
+                return lift;
+            case MountedTurretCarrier.EntityType:
+                var carrier = new MountedTurretCarrier(record, runtimeId);
+                ConfigureCarrier?.Invoke(carrier);
+                carrier.OnMessage(2, 0, 0);
+                return carrier;
+            default:
+                return null;
+        }
+    }
+
+    private void RemoveElevator(Elevator lift)
+    {
+        int index = _groundElevators.IndexOf(lift);
+        if (index >= 0)
+        {
+            // 80063194.c:51–59 replaces the removed entry with the tail.
+            _groundElevators[index] = _groundElevators[^1];
+            _groundElevators.RemoveAt(_groundElevators.Count - 1);
+        }
+        if (!LiveObjects.Unregister(lift)) LiveObjects.Unregister(lift.Id);
+    }
+
     /// <summary>
     /// Optional factory callback invoked by <see cref="TrySpawnAtOwner"/> (func_800402DC:93) when
     /// the spawn gate passes. Parameters: (owner, column, row, arg2, arg4, batchSpawnActive) -&gt;
@@ -350,6 +433,7 @@ public sealed class MapObjectRegistry
         Array.Clear(_cellFlags);
         _deferredQueue.Clear();
         _deferredSpawnRequests.Clear();
+        _groundElevators.Clear();
         HasDeferralPool = true;
         _deferredPoolRemaining = DeferredPoolCapacity;
     }
@@ -523,6 +607,9 @@ public sealed class MapObjectRegistry
         _deferredPoolRemaining = 0;
         return replayed;
     }
+
+    /// <summary>Broadcasts a message over the registered live actors.</summary>
+    public int BroadcastMessage(int message, int arg2, int arg3) => LiveObjects.BroadcastMessage(message, arg2, arg3);
 
     /// <summary>Per-frame message-6 broadcast over <see cref="LiveObjects"/> (func_8004CD6C).</summary>
     public int BroadcastMessage6(int dt) => LiveObjects.BroadcastMessage6(dt);
