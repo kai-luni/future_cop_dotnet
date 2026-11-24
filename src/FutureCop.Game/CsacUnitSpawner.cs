@@ -111,6 +111,8 @@ public sealed class SpawnedCsacUnit : IRegisteredMapObject
     public int X { get; set; }
     public int Y { get; set; }
     public int Z { get; set; }
+    /// <summary>Specialized mission runtime created on spawn (null for other dispatch types).</summary>
+    public IRegisteredMapObject? RuntimeObject { get; internal set; }
     /// <summary>Spawn mode argument passed by func_800616A0 to func_8006125C (1 = normal/timer, 0 = high-nibble burst).</summary>
     public int SpawnMode { get; }
     /// <summary>Number of message-6 ticks received from <see cref="LiveObjectRegistry.BroadcastMessage6"/>.</summary>
@@ -127,7 +129,21 @@ public sealed class SpawnedCsacUnit : IRegisteredMapObject
             Message6Count++;
             LastDelta = arg2;
         }
-        return MessageHandler is not null ? MessageHandler(this, message, arg2, arg3) : 0;
+        int runtimeResult = RuntimeObject?.OnMessage(message, arg2, arg3) ?? 0;
+        SyncRuntimePosition();
+        return MessageHandler?.Invoke(this, message, arg2, arg3) ?? runtimeResult;
+    }
+
+    internal void SyncRuntimePosition()
+    {
+        if (RuntimeObject is Elevator lift)
+        {
+            (X, Y, Z) = (lift.X, lift.Y, lift.Z);
+        }
+        else if (RuntimeObject is MountedTurretCarrier carrier)
+        {
+            (X, Y, Z) = (carrier.Position.X, carrier.Position.Y, carrier.Position.Z);
+        }
     }
 }
 
@@ -388,6 +404,8 @@ public sealed class CsacUnitSpawner
         slot.TotalSpawned++;
 
         var unit = new SpawnedCsacUnit(_nextRuntimeId++, slot, spawnMode, UnitMessageHandler);
+        unit.RuntimeObject = _registry?.CreateMissionObject(slot.Record, unit.Id);
+        unit.SyncRuntimePosition();
         _spawnedUnits.Add(unit);
         if (_registry is { LiveObjects.IsAllocated: true })
             _registry.LiveObjects.Register(unit);
