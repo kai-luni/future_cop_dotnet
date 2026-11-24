@@ -65,13 +65,26 @@ public sealed class SkyCaptainSystem
     /// </summary>
     public BuildOrderSpawner Spawner { get; } = new();
 
+    private bool _enableBuildOrderSpawner;
+
     /// <summary>
     /// Opt-in flag for the non-retail <see cref="BuildOrderSpawner"/> extension. Off by default so
     /// the main scene path remains strictly retail-parity. Retail mission scripts spend the same
     /// score words (S[25]/S[26]) on units through the mission registry; once that script channel is
     /// ported, enabling this flag alongside it would produce units twice.
+    /// Transitioning from <c>false</c> to <c>true</c> re-baselines <see cref="Spawner"/> to the
+    /// current <see cref="Economy"/> counters so earlier production does not burst-spawn on toggle.
     /// </summary>
-    public bool EnableBuildOrderSpawner { get; set; }
+    public bool EnableBuildOrderSpawner
+    {
+        get => _enableBuildOrderSpawner;
+        set
+        {
+            if (value && !_enableBuildOrderSpawner)
+                Spawner.Reset(Economy);
+            _enableBuildOrderSpawner = value;
+        }
+    }
 
     /// <summary>Units currently spawned by <see cref="Spawner"/> (port extension beyond retail).</summary>
     public IReadOnlyList<BuiltUnit> BuiltUnits => Spawner.Units;
@@ -101,11 +114,26 @@ public sealed class SkyCaptainSystem
     private LevelMap? _map;
     private int _frameTime;
     private readonly int[] _groundProbe = new int[3];
+    private Func<int[], int>? _activeGroundHeight;
+    private readonly Func<int, int, int> _sampleGround;
     private readonly List<SceneStrategyUnit> _strategyUnits = new();
     private SceneStrategyUnit? _playerUnit;
     private DroneStrategy.Self _strategy = new();
     private DroneAttackTarget _attackTarget = new();
     private DronePursuitTarget _pursuitTarget = new();
+
+    public SkyCaptainSystem()
+    {
+        _sampleGround = SampleGroundHeight;
+    }
+
+    private int SampleGroundHeight(int x, int z)
+    {
+        _groundProbe[0] = x;
+        _groundProbe[1] = 0x100000;
+        _groundProbe[2] = z;
+        return _activeGroundHeight!(_groundProbe);
+    }
 
     /// <summary>
     /// Mode-3 line-of-sight probe (func_8004E80C / 8004E80C.c:156-158) wired by <see cref="BindMap"/>.
@@ -448,17 +476,18 @@ public sealed class SkyCaptainSystem
         }
         // Opt-in port extension beyond retail: materialize build-order production and keep already
         // spawned units moving even when the drone is inactive or in state 5.
-        if (EnableBuildOrderSpawner)
+        if (_enableBuildOrderSpawner)
         {
-            Func<int, int, int> sampleGround = (x, z) =>
+            _activeGroundHeight = groundHeight;
+            try
             {
-                _groundProbe[0] = x;
-                _groundProbe[1] = 0x100000;
-                _groundProbe[2] = z;
-                return groundHeight(_groundProbe);
-            };
-            if (Drone is not null) Spawner.SyncFromEconomy(Economy, Team, sampleGround);
-            Spawner.AdvanceUnits(dt, sampleGround);
+                if (Drone is not null) Spawner.SyncFromEconomy(Economy, Team, _sampleGround);
+                Spawner.AdvanceUnits(dt, _sampleGround);
+            }
+            finally
+            {
+                _activeGroundHeight = null;
+            }
         }
     }
 

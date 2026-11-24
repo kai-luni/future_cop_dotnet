@@ -45,7 +45,7 @@ public sealed class CaptureObjectiveGoldenTests
     {
         int playerCount = input[0];
         int p0Team = input[1];
-        int p1Team = playerCount == 1 ? -1 : input[2];
+        int p1Team = input[2];
         int spActive = input[3];
         int spTeam = spActive != 0 ? input[4] : -1;
         int spId = spActive != 0 ? input[5] : -1;
@@ -60,7 +60,7 @@ public sealed class CaptureObjectiveGoldenTests
 
         var outpost = new CaptureObjective(112, 0, 0, 0,
             teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 0, reachWord: 0x400);
-        var score = new MatchScore(p0Team, p1Team, spTeam, spId)
+        var score = new MatchScore(p0Team, p1Team, spTeam, spId, playerCount)
         {
             OnSinglePlayerCapture = () => spTimer = 0,
             OnSessionE0Changed = v => sessionE0 = v,

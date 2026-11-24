@@ -144,6 +144,13 @@ public class CaptureObjectiveTests
         Assert.Equal(new[] { 0, 1 }, twoPlayer.Score);
         Assert.Equal(new[] { 0, 1 }, twoPlayer.Captures);
         Assert.Equal(0, twoPlayer.SinglePlayerCaptures);
+
+        // Explicit gPlayerCount == 2 with slot 1 empty still skips the 1P branch (8002D1A0.c:204).
+        var twoPlayerEmptySlot1 = new MatchScore(player0Team: 1, player1Team: -1, singlePlayerTeam: 2, playerCount: 2);
+        twoPlayerEmptySlot1.RecordCapture(2);
+        Assert.Equal(new[] { 0, 0 }, twoPlayerEmptySlot1.Score);
+        Assert.Equal(new[] { 0, 0 }, twoPlayerEmptySlot1.Captures);
+        Assert.Equal(0, twoPlayerEmptySlot1.SinglePlayerCaptures);
     }
 
     // ---- retail records ------------------------------------------------------------------------

@@ -223,5 +223,5 @@ int main(void)
         if (menu.unkE0 != v[24]) return 110 + count;
         count++;
     }
-    return count == 6 ? 0 : 7;
+    return count == 7 ? 0 : 7;
 }

@@ -182,6 +182,9 @@ public sealed class MatchScore
     /// <summary>Team of the player in slot 0 / 1 of D_8009FA58, or -1 for an empty slot.</summary>
     public int[] PlayerTeams { get; }
 
+    /// <summary>gPlayerCount (D_8009FA0C): explicit player count tested by func_8002D1A0:204.</summary>
+    public int PlayerCount { get; }
+
     /// <summary>
     /// Team of gSinglePlayerEntity (D_8009F9EC), or -1 when none is active. In a one-player Precinct
     /// Assault match that entity is the strategic drone itself, set by func_800331CC:243 with the
@@ -208,16 +211,17 @@ public sealed class MatchScore
     public Action<int>? OnSessionE0Changed { get; set; }
 
     public MatchScore(int player0Team, int player1Team = -1, int singlePlayerTeam = -1,
-        int singlePlayerEntityId = -1)
+        int singlePlayerEntityId = -1, int? playerCount = null)
     {
         PlayerTeams = new[] { player0Team, player1Team };
+        PlayerCount = playerCount ?? (player1Team >= 0 ? 2 : 1);
         SinglePlayerTeam = singlePlayerTeam;
         SinglePlayerEntityId = singlePlayerEntityId;
     }
 
     /// <summary>
-    /// func_8002D1A0:201-224. In a one-player match (gPlayerCount == 1, i.e. slot 1 empty) with an
-    /// active gSinglePlayerEntity, captures by that entity's team take the :204-210 branch: the
+    /// func_8002D1A0:201-224. In a one-player match (gPlayerCount == 1) with an active
+    /// gSinglePlayerEntity, captures by that entity's team take the :204-210 branch: the
     /// second score/total word (+0x64[1] / +0x7C[1]) and e-&gt;unk134-&gt;unk3A increment, e-&gt;unk134-&gt;unk18
     /// is cleared to 0, m-&gt;unkE0 is set to 6 when <c>(capturerId &amp; 0x3FFF) == SinglePlayerEntityId</c>,
     /// and the player loop :211-224 does not run. Otherwise the loop credits every player in
@@ -225,7 +229,7 @@ public sealed class MatchScore
     /// </summary>
     public void RecordCapture(int team, int capturerId = -1)
     {
-        if (PlayerTeams[1] < 0 && SinglePlayerTeam >= 0 && SinglePlayerTeam == team)
+        if (PlayerCount == 1 && SinglePlayerTeam >= 0 && SinglePlayerTeam == team)
         {
             Score[1]++;
             Total[1]++;

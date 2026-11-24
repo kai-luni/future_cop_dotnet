@@ -77,4 +77,78 @@ public sealed class BuildOrderSpawnerTests
         Assert.Equal(2, spawner.Units.Count);
         Assert.Equal(1, spawner.PendingCount);
     }
+
+    [Fact]
+    public void SyncFromEconomy_Mode0ProductionStep_SpawnsOneTankPerCounterDelta()
+    {
+        var spawner = new BuildOrderSpawner();
+        var records = new[] { MakeRecord(1, BuildOrderSpawner.TankEntityType, team: 2, modelId: 30) };
+        spawner.ConfigureFromRecords(records, team: 2, basePos: (0x200000, 0, 0), targetPos: (0, 0, 0));
+
+        // Build a Mode-0 world with 10 own type-8 units so DroneStrategy stays in Mode 0 and runs
+        // base tank production (G.FB0 += n with n >= S4C + 6; DroneStrategy.cs RunMode0Economy).
+        var world = new Mode0StrategyWorld(random: 2);
+        world.G.S4C = 4;
+        world.G.F68 = 15;
+        world.G.F74 = 0;
+        world.G.F78 = 0x14;
+        world.G.F88 = 0;
+        world.G.A0 = new[] { 1, 1, 1, 1 };
+        spawner.Reset(world.G);
+
+        var self = new DroneStrategy.Self
+        {
+            Team = 2,
+            Strats = new() { Mode = 0, B1B = 1, C1C = 0 },
+        };
+
+        int fb0Before = world.G.FB0;
+        DroneStrategy.Tick(self, world);
+        int fb0Delta = world.G.FB0 - fb0Before;
+
+        Assert.True(fb0Delta >= world.G.S4C + 6,
+            $"expected Mode-0 FB0 delta >= {world.G.S4C + 6}, got {fb0Delta}");
+        Assert.Equal(12, fb0Delta);
+
+        int spawned = spawner.SyncFromEconomy(world.G, team: 2, (_, _) => 0x10000);
+        Assert.Equal(fb0Delta, spawned);
+        Assert.Equal(fb0Delta, spawner.Units.Count);
+        Assert.Equal(0, spawner.PendingCount);
+        Assert.All(spawner.Units, u =>
+        {
+            Assert.Equal(BuiltUnitKind.Tank, u.Kind);
+            Assert.Equal(BuildOrderSpawner.TankEntityType, u.EntityType);
+            Assert.Equal(30, u.ModelId);
+        });
+    }
+
+    private sealed class Mode0StrategyWorld : DroneStrategy.IWorld
+    {
+        private readonly int _random;
+
+        public Mode0StrategyWorld(int random)
+        {
+            _random = random;
+            Units = Enumerable.Range(0, 10).Select(_ => new DroneStrategy.StrategyUnit
+            {
+                Active = true,
+                Type = 8,
+                Team = 2,
+                Sub = 10,
+            }).ToList();
+        }
+
+        public IEnumerable<DroneStrategy.StrategyUnit> Units { get; }
+        public DroneStrategy.Glob G { get; } = new();
+        public DroneStrategy.StrategyUnit? PlayerEntities => null;
+        public byte[] SlotClaimOrder { get; } = { 3, 2, 1, 0 };
+        public byte[] AlternateSlotClaimOrder { get; } = { 1, 0, 3, 2 };
+        public int NextRandom() => _random;
+        public int Sqrt12(int v) => 0;
+        public void SetDroneAttackTarget(DroneStrategy.Self self, DroneStrategy.StrategyUnit? unit) { }
+        public void SetDronePursuitTarget(DroneStrategy.Self self, DroneStrategy.StrategyUnit unit) { }
+        public void UpdateStrategicPosition(DroneStrategy.Self self) { }
+        public int FrameTime() => 0;
+        public void SetSinglePlayerAiS4C(int value) { }
+    }
 }

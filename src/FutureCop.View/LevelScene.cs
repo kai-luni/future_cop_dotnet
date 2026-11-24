@@ -31,6 +31,7 @@ public sealed class LevelScene
     private IReadOnlyList<PlayerPart> _parts;
     private readonly Dictionary<int, Dictionary<int, TextureRecord>> _texByModel = new();
     private readonly Dictionary<int, Model> _modelsById = new();
+    private readonly Dictionary<int, short[]> _widthsByModelId = new();
     // Per-frame scratch storage. The old draw queue allocated closures and used a LINQ sort; the
     // terrain vertex buffer and packet lists were also recreated. Reuse them between frames.
     private readonly List<DrawItem> _drawQueue = new();
@@ -354,7 +355,11 @@ public sealed class LevelScene
     {
         MissionPath = misPath;
         _file = new MisFile(misPath);
-        foreach (var model in _file.Models) _modelsById.TryAdd(model.Id, model);
+        foreach (var model in _file.Models)
+        {
+            if (_modelsById.TryAdd(model.Id, model))
+                _widthsByModelId[model.Id] = model.Widths.TryGetValue(1, out var w) ? w.ToArray() : Array.Empty<short>();
+        }
         Map = LevelMap.FromMisFile(misPath);
         _textures = TextureBank.FromMisFile(misPath);
         // D_800A8EA4 = gTexpageBaseTable[9] = the packed word of Cbmp slot 9 (80063C5C.c:144).
@@ -630,7 +635,7 @@ public sealed class LevelScene
                 var projected = model.IsScripted
                     ? ScriptRender.Project(model, verts, 0, matrix, Focal, Ofx, Ofy, 1)
                     : ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1);
-                var widths = model.Widths.TryGetValue(1, out var uw) ? uw.ToArray() : Array.Empty<short>();
+                var widths = _widthsByModelId.TryGetValue(model.Id, out var uw) ? uw : Array.Empty<short>();
                 foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
                 {
                     _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });

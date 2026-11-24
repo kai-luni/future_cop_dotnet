@@ -22,4 +22,4 @@ compile "$HERE/harness.c" "$OUT/harness.o"
 mipsel-linux-gnu-as -o "$OUT/crt0.o" "$DECOMP/tests/host/crt0.s"
 mipsel-linux-gnu-ld -static -e __start -o "$OUT/capture_objective" "$OUT/crt0.o" "$OUT/harness.o" "$OUT/original.o"
 "$QEMU" "$OUT/capture_objective" < "$DOTNET/tests/golden/capture-objective.vectors"
-printf 'capture-objective: 6 shared vectors PASS (unchanged C, qemu-mipsel)\n'
+printf 'capture-objective: 7 shared vectors PASS (unchanged C, qemu-mipsel)\n'

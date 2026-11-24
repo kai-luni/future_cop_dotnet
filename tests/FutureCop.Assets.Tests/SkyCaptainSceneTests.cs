@@ -382,9 +382,17 @@ public class SkyCaptainSceneTests
         tankDrone.Ai.TickTimer = 0;
         tankDrone.Ai.Limit = short.MinValue;
 
+        int fb0Before = tankSky.Economy.FB0;
+        int expectedMinDelta = tankSky.Economy.S4C + 6;
+
         tankScene.AdvanceSkyCaptain(1);
 
-        var tank = Assert.Single(tankSky.BuiltUnits, u => u.Kind == BuiltUnitKind.Tank);
+        int fb0Delta = tankSky.Economy.FB0 - fb0Before;
+        Assert.True(fb0Delta >= expectedMinDelta,
+            $"expected Mode-0 FB0 delta >= {expectedMinDelta}, got {fb0Delta}");
+        var tanks = tankSky.BuiltUnits.Where(u => u.Kind == BuiltUnitKind.Tank).ToList();
+        Assert.Equal(fb0Delta, tanks.Count);
+        var tank = tanks[0];
         Assert.Equal(BuildOrderSpawner.TankEntityType, tank.EntityType);
         Assert.Equal(30, tank.ModelId);
         int tx0 = tank.X, tz0 = tank.Z;
@@ -441,8 +449,12 @@ public class SkyCaptainSceneTests
         sys.Advance(1, Flat);
         Assert.Empty(sys.BuiltUnits);
 
-        // Opt in: unit spawns and advances.
+        // Opt in: enabling re-baselines to current counters (no burst of pre-toggle increments),
+        // then subsequent counter growth spawns and advances.
         sys.EnableBuildOrderSpawner = true;
+        sys.Advance(1, Flat);
+        Assert.Empty(sys.BuiltUnits);
+        sys.Economy.FB0 += 1;
         sys.Advance(1, Flat);
         var unit = Assert.Single(sys.BuiltUnits);
         Assert.Equal(30, unit.ModelId);
@@ -454,5 +466,44 @@ public class SkyCaptainSceneTests
         sys.Advance(RetailClock.LocomotionTicks * 4, Flat);
         Assert.Equal(dronePos, sys.Drone.Body.Pos);
         Assert.True(unit.X != ux0 || unit.Z != uz0, "built unit froze while drone was in state 5");
+    }
+
+    [Fact]
+    public void EnableBuildOrderSpawner_TransitionFalseToTrue_RebaselinesWithoutBurstSpawn()
+    {
+        var tankRecord = new EntityRecord(20, BuildOrderSpawner.TankEntityType, 0, 0, 0, 0, 0x100, 2,
+            EntityContainer.Csac, 0, 0, new byte[0x54], Array.Empty<int>(),
+            new[] { new FutureCop.Assets.ResourceReference("Cobj", 30) });
+        var sys = new SkyCaptainSystem { Random = new RetailRandom(0x457) };
+        sys.SpawnFromRecords(new[] { Record(0x25, 0x00400000, 0, 0x00400000), tankRecord }, (0, 0, 0), Flat);
+
+        // Counter growth while disabled must not burst-spawn when the flag is turned on.
+        sys.Economy.FB0 += 5;
+        sys.Advance(1, Flat);
+        Assert.Empty(sys.BuiltUnits);
+
+        sys.EnableBuildOrderSpawner = true;
+        sys.Advance(1, Flat);
+        Assert.Empty(sys.BuiltUnits);
+
+        // Production after enabling spawns normally.
+        sys.Economy.FB0 += 2;
+        sys.Advance(1, Flat);
+        Assert.Equal(2, sys.BuiltUnits.Count);
+
+        // Redundant true -> true assignment does not reset active units.
+        sys.EnableBuildOrderSpawner = true;
+        Assert.Equal(2, sys.BuiltUnits.Count);
+
+        // Disabling, accumulating deltas, and re-enabling re-baselines again.
+        sys.EnableBuildOrderSpawner = false;
+        sys.Economy.FB0 += 3;
+        sys.EnableBuildOrderSpawner = true;
+        sys.Advance(1, Flat);
+        Assert.Empty(sys.BuiltUnits);
+
+        sys.Economy.FB0 += 1;
+        sys.Advance(1, Flat);
+        Assert.Single(sys.BuiltUnits);
     }
 }
