@@ -143,7 +143,8 @@ public sealed class LevelScene
         if (_objectives is not null) return;
         var records = MissionEntities.Load(_file);
         _playerTeam = records.FirstOrDefault(r => r.Type == 1 && r.Id == Actor.Id)?.Team ?? 0;
-        var objectives = records.Where(r => r.Type == CaptureObjective.EntityType)
+        var outpostRecords = records.Where(r => r.Type == CaptureObjective.EntityType).ToList();
+        var objectives = outpostRecords
             .Select(r => CaptureObjective.FromRecord(r, LevelGround.Height(Map, r.X, 0x100000, r.Z, out _)))
             .ToList();
         // Sky Captain (type 0x25): spawn before MatchScore so gSinglePlayerEntity's team and id
@@ -161,6 +162,21 @@ public sealed class LevelScene
             OnPostCaptureScript = _onPostCaptureScript,
         };
 
+        // The outposts and their child parts join the entity list that carries damage to message 5.
+        // A Csac record is spawned by gSpawnTargetableEntityId, which adds 0x10000000 (8004D4F8.c:59).
+        _entities = new EntityWorld
+        {
+            HasSlotDescriptor = slot => ObjectRegistry.GetSlotDescriptor(slot) is not null,
+        };
+        for (int i = 0; i < objectives.Count; i++)
+        {
+            var objective = objectives[i];
+            objective.Coord = CoordOf(objective.ModelId, objective.X, objective.Y, objective.Z);
+            if (objective.ChildPart is { } child)
+                child.Coord = CoordOf(child.ModelId, objective.X, objective.Y, objective.Z);
+            _entities.SpawnObjective(objective, targetable: outpostRecords[i].Container == EntityContainer.Csac);
+        }
+
         ObjectRegistry.InitMissionSpawnState();
         ObjectRegistry.LiveObjects.Allocate();
         _csacSpawner = new CsacUnitSpawner(ObjectRegistry);
@@ -170,6 +186,19 @@ public sealed class LevelScene
 
     private SkyCaptainSystem? _skyCaptain;
     private CsacUnitSpawner? _csacSpawner;
+    private EntityWorld? _entities;
+
+    /// <summary>
+    /// The entity list (D_8009FA40) of the outposts, their child parts and the projectiles that hit
+    /// them, or null until the live level is enabled. <see cref="AdvanceWalker"/> runs its retirement
+    /// stages every frame.
+    /// </summary>
+    public EntityWorld? Entities => _entities;
+
+    /// <summary>The collision coordinate of a model instance at a world position (func_80013AF0).</summary>
+    private CollisionCoord CoordOf(int modelId, int x, int y, int z) =>
+        CollisionCoord.FromFrameBounds(x, y, z,
+            _modelsById.TryGetValue(modelId, out var model) ? model.FrameBounds : Array.Empty<short[]>());
 
     /// <summary>Shared map-object occupancy and live-object registry (D_800A0C70 / D_800A7040 / D_8009F800).</summary>
     public MapObjectRegistry ObjectRegistry { get; } = new();
@@ -270,7 +299,69 @@ public sealed class LevelScene
         _weapons?.AdvanceRecoil(RetailClock.TicksPerFrame * frames);
         UpdateWalkerPose();
         _weapons?.Advance(_walker, _parts, padWord, RetailClock.TicksPerFrame * frames);
+        if (frames > 0) AdvanceRetirement();
         return result;
+    }
+
+    /// <summary>
+    /// The entity stages of the solo frame (800271A4.c:177-212) that turn a lethal hit into message 5:
+    /// the cull (:178, func_8004DF28), the deferred updates that send message 4 to every entity whose
+    /// health went below 0 (:182, func_8004CE04), the pair collision of the region pass that delivers
+    /// message 11 (:191, func_80026D5C -&gt; 80062FB4 -&gt; 80062614 -&gt; 800623FC -&gt; 800620D8) and the
+    /// retirement sweep that sends message 5 (:212, func_8004D598). The walker step above stands in
+    /// for the message-6 broadcast of :180, so a shot fired this frame is tested this frame, and a
+    /// lethal hit retires on the next frame, as in retail. A call that advances several frames at once
+    /// runs the stages once, after the batched shot motion.
+    /// </summary>
+    private void AdvanceRetirement()
+    {
+        if (_entities is not { } world || _walker is null) return;
+        world.CullActive(_walker.X, _walker.Z);
+        world.ProcessDeferredUpdates();
+        DeliverShotContacts(world);
+        world.SweepRetired();
+    }
+
+    /// <summary>
+    /// The projectile pairs of the region-pass collision. 80062C3C.c / 80062874.c fill the grid from
+    /// D_800A8F90, skipping entries whose id is not positive and entries with flag 4; 800623FC.c lets
+    /// an 0x800000 entity veto the pair through its message 10 and 800620D8.c:99-100 sends message 11
+    /// to both sides. A shot that touches an entity becomes a <see cref="ProjectileContact"/> spawned
+    /// into the list and leaves <see cref="LevelWeapons.Shots"/>: retail retires it on the next frame
+    /// through its own message 11 (80036624.c:155-156).
+    /// </summary>
+    /// <remarks>
+    /// Port assumptions: the projectile's pair flags are not ported, so the combined word is taken to
+    /// carry 0x200 (800620D8.c:75; without it no projectile ever hits); the projectile's own message 10
+    /// (80036624.c:127-142) only vetoes its owner, its carrier and same-kind projectiles, none of which
+    /// is an outpost or child part; the per-cell bucketing of 80062614.c is not modelled because
+    /// 800620D8.c:59 rejects pairs that far apart anyway.
+    /// </remarks>
+    private void DeliverShotContacts(EntityWorld world)
+    {
+        if (_weapons is not { Shots.Count: > 0 } weapons) return;
+        foreach (var shot in weapons.Shots.ToArray())
+        {
+            var shotCoord = CollisionCoord.FromFrameBounds(shot.X, shot.Y, shot.Z, shot.Model.FrameBounds);
+            var projectile = new ProjectileContact(Actor.Id, unchecked((short)shot.Definition.ObjWord00),
+                (byte)shot.Definition.ObjWord0E, shot.X, shot.Z);
+            bool spawned = false;
+            foreach (var entity in world.Active.ToArray())
+            {
+                if (entity.RuntimeId <= 0 || (entity.Flags & 4) != 0 || entity.Coord is not { } coord) continue;
+                if ((entity.Flags & LiveEntity.PairGateFlag) != 0 && entity.HandleMessage(10, world, projectile) == 0)
+                    continue;
+                if (!EntityPairCollision.ReachesPartTest(coord, shotCoord)) continue;
+                if (!spawned)
+                {
+                    world.Spawn(projectile);
+                    spawned = true;
+                }
+                entity.HandleMessage(11, world, projectile);
+                projectile.HandleMessage(11, world, entity);
+            }
+            if (spawned) weapons.Shots.Remove(shot);
+        }
     }
 
     /// <summary>

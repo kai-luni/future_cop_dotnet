@@ -30,7 +30,7 @@ public sealed record CaptureCandidate(int Id, int Type, int Team, int X, int Y, 
 /// outpost (8002C584.c:297-300). Retail type-0x24 outposts leave <c>obj-&gt;unk100</c> null
 /// (8002C584.c:303,323).
 /// </summary>
-public sealed class ObjectiveChildPart
+public sealed class ObjectiveChildPart : LiveEntity
 {
     /// <summary>Flags ORed onto unk104 at spawn (8002C584.c:299-300).</summary>
     public const uint InitialFlags = 0x00A00000;
@@ -41,17 +41,21 @@ public sealed class ObjectiveChildPart
     /// <summary>unk104-&gt;unk18: owning team, mirrored on capture (8002D1A0.c:201).</summary>
     public int Team { get; internal set; }
 
-    /// <summary>unk104-&gt;unk1C: health, mirrored by messages 9/11/14 (8002D664.c:160).</summary>
-    public int Health { get; internal set; }
-
-    /// <summary>unk104-&gt;flags (+0x24): bit 0x2000000 mirrored by messages 9/11/14 (8002D664.c:155-159); bit 8 set by message 4 (8002D664.c:173).</summary>
-    public uint Flags { get; internal set; }
+    // Health (unk104->unk1C, mirrored by messages 9/11/14, 8002D664.c:160) and Flags (+0x24: bit
+    // 0x2000000 mirrored by 8002D664.c:155-159, bit 8 set by message 4, 8002D664.c:173) are the
+    // inherited LiveEntity words.
 
     /// <summary>unk104-&gt;unk92: mirrored on capture (8002D1A0.c:209).</summary>
     public int Value92 { get; internal set; }
 
     /// <summary>unk104-&gt;unk93: mirrored on capture (8002D1A0.c:211).</summary>
     public int Value93 { get; internal set; }
+
+    /// <summary>unk104-&gt;unkB4: the outpost that spawned this part (8002C584.c:298).</summary>
+    public CaptureObjective? Parent { get; internal set; }
+
+    /// <summary>True once the retirement sweep unlinked the part (8004D598.c:66).</summary>
+    public bool Freed { get; private set; }
 
     public ObjectiveChildPart(int modelId, int team = 0, int value92 = 0, int value93 = 0, uint flags = InitialFlags)
     {
@@ -61,6 +65,57 @@ public sealed class ObjectiveChildPart
         Value93 = value93;
         Flags = flags;
     }
+
+    /// <summary>The source record's id, copied by gInitEntityBase (8002A5F4.c:119) from the outpost's state block.</summary>
+    public override int RecordId => Parent?.Id ?? 0;
+
+    /// <summary>
+    /// 0x24: gInitObjectFromDef spawns the part from the outpost's own state block, whose kind byte
+    /// +0x04 gInitEntityBase copies to +0x16 (8002C584.c:285-297, 8002A5F4.c:121); only its handler
+    /// differs (gHandleType11EntityMessages, 8002C584.c:282).
+    /// </summary>
+    public override int DispatchType => CaptureObjective.EntityType;
+
+    /// <inheritdoc/>
+    public override (int X, int Z) GroundPosition => Parent is { } p ? (p.X, p.Z) : (0, 0);
+
+    /// <summary>
+    /// gHandleType11EntityMessages (8002DEA8.c:60-100) for the chain's messages: message 10 is the
+    /// identity answer (:70-78), message 9 is blocked while linked (:79-83), messages 11/14 go to the
+    /// outpost (:84-90), message 6 only steps the animation (:91-96, not ported) and everything else -
+    /// message 4 and 5 included - is the base handler (:97-98).
+    /// </summary>
+    public override int HandleMessage(int message, EntityWorld world, object? data)
+    {
+        switch (message)
+        {
+            case 10:
+            {
+                // unk100 of a type-0x24 outpost is null (8002C584.c:323).
+                int flag = !ReferenceEquals(Parent, data) ? 1 : 0;               // :71-74
+                if (Parent is not null && data is null) flag = 0;                 // :75-77
+                return flag;
+            }
+            case 9:
+                if (Parent is not null) return 0;                                 // :80-82
+                return BaseHandler(message, this, world, data);
+            case 11:
+            case 14:
+                if (Parent is not null)                                           // :86
+                {
+                    Parent.HandleMessage(message, world, data);                   // :87
+                    return 0;
+                }
+                return BaseHandler(message, this, world, data);
+            case 6:
+                return 0;
+            default:
+                return BaseHandler(message, this, world, data);
+        }
+    }
+
+    /// <inheritdoc/>
+    protected internal override void OnFreed() => Freed = true;
 }
 
 /// <summary>
@@ -72,7 +127,7 @@ public sealed class ObjectiveChildPart
 /// obj+0xF6..+0xFB, the u16 st+0x4E to obj+0xFC, clears obj+0xFE and sets bit 0 of obj+0x24
 /// (8002C584.c:326-336; st is u16 at +0x4E, 8002C584.c:65).
 /// </remarks>
-public sealed class CaptureObjective
+public sealed class CaptureObjective : LiveEntity
 {
     /// <summary>Entity type of an outpost (func_8002D664:132).</summary>
     public const int EntityType = 0x24;
@@ -125,9 +180,6 @@ public sealed class CaptureObjective
     public int Value92 { get; private set; }
     public int Value93 { get; private set; }
 
-    /// <summary>obj+0x24.</summary>
-    public uint Flags { get; private set; }
-
     /// <summary>The two models of the record: the outpost itself (aRSL Cobj 0) and its child (aRSL Cobj 1).</summary>
     public int ModelId { get; }
     public int ChildModelId { get; }
@@ -142,17 +194,39 @@ public sealed class CaptureObjective
     /// <summary>Script word 2 of the request (obj+0x9C), an RPNS offset.</summary>
     public int Script { get; }
 
+    /// <summary>The ObjectiveField that books this outpost's captures and message 5, or null.</summary>
+    public ObjectiveField? Field { get; internal set; }
+
+    /// <summary>True once the retirement sweep unlinked the outpost (8004D598.c:66).</summary>
+    public bool Freed { get; private set; }
+
+    /// <param name="health">obj+0x1C and +0x1E of the outpost and its child part (8002A5F4.c:130,134).</param>
+    /// <param name="childFlags">The child part's +0x24 (see <see cref="FromRecord"/>).</param>
     public CaptureObjective(int id, int x, int y, int z, int teamA, int teamB, int markA, int markB,
         int stepA, int stepB, int reachWord, int team = 0, int mark = 0, int value92 = 0, int value93 = 0,
-        uint flags = 1, int modelId = 0, int childModelId = 0, int script = 0)
+        uint flags = 1, int modelId = 0, int childModelId = 0, int script = 0, short health = 0,
+        uint childFlags = ObjectiveChildPart.InitialFlags)
     {
         Id = id; X = x; Y = y; Z = z;
         TeamA = teamA; TeamB = teamB; MarkA = markA; MarkB = markB; StepA = stepA; StepB = stepB;
         ReachWord = reachWord; Team = team; Mark = mark; Value92 = value92; Value93 = value93;
         Flags = flags; ModelId = modelId; ChildModelId = childModelId; Script = script;
+        Health = health; MaxHealth = health;
         if (childModelId != 0)
-            ChildPart = new ObjectiveChildPart(childModelId, team, value92, value93);
+            ChildPart = new ObjectiveChildPart(childModelId, team, value92, value93, childFlags)
+            {
+                Parent = this, Health = health, MaxHealth = health,
+            };
     }
+
+    /// <inheritdoc/>
+    public override int RecordId => Id;
+
+    /// <inheritdoc/>
+    public override int DispatchType => EntityType;
+
+    /// <inheritdoc/>
+    public override (int X, int Z) GroundPosition => (X, Z);
 
     /// <summary>
     /// The outpost of a type-0x24 record. <paramref name="y"/> replaces the record's y because the
@@ -162,13 +236,39 @@ public sealed class CaptureObjective
     {
         ArgumentNullException.ThrowIfNull(record);
         if (record.Type != EntityType) throw new ArgumentException($"type {record.Type} is not an outpost", nameof(record));
-        return new CaptureObjective(record.Id, record.X, y, record.Z,
+        // func_8002A5F4:133-138 copies the flags, drops 0x400000 and promotes 0x80 to 0x01000000.
+        uint baseFlags = record.Flags & 0xFFBFFFFFu;
+        if ((baseFlags & IgnoreHitsFlag) != 0) baseFlags |= RetiredFlag;
+        // The child part runs the same base init, then gInitType11Entity's mode-0x24 branch
+        // (8002DC94.c:141: flags = (flags | 0x11) & 0xFFEFDEF7) and 8002C584.c:299-300.
+        uint childFlags = ((baseFlags | 0x11) & 0xFFEFDEF7u) | ObjectiveChildPart.InitialFlags;
+        int slot = record.U8(0x20);
+        int stateFlags = record.U8(0x40);
+        var objective = new CaptureObjective(record.Id, record.X, y, record.Z,
             teamA: record.U8(0x48), teamB: record.U8(0x49), markA: record.U8(0x4A), markB: record.U8(0x4B),
             stepA: record.U8(0x4C), stepB: record.U8(0x4D), reachWord: record.U16(0x4E),
             team: record.Team, mark: record.U8(0x1E), value92: record.U8(0x22), value93: record.U8(0x23),
-            // func_8002A5F4:133-135 copies the flags and drops 0x400000; func_8002C584:335 sets bit 0.
-            flags: (record.Flags & 0xFFBFFFFFu) | 1, modelId: record.Model(0), childModelId: record.Model(1),
-            script: record.Scripts[2]);
+            // func_8002C584:301 adds 0x800000 and :335 sets bit 0.
+            flags: baseFlags | PairGateFlag | 1, modelId: record.Model(0), childModelId: record.Model(1),
+            script: record.Scripts[2], health: unchecked((short)record.Health), childFlags: childFlags)
+        {
+            // 8002C584.c:276-278: state +0x40 bit 0x80 clears the outpost's slot before the base init.
+            SlotIndex = (byte)((stateFlags & 0x80) != 0 ? 0 : slot),
+            // 8002A5F4.c:122-126: min(source +0x1F, 15); :131 source +0x1A; :108-109 header words 9/10.
+            Flags19 = (byte)Math.Min(record.U8(0x1F), 15),
+            Word1A = unchecked((short)record.U16(0x1A)),
+            DamageScript = record.Scripts[0],
+            RetireScript = record.Scripts[1],
+        };
+        if (objective.ChildPart is { } child)
+        {
+            // 8002C584.c:288-292: the part keeps the slot unless state +0x40 bit 0x40 is set. Its spawn
+            // definition carries no script block (+0x0C is 0, 8002C584.c:284), so +0x94/+0x98 stay 0.
+            child.SlotIndex = (byte)((stateFlags & 0x40) != 0 ? 0 : slot);
+            child.Flags19 = objective.Flags19;
+            child.Word1A = objective.Word1A;
+        }
+        return objective;
     }
 
     /// <summary>
@@ -260,7 +360,8 @@ public sealed class CaptureObjective
         if (ChildPart is null) return;
         if ((parentFlags & DamageSyncFlag) != 0) ChildPart.Flags |= DamageSyncFlag;
         else ChildPart.Flags &= ~DamageSyncFlag;
-        ChildPart.Health = (ushort)health;
+        // The halfword store of :160; 8004CE04.c:11,59 reads it back as s16.
+        ChildPart.Health = unchecked((short)health);
     }
 
     /// <summary>
@@ -275,6 +376,60 @@ public sealed class CaptureObjective
 
     /// <summary>True when a capture would run the obj+0x9C script (8002D1A0.c:238).</summary>
     public bool RunsScriptOnCapture => Script != 0 && (Flags & ScriptFlag) != 0;
+
+    /// <summary>
+    /// gHandleLinkedPropEntity (8002D664.c:122-230) for a type-0x24 outpost:
+    /// <list type="bullet">
+    /// <item>10: a <see cref="CaptureCandidate"/> is offered to gTryCaptureObjective through
+    /// <see cref="Field"/> (:141-144); any other payload is an entity type that 8002D1A0.c:140-152
+    /// rejects without side effects. Returns the identity answer of :145-149.</item>
+    /// <item>9/11/14: the base handler applies the hit, then the child part mirrors bit 0x2000000 and
+    /// the health (:150-170).</item>
+    /// <item>4: bit 8 on the child part (:171-178), then the base retire.</item>
+    /// <item>5: the scoring of :179-225 through <see cref="MatchScore.RecordOutpostMessage5"/>, then the
+    /// base handler. The ground-key removal of :180-182 has no counterpart: the port registers no
+    /// ground keys.</item>
+    /// <item>6: gUpdatePropTick (:139-140) is not ported; returns 0.</item>
+    /// </list>
+    /// </summary>
+    public override int HandleMessage(int message, EntityWorld world, object? data)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        switch (message)
+        {
+            case 10:
+            {
+                if (data is CaptureCandidate candidate) Field?.Offer(this, candidate); // :142-144
+                int ret = 0;                                                      // :145
+                if (!ReferenceEquals(ChildPart, data)) ret = data is not null ? 1 : 0; // :146-148, unk100 == 0
+                return ret;
+            }
+            case 9:
+            case 11:
+            case 14:
+                BaseHandler(message, this, world, data);                          // :153
+                SyncChildOnDamageMessage(Health, Flags);                          // :154-161
+                return 0;                                                         // :170
+            case 4:
+                RetireChildren();                                                 // :172-174
+                break;
+            case 5:
+                if (Field is { } field)                                           // :183-224
+                    field.Score.RecordOutpostMessage5(this, SourceUnitWord,
+                        key => world.FindUnitById(key)?.RecordId);
+                break;
+            case 6:
+                return 0;
+        }
+        return BaseHandler(message, this, world, data);                           // :205, :229
+    }
+
+    /// <summary>Drops the freed outpost from <see cref="Field"/>: retail frees the block (8004D598.c:66).</summary>
+    protected internal override void OnFreed()
+    {
+        Freed = true;
+        Field?.Remove(this);
+    }
 }
 
 /// <summary>
@@ -386,8 +541,9 @@ public sealed class MatchScore
     /// was cleared. A scoring outpost gets there by damage: health below 0 writes +0x8C
     /// (8002AA1C.c:114-121), the frame sweep sends message 4 (8004CE04.c:59-60), and the base retire
     /// clears the id (8002AD58.c:89, 8004D958.c:59). The level-reset teardown sets 0x4000000 first
-    /// (8004CCDC.c:53), so it never scores. The scene has no caller yet because outposts take no damage
-    /// and are never retired in the port. Verified against unchanged C by
+    /// (8004CCDC.c:53), so it never scores. The port runs that chain in <see cref="EntityWorld"/>:
+    /// <see cref="CaptureObjective.HandleMessage"/> message 5 calls this method from
+    /// <see cref="EntityWorld.SweepRetired"/>. Verified against unchanged C by
     /// tests/golden/outpost-message5.vectors.
     /// </remarks>
     /// <param name="objective">The type-0x24 outpost receiving the message.</param>
@@ -475,6 +631,7 @@ public sealed class ObjectiveField
     {
         _objectives = objectives.ToList();
         Score = score;
+        foreach (var objective in _objectives) objective.Field = this;
     }
 
     /// <summary>
@@ -493,20 +650,33 @@ public sealed class ObjectiveField
     public int Touch(CaptureCandidate other)
     {
         int taken = 0;
-        foreach (var objective in _objectives)
-        {
-            int mode = objective.TryCapture(other, out var claimant);
-            if (mode == 0 || claimant is null) continue;
-            Score.RecordCapture(claimant.Team, claimant.Id);
-            // 8002D1A0.c:238-239: runs inside gTryCaptureObjective after scoring (not at msg 5).
-            // Guard order: self-&gt;unk9C != 0 &amp;&amp; (*self-&gt;unk9C != 0, left to VM/hook) &amp;&amp; (self-&gt;unk24 &amp; 0x100000).
-            if (objective.Script != 0 && (objective.Flags & CaptureObjective.ScriptFlag) != 0)
-                OnPostCaptureScript?.Invoke(objective, claimant.Id & 0x7FFF);
-            _recent.Add((objective, mode));
-            taken++;
-        }
+        // Offer may not change the list, but a snapshot keeps the walk independent of the sweep.
+        foreach (var objective in _objectives.ToArray())
+            if (Offer(objective, other) != 0) taken++;
         return taken;
     }
+
+    /// <summary>
+    /// gTryCaptureObjective (8002D1A0.c:126-240) for one outpost: the claim of
+    /// <see cref="CaptureObjective.TryCapture(CaptureCandidate, out CaptureCandidate?)"/>, the scoring of
+    /// <see cref="MatchScore.RecordCapture"/> and the post-capture script hook. Returns the mode, or 0.
+    /// </summary>
+    public int Offer(CaptureObjective objective, CaptureCandidate other)
+    {
+        ArgumentNullException.ThrowIfNull(objective);
+        int mode = objective.TryCapture(other, out var claimant);
+        if (mode == 0 || claimant is null) return 0;
+        Score.RecordCapture(claimant.Team, claimant.Id);
+        // 8002D1A0.c:238-239: runs inside gTryCaptureObjective after scoring (not at msg 5).
+        // Guard order: self-&gt;unk9C != 0 &amp;&amp; (*self-&gt;unk9C != 0, left to VM/hook) &amp;&amp; (self-&gt;unk24 &amp; 0x100000).
+        if (objective.Script != 0 && (objective.Flags & CaptureObjective.ScriptFlag) != 0)
+            OnPostCaptureScript?.Invoke(objective, claimant.Id & 0x7FFF);
+        _recent.Add((objective, mode));
+        return mode;
+    }
+
+    /// <summary>Removes an outpost the retirement sweep freed (8004D598.c:66); it is no longer touched or drawn.</summary>
+    internal void Remove(CaptureObjective objective) => _objectives.Remove(objective);
 
     /// <summary>Returns and clears the captures since the previous call.</summary>
     public IReadOnlyList<(CaptureObjective Objective, int Mode)> TakeCaptures()
