@@ -110,12 +110,29 @@ public sealed class LevelScene
 
     private ObjectiveField? _objectives;
     private int _playerTeam;
+    private Action<CaptureObjective, int>? _onPostCaptureScript;
 
     /// <summary>
     /// The capturable outposts (entity type 0x24) of this mission and the match score they feed, or
     /// null until the live level is enabled.
     /// </summary>
     public ObjectiveField? Objectives => _objectives;
+
+    /// <summary>
+    /// Hook for the post-capture script call at 8002D1A0.c:238-239
+    /// (<c>gInterpretEntityScript(self-&gt;unk9C, 0, other-&gt;unk14 &amp; 0x7FFF)</c>). Forwarded to
+    /// <see cref="ObjectiveField.OnPostCaptureScript"/> when <see cref="EnableObjectives"/> runs or
+    /// when updated afterwards. Modeled as a hook because the RPNS bytecode VM is not ported.
+    /// </summary>
+    public Action<CaptureObjective, int>? OnPostCaptureScript
+    {
+        get => _onPostCaptureScript;
+        set
+        {
+            _onPostCaptureScript = value;
+            if (_objectives is not null) _objectives.OnPostCaptureScript = value;
+        }
+    }
 
     /// <summary>
     /// Places the mission's outposts: every type-0x24 record of a Csac request (32 in CONFT.MIS). The
@@ -139,7 +156,10 @@ public sealed class LevelScene
         int droneId = _skyCaptain.Record?.Id ?? -1;
         var score = new MatchScore(_playerTeam, singlePlayerTeam: droneTeam, singlePlayerEntityId: droneId);
         _skyCaptain.BindScore(score);
-        _objectives = new ObjectiveField(objectives, score);
+        _objectives = new ObjectiveField(objectives, score)
+        {
+            OnPostCaptureScript = _onPostCaptureScript,
+        };
 
         ObjectRegistry.InitMissionSpawnState();
         ObjectRegistry.LiveObjects.Allocate();

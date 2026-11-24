@@ -97,8 +97,110 @@ public class CaptureObjectiveTests
     [Fact]
     public void BusyPlayerIsRejected()
     {
-        // :135 requires the player's control block +0x40 to be zero.
+        // 8002D1A0.c:147 requires the player's control block +0x40 (special.phase) to be zero.
         Assert.Equal(0, Outpost().TryCapture(new CaptureCandidate(12, 1, 1, 0, 0, 0, 0, Busy: true)));
+        Assert.False(CaptureCandidate.IsSpecialActionBlocked(WeaponInput.PhasePressed));
+        Assert.True(CaptureCandidate.IsSpecialActionBlocked(WeaponInput.PhaseReleased));
+        Assert.True(CaptureCandidate.IsSpecialActionBlocked(WeaponInput.PhaseIdle));
+        Assert.True(CaptureCandidate.IsSpecialActionBlocked(WeaponInput.PhaseHeld));
+    }
+
+    // ---- 0x12 carrier dereference, 8002D1A0.c:138-152 -----------------------------------------
+
+    [Fact]
+    public void Type12CarrierWithNullCarriedIsRejected()
+    {
+        var outpost = Outpost();
+        var carrier = new CaptureCandidate(99, CaptureCandidate.CarrierType, 1, 0, 0, 0, 0, Carried: null);
+        Assert.Equal(0, outpost.TryCapture(carrier));
+        Assert.Equal(0, outpost.CaptureMode);
+    }
+
+    [Fact]
+    public void Type12CarrierDereferencesToCarriedEntityForDistanceBusyScoreAndScript()
+    {
+        var outpost = new CaptureObjective(112, 0, 0, 0,
+            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 0, reachWord: 0x400,
+            flags: 1u | CaptureObjective.ScriptFlag, childModelId: 32, script: 0x63B);
+        var score = new MatchScore(player0Team: 1);
+        var scriptCalls = new List<(CaptureObjective Obj, int ClaimantId)>();
+        var field = new ObjectiveField(new[] { outpost }, score)
+        {
+            OnPostCaptureScript = (o, id) => scriptCalls.Add((o, id)),
+        };
+
+        // Busy carried player is rejected (8002D1A0.c:141-147).
+        var busyPlayer = new CaptureCandidate(0x800C, 1, 1, 0, 0, 0, 0, Busy: true);
+        var busyCarrier = new CaptureCandidate(99, CaptureCandidate.CarrierType, 1, 999_999, 0, 0, 0, Carried: busyPlayer);
+        Assert.Equal(0, field.Touch(busyCarrier));
+        Assert.Empty(scriptCalls);
+
+        // Carrier itself is far away, but the dereferenced player is inside reach (8002D1A0.c:142, 155).
+        var player = new CaptureCandidate(0x800C, 1, 1, 100, 0, 0, 0, Busy: false);
+        var carrier = new CaptureCandidate(99, CaptureCandidate.CarrierType, 1, 999_999, 0, 0, 0, Carried: player);
+        Assert.Equal(1, field.Touch(carrier));
+        Assert.Equal(new[] { 1, 0 }, score.Score);
+        // Script receives the dereferenced player's id masked to 15 bits (8002D1A0.c:239).
+        Assert.Single(scriptCalls);
+        Assert.Same(outpost, scriptCalls[0].Obj);
+        Assert.Equal(0x000C, scriptCalls[0].ClaimantId);
+    }
+
+    // ---- child-part transfer & message sync, 8002D1A0.c:201-211 / 8002D664.c:150-178 ----------
+
+    [Fact]
+    public void ChildPartMirrorsCaptureDamageAndRetireState()
+    {
+        var outpost = new CaptureObjective(112, 0, 0, 0,
+            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 5, reachWord: 0x400,
+            value92: 10, value93: 2, childModelId: 32);
+        var child = Assert.IsType<ObjectiveChildPart>(outpost.ChildPart);
+        Assert.Equal(ObjectiveChildPart.InitialFlags, child.Flags);
+
+        // 8002D1A0.c:201, 209, 211: capture propagates Team, Value92 and Value93 to unk104.
+        Assert.Equal(2, outpost.TryCapture(new CaptureCandidate(16, 1, 2, 0, 0, 0, 0)));
+        Assert.Equal(2, child.Team);
+        Assert.Equal((byte)(10 + 60 * 2), child.Value92);
+        Assert.Equal((byte)(2 + 5 * 2), child.Value93);
+
+        // 8002D664.c:150-170: messages 9/11/14 mirror bit 0x2000000 and unk1C (health).
+        outpost.SyncChildOnDamageMessage(health: 450, parentFlags: CaptureObjective.DamageSyncFlag);
+        Assert.Equal(450, child.Health);
+        Assert.NotEqual(0u, child.Flags & CaptureObjective.DamageSyncFlag);
+        outpost.SyncChildOnDamageMessage(health: 300, parentFlags: 0);
+        Assert.Equal(300, child.Health);
+        Assert.Equal(0u, child.Flags & CaptureObjective.DamageSyncFlag);
+
+        // 8002D664.c:171-178: message 4 sets bit 8 on unk104.
+        outpost.RetireChildren();
+        Assert.NotEqual(0u, child.Flags & CaptureObjective.ChildRetireFlag);
+    }
+
+    // ---- post-capture script hook, 8002D1A0.c:238-239 -----------------------------------------
+
+    [Fact]
+    public void PostCaptureScriptHookHonorsRetailGuardsAndOrder()
+    {
+        var events = new List<string>();
+        var withScript = new CaptureObjective(112, 0, 0, 0,
+            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 0, reachWord: 0x400,
+            flags: 1u | CaptureObjective.ScriptFlag, script: 0x63B);
+        var noScript = new CaptureObjective(113, 0, 0, 0,
+            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 0, reachWord: 0x400,
+            flags: 1u | CaptureObjective.ScriptFlag, script: 0);
+        var noFlag = new CaptureObjective(114, 0, 0, 0,
+            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 0, reachWord: 0x400,
+            flags: 1u, script: 0x63B);
+
+        var score = new MatchScore(player0Team: 1);
+        var field = new ObjectiveField(new[] { withScript, noScript, noFlag }, score)
+        {
+            // Runs after Score.RecordCapture (8002D1A0.c:213-239), so Score[0] is already 1.
+            OnPostCaptureScript = (o, arg) => events.Add($"{o.Id}:{arg:X}:{score.Score[0]}"),
+        };
+
+        Assert.Equal(3, field.Touch(new CaptureCandidate(0x8123, 1, 1, 0, 0, 0, 0)));
+        Assert.Equal(new[] { "112:123:1" }, events);
     }
 
     [Fact]
@@ -233,6 +335,8 @@ public class CaptureObjectiveTests
         string? path = ConftPath();
         if (path == null) return;
         var scene = new LevelScene(path);
+        var fired = new List<(int ObjectiveId, int Script, int ClaimantId)>();
+        scene.OnPostCaptureScript = (o, claimantId) => fired.Add((o.Id, o.Script, claimantId));
         scene.EnableObjectives();
         var field = scene.Objectives!;
         Assert.Equal(32, field.Objectives.Count);
@@ -240,5 +344,7 @@ public class CaptureObjectiveTests
         Assert.Equal(1, field.Touch(new CaptureCandidate(12, 1, 1, target.X, target.Y, target.Z, 0)));
         var session = scene.ScoreSession(new HudSession());
         Assert.Equal((1, 1, 0), (session.Mode, session.Score0, session.Score1));
+        if (target.RunsScriptOnCapture)
+            Assert.Equal(new[] { (target.Id, target.Script, 12) }, fired);
     }
 }

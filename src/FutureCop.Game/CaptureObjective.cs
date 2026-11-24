@@ -4,15 +4,64 @@ namespace FutureCop.Game;
 /// An entity that may take an outpost, as gTryCaptureObjective (func_8002D1A0) reads it.
 /// </summary>
 /// <param name="Id">obj+0x14, the entity id.</param>
-/// <param name="Type">obj+0x16: 1 player, 5 ground unit, 0x25 strategic drone are accepted.</param>
+/// <param name="Type">obj+0x16: 1 player, 0x12 player companion/carrier (dereferenced via <paramref name="Carried"/>), 5 ground unit, 0x25 strategic drone are accepted (8002D1A0.c:140-152).</param>
 /// <param name="Team">obj+0x18.</param>
 /// <param name="X">Capture point x (obj+0x5C).</param>
 /// <param name="Y">Capture point y (obj+0x60).</param>
 /// <param name="Z">Capture point z (obj+0x64).</param>
 /// <param name="Radius">obj+0x68, the model instance radius (func_80013AF0:83 stores it shifted left by four).</param>
-/// <param name="Busy">For a player: its control block +0x40 is non-zero, which func_8002D1A0:135 rejects.</param>
-public readonly record struct CaptureCandidate(int Id, int Type, int Team, int X, int Y, int Z, int Radius,
-    bool Busy = false);
+/// <param name="Busy">For a player: <c>e-&gt;unkAC-&gt;unk40 != 0</c>, which 8002D1A0.c:147 rejects. In retail, control block +0x40 is <c>control-&gt;special.phase</c> (80055E10.c:13,65; 800573A4.c:261-262; 8005780C.c:43-56), so 0 is the L1 press edge (<see cref="WeaponInput.PhasePressed"/>).</param>
+/// <param name="Carried">obj+0xB4: for a type-0x12 carrier/companion entity (80057914.c:71,94; 80059ABC.c:64), the linked entity that 8002D1A0.c:141-144 dereferences to; null aborts the capture.</param>
+public sealed record CaptureCandidate(int Id, int Type, int Team, int X, int Y, int Z, int Radius,
+    bool Busy = false, CaptureCandidate? Carried = null)
+{
+    /// <summary>Entity type of a player companion/carrier whose +0xB4 points to the player (8002D1A0.c:140-144, 80057914.c:94).</summary>
+    public const int CarrierType = 0x12;
+
+    /// <summary>
+    /// Retail <c>e-&gt;unkAC-&gt;unk40 != 0</c> predicate (8002D1A0.c:147): returns true (rejected) when
+    /// <see cref="WeaponInput.SpecialPhase"/> is not on the press edge (<see cref="WeaponInput.PhasePressed"/> == 0).
+    /// </summary>
+    public static bool IsSpecialActionBlocked(int specialPhase) => specialPhase != WeaponInput.PhasePressed;
+}
+
+/// <summary>
+/// The linked child entity (<c>obj-&gt;unk104</c>) spawned from the second aRSL model of a type-0x24
+/// outpost (8002C584.c:297-300). Retail type-0x24 outposts leave <c>obj-&gt;unk100</c> null
+/// (8002C584.c:303,323).
+/// </summary>
+public sealed class ObjectiveChildPart
+{
+    /// <summary>Flags ORed onto unk104 at spawn (8002C584.c:299-300).</summary>
+    public const uint InitialFlags = 0x00A00000;
+
+    /// <summary>aRSL Cobj 1 model id.</summary>
+    public int ModelId { get; }
+
+    /// <summary>unk104-&gt;unk18: owning team, mirrored on capture (8002D1A0.c:201).</summary>
+    public int Team { get; internal set; }
+
+    /// <summary>unk104-&gt;unk1C: health, mirrored by messages 9/11/14 (8002D664.c:160).</summary>
+    public int Health { get; internal set; }
+
+    /// <summary>unk104-&gt;flags (+0x24): bit 0x2000000 mirrored by messages 9/11/14 (8002D664.c:155-159); bit 8 set by message 4 (8002D664.c:173).</summary>
+    public uint Flags { get; internal set; }
+
+    /// <summary>unk104-&gt;unk92: mirrored on capture (8002D1A0.c:209).</summary>
+    public int Value92 { get; internal set; }
+
+    /// <summary>unk104-&gt;unk93: mirrored on capture (8002D1A0.c:211).</summary>
+    public int Value93 { get; internal set; }
+
+    public ObjectiveChildPart(int modelId, int team = 0, int value92 = 0, int value93 = 0, uint flags = InitialFlags)
+    {
+        ModelId = modelId;
+        Team = team;
+        Value92 = value92;
+        Value93 = value93;
+        Flags = flags;
+    }
+}
 
 /// <summary>
 /// A capturable outpost: entity type 0x24, handled by gHandleLinkedPropEntity (func_8002D664), whose
@@ -31,8 +80,14 @@ public sealed class CaptureObjective
     /// <summary>Constant part of the capture radius (func_8002D1A0:157).</summary>
     public const int BaseReach = 0x4000;
 
-    /// <summary>Flag of obj+0x24 that lets a capture run the obj+0x9C script (func_8002D1A0:226).</summary>
+    /// <summary>Flag of obj+0x24 that lets a capture run the obj+0x9C script (8002D1A0.c:238).</summary>
     public const uint ScriptFlag = 0x100000;
+
+    /// <summary>Flag of obj+0x24 mirrored onto child parts by messages 9/11/14 (8002D664.c:155-167).</summary>
+    public const uint DamageSyncFlag = 0x2000000;
+
+    /// <summary>Flag bit ORed onto child parts by message 4 retire (8002D664.c:171-177).</summary>
+    public const uint ChildRetireFlag = 8;
 
     public int Id { get; }
     public int X { get; }
@@ -77,6 +132,13 @@ public sealed class CaptureObjective
     public int ModelId { get; }
     public int ChildModelId { get; }
 
+    /// <summary>
+    /// The linked child entity (<c>obj-&gt;unk104</c>) spawned from <see cref="ChildModelId"/>
+    /// (8002C584.c:297-300), or null when <see cref="ChildModelId"/> is 0. Retail leaves
+    /// <c>obj-&gt;unk100</c> null for type 0x24 (8002C584.c:303,323).
+    /// </summary>
+    public ObjectiveChildPart? ChildPart { get; }
+
     /// <summary>Script word 2 of the request (obj+0x9C), an RPNS offset.</summary>
     public int Script { get; }
 
@@ -88,6 +150,8 @@ public sealed class CaptureObjective
         TeamA = teamA; TeamB = teamB; MarkA = markA; MarkB = markB; StepA = stepA; StepB = stepB;
         ReachWord = reachWord; Team = team; Mark = mark; Value92 = value92; Value93 = value93;
         Flags = flags; ModelId = modelId; ChildModelId = childModelId; Script = script;
+        if (childModelId != 0)
+            ChildPart = new ObjectiveChildPart(childModelId, team, value92, value93);
     }
 
     /// <summary>
@@ -130,36 +194,86 @@ public sealed class CaptureObjective
     public int Limit(int radius) => (ReachWord << 4) + radius + BaseReach;
 
     /// <summary>
-    /// gTryCaptureObjective (func_8002D1A0:125-200). Returns the capture mode (1 or 2) when
+    /// gTryCaptureObjective (8002D1A0.c:137-212). Returns the capture mode (1 or 2) when
     /// <paramref name="other"/> takes the outpost, otherwise 0. Scoring is left to
-    /// <see cref="MatchScore.RecordCapture"/>, which mirrors :201-224.
+    /// <see cref="MatchScore.RecordCapture"/> (8002D1A0.c:213-237) and the post-capture script
+    /// hook to <see cref="ObjectiveField.OnPostCaptureScript"/> (8002D1A0.c:238-239).
     /// </summary>
-    public int TryCapture(CaptureCandidate other)
+    public int TryCapture(CaptureCandidate other) => TryCapture(other, out _);
+
+    /// <summary>
+    /// gTryCaptureObjective (8002D1A0.c:137-212), also returning the resolved claimant in
+    /// <paramref name="claimant"/> (the dereferenced <see cref="CaptureCandidate.Carried"/> entity
+    /// for type 0x12, or <paramref name="other"/> itself) so scoring and the post-capture script
+    /// use the same entity retail does (8002D1A0.c:141-144, 197, 222, 239).
+    /// </summary>
+    public int TryCapture(CaptureCandidate other, out CaptureCandidate? claimant)
     {
-        if (CaptureMode != 0) return 0;                                          // :125
-        if (other.Team != TeamA && other.Team != TeamB) return 0;               // :126
-        if (other.Type == 1) { if (other.Busy) return 0; }                      // :128-137
-        else if (other.Type != 5 && other.Type != 0x25) return 0;               // :138-139
+        ArgumentNullException.ThrowIfNull(other);
+        claimant = null;
+        if (CaptureMode != 0) return 0;                                          // 8002D1A0.c:137
+        if (other.Team != TeamA && other.Team != TeamB) return 0;                // 8002D1A0.c:138
+        if (other.Type == 1 || other.Type == CaptureCandidate.CarrierType)       // 8002D1A0.c:140
+        {
+            if (other.Type == CaptureCandidate.CarrierType)                      // 8002D1A0.c:141
+            {
+                if (other.Carried is null) return 0;                             // 8002D1A0.c:142-143
+                other = other.Carried;                                           // 8002D1A0.c:142
+            }
+            if (other.Busy) return 0;                                            // 8002D1A0.c:147
+        }
+        else if (other.Type != 5 && other.Type != 0x25) return 0;                // 8002D1A0.c:150-152
 
-        int limit = Limit(other.Radius);
-        int flat = OctagonalDistance(Z - other.Z, X - other.X);                 // :144-156
-        if (flat - limit >= 0) return 0;                                        // :158
-        // :160-180: a strategic drone (0x25) is tested on the ground plane only.
+        int limit = Limit(other.Radius);                                         // 8002D1A0.c:169
+        int flat = OctagonalDistance(Z - other.Z, X - other.X);                  // 8002D1A0.c:156-168
+        if (flat - limit >= 0) return 0;                                         // 8002D1A0.c:170
+        // 8002D1A0.c:172-195: a strategic drone (0x25) is tested on the ground plane only.
         int dist = other.Type == 0x25 ? flat : OctagonalDistance(flat, Y - other.Y);
-        if (dist - limit >= 0) return 0;                                        // :183
+        if (dist - limit >= 0) return 0;                                         // 8002D1A0.c:195
 
-        int mode = other.Team == TeamA ? 1 : 2;                                 // :185-186
-        CaptureMode = mode;
-        Team = other.Team;                                                      // :188-189
-        OpposingTeam = mode == 1 ? TeamB : TeamA;                               // :192-194
-        Mark = mode == 1 ? MarkA : MarkB;                                       // :195
-        Value92 = (byte)(Value92 + StepA * mode);                               // :196
-        Value93 = (byte)(Value93 + StepB * mode);                               // :198
-        Flags &= ~1u;                                                           // :200
+        int mode = other.Team == TeamA ? 1 : 2;                                  // 8002D1A0.c:197-198
+        CaptureMode = mode;                                                      // 8002D1A0.c:199
+        Team = other.Team;                                                       // 8002D1A0.c:200
+        OpposingTeam = mode == 1 ? TeamB : TeamA;                                // 8002D1A0.c:204-206
+        Mark = mode == 1 ? MarkA : MarkB;                                        // 8002D1A0.c:207
+        Value92 = (byte)(Value92 + StepA * mode);                                // 8002D1A0.c:208
+        Value93 = (byte)(Value93 + StepB * mode);                                // 8002D1A0.c:210
+        Flags &= ~1u;                                                            // 8002D1A0.c:212
+        if (ChildPart is not null)
+        {
+            // 8002D1A0.c:201, 209, 211: mirror team and counters onto obj-&gt;unk104.
+            ChildPart.Team = other.Team;
+            ChildPart.Value92 = Value92;
+            ChildPart.Value93 = Value93;
+        }
+        claimant = other;
         return mode;
     }
 
-    /// <summary>True when a capture would run the obj+0x9C script (func_8002D1A0:226).</summary>
+    /// <summary>
+    /// Mirrors bit 0x2000000 of <paramref name="parentFlags"/> and <paramref name="health"/>
+    /// (<c>obj-&gt;unk1C</c>) onto <see cref="ChildPart"/>, as <c>gHandleLinkedPropEntity</c>
+    /// messages 9, 11 and 14 do on <c>obj-&gt;unk104</c> (8002D664.c:150-170).
+    /// </summary>
+    public void SyncChildOnDamageMessage(int health, uint parentFlags)
+    {
+        if (ChildPart is null) return;
+        if ((parentFlags & DamageSyncFlag) != 0) ChildPart.Flags |= DamageSyncFlag;
+        else ChildPart.Flags &= ~DamageSyncFlag;
+        ChildPart.Health = (ushort)health;
+    }
+
+    /// <summary>
+    /// Sets bit 8 on <see cref="ChildPart"/> (<c>obj-&gt;unk104-&gt;flags |= 8</c>), as
+    /// <c>gHandleLinkedPropEntity</c> message 4 does on retire (8002D664.c:171-178).
+    /// </summary>
+    public void RetireChildren()
+    {
+        if (ChildPart is null) return;
+        ChildPart.Flags |= ChildRetireFlag;
+    }
+
+    /// <summary>True when a capture would run the obj+0x9C script (8002D1A0.c:238).</summary>
     public bool RunsScriptOnCapture => Script != 0 && (Flags & ScriptFlag) != 0;
 }
 
@@ -260,6 +374,17 @@ public sealed class ObjectiveField
     public IReadOnlyList<CaptureObjective> Objectives => _objectives;
     public MatchScore Score { get; }
 
+    /// <summary>
+    /// Hook for <c>gInterpretEntityScript(self-&gt;unk9C, 0, other-&gt;unk14 &amp; 0x7FFF)</c>
+    /// (8002D1A0.c:238-239), invoked at claim time right after scoring when
+    /// <see cref="CaptureObjective.Script"/> is non-zero and
+    /// <see cref="CaptureObjective.ScriptFlag"/> (<c>0x100000</c>) is set on
+    /// <see cref="CaptureObjective.Flags"/>. Modeled as a hook because the RPNS bytecode VM
+    /// (<c>func_80069D68</c>) is not ported; the <c>*self-&gt;unk9C != 0</c> first-byte check
+    /// requires the RPNS bytecode buffer and is left to the wired handler.
+    /// </summary>
+    public Action<CaptureObjective, int>? OnPostCaptureScript { get; set; }
+
     /// <summary>Outposts captured since the last call of <see cref="TakeCaptures"/>, for logs and the viewer.</summary>
     private readonly List<(CaptureObjective Objective, int Mode)> _recent = new();
 
@@ -287,9 +412,13 @@ public sealed class ObjectiveField
         int taken = 0;
         foreach (var objective in _objectives)
         {
-            int mode = objective.TryCapture(other);
-            if (mode == 0) continue;
-            Score.RecordCapture(other.Team, other.Id);
+            int mode = objective.TryCapture(other, out var claimant);
+            if (mode == 0 || claimant is null) continue;
+            Score.RecordCapture(claimant.Team, claimant.Id);
+            // 8002D1A0.c:238-239: runs inside gTryCaptureObjective after scoring (not at msg 5).
+            // Guard order: self-&gt;unk9C != 0 &amp;&amp; (*self-&gt;unk9C != 0, left to VM/hook) &amp;&amp; (self-&gt;unk24 &amp; 0x100000).
+            if (objective.Script != 0 && (objective.Flags & CaptureObjective.ScriptFlag) != 0)
+                OnPostCaptureScript?.Invoke(objective, claimant.Id & 0x7FFF);
             _recent.Add((objective, mode));
             taken++;
         }
