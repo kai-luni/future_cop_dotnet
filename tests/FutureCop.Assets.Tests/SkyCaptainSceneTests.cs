@@ -154,6 +154,35 @@ public class SkyCaptainSceneTests
         }
     }
 
+    [Fact]
+    public void ScenePath_StrategyTimerPaysUpkeepAndSetsPursuitTarget()
+    {
+        string? disc = LevelTerrainTests.FindDisc();
+        string? path = disc is null ? null : ModulePath.Resolve(disc, "conft.mis");
+        if (path is null) Assert.NotEqual("1", Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL"));
+        if (path is null) return;
+
+        var scene = new LevelScene(path);
+        scene.EnableMechMovement();
+        scene.EnableFiring();
+        var sky = Assert.IsType<SkyCaptainSystem>(scene.SkyCaptain);
+        var drone = Assert.IsType<StrategicDrone>(sky.Drone);
+        drone.Ai.TickTimer = 0;
+        drone.Ai.Limit = short.MinValue;
+        var score = Assert.IsType<ObjectiveField>(scene.Objectives).Score.Score;
+        score[1] = 100;
+        sky.Economy.F74 = sky.Economy.F78 = 0x14; // block purchases, leaving only the 0x32 upkeep
+
+        scene.AdvanceSkyCaptain(1);
+
+        Assert.Equal(50, score[1]);
+        Assert.Equal(50, sky.Economy.F68);
+        Assert.Equal(1, sky.Economy.FBC);
+        Assert.NotNull(drone.Body.C8);
+        Assert.Equal(scene.Actor.Id, drone.Body.C8.Id);
+        Assert.Equal(drone.Body.C8.Id, drone.Body.CC);
+    }
+
     /// <summary>Retail-gated: the live CONFT level draws the Sky Captain when the mission has one.</summary>
     [Fact]
     public void Render_EnqueuesDrawItems_WhenVisible()

@@ -131,7 +131,7 @@ public sealed class LevelScene
         _skyCaptain = new SkyCaptainSystem();
         _skyCaptain.BindMap(Map);
         _skyCaptain.SpawnFromRecords(records, MechWorld,
-            pos => LevelGround.Height(Map, pos[0], pos[1], pos[2], out _));
+            pos => LevelGround.Height(Map, pos[0], pos[1], pos[2], out _), Actor.Id, _objectives?.Objectives);
     }
 
     private SkyCaptainSystem? _skyCaptain;

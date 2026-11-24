@@ -64,7 +64,7 @@ public static class DroneStrategy
     {
         public int Team;                       // +0x18
         public int[] Pos = new int[3];        // +0x50
-        public StrategyUnit? B8Ref;            // +0xB4 (never written here)
+        public StrategyUnit? B8Ref;            // +0xB8 (written by func_80033608)
         public StrategyUnit? C8Ref;             // +0xC8 current target
         public int Fa;                          // +0xFA idle flag
         public int Aq6;                        // +0xA6
@@ -523,7 +523,7 @@ public static class DroneStrategy
         }
         if (s1 <= 0x7FFFF && s.N5C is null)
         {
-            // C compares unsigned (:738): a negative balance still fails to pay.
+            // C compares unsigned (:738): a negative balance is above the upkeep threshold.
             if ((uint)G.F68 > (uint)((w.NextRandom() & 7) + 0x41))
             {
                 G.F68 -= 0x32;

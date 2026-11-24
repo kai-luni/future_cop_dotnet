@@ -55,11 +55,11 @@ public sealed class SkyCaptainSystem
     /// <summary>AI block +0x24 (800331CC.c:177: the scaled +0xF4). func_8003526C restores +0xF4 from it.</summary>
     public int BaseF4 { get; private set; }
 
-    /// <summary>
-    /// gGameSession +0x4C, the strategy level 0..9 (clamped at 800331CC.c:134-139). The port has no
-    /// session block yet; 4 is the Precinct Assault default the drone tests use.
-    /// </summary>
-    public int Difficulty { get; set; } = 4;
+    /// <summary>The persistent Precinct Assault build-order state (D_8009FA94).</summary>
+    public DroneStrategy.Glob Economy { get; } = new() { S4C = 4 };
+
+    /// <summary>gGameSession +0x4C, clamped at spawn by func_800331CC.</summary>
+    public int Difficulty { get => Economy.S4C; set => Economy.S4C = value; }
 
     /// <summary>Spawn at the player when the mission carries no type-0x25 record. Off by default.</summary>
     public bool DebugFallbackSpawn { get; set; }
@@ -68,12 +68,12 @@ public sealed class SkyCaptainSystem
     public RetailRandom Random { get; set; } = new();
 
     /// <summary>gGameSession +0xE0 as written by func_8003526C (4) and func_800330E8 mode 1.</summary>
-    public int SessionE0 { get; private set; }
+    public int SessionE0 => Economy.FE0;
 
     /// <summary>Type-16 units func_80035184 can find (built from the type 0x10 records at spawn).</summary>
     public List<StrategicDroneTick.Type16Unit> Type16Units { get; } = new();
 
-    /// <summary>Calls the adapter records but does not execute yet (later tasks).</summary>
+    /// <summary>Diagnostics for the strategy timer and attack-target updates.</summary>
     public int StrategyCalls { get; private set; }
     public int AttackTargetCalls { get; private set; }
 
@@ -81,6 +81,12 @@ public sealed class SkyCaptainSystem
     public EnemyWorld AttackEnv { get; } = new(0, 64);
 
     private LevelMap? _map;
+    private int _frameTime;
+    private readonly List<SceneStrategyUnit> _strategyUnits = new();
+    private SceneStrategyUnit? _playerUnit;
+    private DroneStrategy.Self _strategy = new();
+    private DroneAttackTarget _attackTarget = new();
+    private DronePursuitTarget _pursuitTarget = new();
 
     /// <summary>
     /// Mode-3 line-of-sight probe (func_8004E80C / 8004E80C.c:156-158) wired by <see cref="BindMap"/>.
@@ -155,7 +161,8 @@ public sealed class SkyCaptainSystem
     /// <param name="playerPos">Player position (gPlayerEntities +0x50), AI block +0x00.</param>
     /// <param name="groundHeight">func_80066F78 probe; null keeps the record y.</param>
     public void SpawnFromRecords(IReadOnlyList<EntityRecord> records, (int x, int y, int z) playerPos,
-        Func<int[], int>? groundHeight = null)
+        Func<int[], int>? groundHeight = null, int? playerId = null,
+        IReadOnlyList<CaptureObjective>? objectives = null)
     {
         ArgumentNullException.ThrowIfNull(records);
         Drone = null;
@@ -178,7 +185,68 @@ public sealed class SkyCaptainSystem
         Record = record;
         ModelId = record.Model();
         Team = record.Team;
+        BuildStrategyUnits(records, playerId, playerPos, objectives);
         Drone = Create(record, playerPos, groundHeight);
+    }
+
+    private void BuildStrategyUnits(IReadOnlyList<EntityRecord> records, int? playerId,
+        (int x, int y, int z) playerPos, IReadOnlyList<CaptureObjective>? objectives)
+    {
+        _strategyUnits.Clear();
+        _playerUnit = null;
+        foreach (var r in records)
+        {
+            if (r.Type is not (1 or 5 or 6 or 8 or 9 or 0x1C or 0x24)) continue;
+            // Other type-1 starts are not active in this one-player scene.
+            if (r.Type == 1 && playerId.HasValue && r.Id != playerId) continue;
+            var objective = r.Type == CaptureObjective.EntityType
+                ? objectives?.FirstOrDefault(o => o.Id == r.Id)
+                : null;
+            if (r.Container != EntityContainer.Cact && objective is null) continue;
+            var unit = new SceneStrategyUnit(r, objective);
+            _strategyUnits.Add(unit);
+            if (r.Type == 1 && (playerId == r.Id || (!playerId.HasValue && _playerUnit is null)))
+                _playerUnit = unit;
+        }
+        _playerUnit?.SetPosition(playerPos);
+    }
+
+    private sealed class SceneStrategyUnit
+    {
+        public readonly DroneStrategy.StrategyUnit Strategy;
+        public readonly HoverEnemyHit Hit;
+        public readonly DroneTarget Target;
+        public readonly EnemyEntity Enemy;
+        public readonly CaptureObjective? Objective;
+
+        public SceneStrategyUnit(EntityRecord r, CaptureObjective? objective)
+        {
+            Objective = objective;
+            Strategy = new()
+            {
+                Active = true, Type = r.Type, Team = r.Team, Sub = Math.Min(r.U8(0x1F), 15),
+                S1C = (short)r.Health, U1E = r.Health,
+            };
+            // The archive ID stands in for the runtime block ID (+0x08) in this scene.
+            Hit = new() { Id = r.Id, Pos = Strategy.Pos, F14 = r.Id };
+            Target = new(r.Id);
+            Enemy = new() { Id = r.Id, Mode16 = (byte)r.Type, Type18 = (byte)r.Team, Team14 = (ushort)r.Id };
+            SetPosition((r.X, r.Y, r.Z));
+        }
+
+        public void SetPosition((int X, int Y, int Z) pos)
+        {
+            Strategy.Pos[0] = Enemy.PositionX = Enemy.Vec5CX = pos.X;
+            Strategy.Pos[1] = Enemy.PositionY = Enemy.Vec5CY = pos.Y;
+            Strategy.Pos[2] = Enemy.PositionZ = Enemy.Vec5CZ = pos.Z;
+        }
+
+        public void RefreshObjective()
+        {
+            if (Objective is not { } objective) return;
+            Strategy.Team = objective.Team;
+            Enemy.Type18 = (byte)objective.Team;
+        }
     }
 
     /// <summary>Base init (func_8002A5F4) + func_80032180 + the func_800331CC part the tick reads.</summary>
@@ -253,6 +321,7 @@ public sealed class SkyCaptainSystem
             BaseF4 = ai.BaseF4;                      // :177 ai+0x24
             ai.Pos[0] = o.Pos[0]; ai.Pos[1] = o.Pos[1]; ai.Pos[2] = o.Pos[2]; // :235 ai+0x0C
             PosA[0] = playerPos.x; PosA[1] = playerPos.y; PosA[2] = playerPos.z; // :236 ai+0x00
+            InitStrategy(r, d);
             UpdateStrategicPosition(d);              // :237 func_800330E8
 
             // The tick reads the same block: share the AI view and the drone words.
@@ -262,17 +331,61 @@ public sealed class SkyCaptainSystem
         }
     }
 
+    private void InitStrategy(EntityRecord r, StrategicDrone d)
+    {
+        // 800331CC.c:199-236, additional AI/session fields shared by the two ticks.
+        byte mirrorBase = (byte)r.U8(0x54);
+        bool hasBodySlot = (short)r.U16(0x24) >= 0;
+        _strategy = new()
+        {
+            Team = Team,
+            Pos = d.Body.Pos,
+            Aq6 = 4,
+            // func_80060668 initializes entity slot +0xA0; its +0x0A comes from input +0x0C.
+            Aa = hasBodySlot ? (short)r.U16(0x30) : (short)0,
+            Strats = new() { PosA = PosA, PosB = d.Ai.Pos, B1B = mirrorBase, C1C = Random.Next() & 1 },
+        };
+        _attackTarget = new()
+        {
+            MirrorBase = mirrorBase,
+            BaseValue = hasBodySlot ? unchecked((ushort)(((short)r.U16(0x32) << 12) / 218)) : (ushort)0,
+        };
+        _attackTarget.Set(null);
+        d.Slot0.TargetClass06 = d.Slot1.TargetClass06 = 4;
+        d.Slot0.Value08 = d.Slot1.Value08 = mirrorBase;
+        _pursuitTarget = new();
+
+        Economy.FE0 = 0;
+        Economy.F9C = d.Ai.Mode;
+        Economy.F68 = Economy.FB8 = Economy.FBC = 0;
+        Array.Clear(Economy.A0);
+        foreach (var slot in Economy.C) Array.Clear(slot);
+        Economy.F74 = Economy.FB0 = Difficulty > 0 ? Math.Min(10, 9 + (Random.Next() & 3) - Difficulty) : 0;
+        Economy.F78 = Economy.FB4 = Difficulty > 0 ? 10 - Economy.F74 : 0;
+    }
+
     /// <summary>Message 6 against the live scene: terrain height and LOS/fire raycasts from the level map.</summary>
     public void Advance(int dt, LevelScene scene)
     {
         ArgumentNullException.ThrowIfNull(scene);
         if (!ReferenceEquals(_map, scene.Map)) BindMap(scene.Map);
+        _playerUnit?.SetPosition(scene.MechWorld);
+        if (_playerUnit is { } player && scene.Walker is { } walker)
+        {
+            player.Strategy.AuxA326 = walker.HitTimer;
+            player.Strategy.U1E = (ushort)walker.Health;
+        }
+        // +0x68 aliases the second score word on the 1P HUD (8002D1A0.c:204-207).
+        var score = scene.Objectives?.Score.Score;
+        if (Drone is not null && score is not null) Economy.F68 = score[1];
         Advance(dt, pos => LevelGround.Height(scene.Map, pos[0], pos[1], pos[2], out _));
+        if (Drone is not null && score is not null) score[1] = Economy.F68;
     }
 
     /// <summary>Message 6 with an explicit func_80066F78 probe (testable without a mission).</summary>
     public void Advance(int dt, Func<int[], int> groundHeight)
     {
+        _frameTime = unchecked(_frameTime + dt);
         if (Drone is not { } d) return;
         // 800357C0.c:141-144: msg 6 returns 0 while +0xFA == 5, the tick does not run.
         if (d.Body.FA == 5) return;
@@ -311,7 +424,7 @@ public sealed class SkyCaptainSystem
             new DronePosition(ai.Pos[0], ai.Pos[1], ai.Pos[2]),
             new DronePosition(d.Body.DC[0], d.Body.DC[1], d.Body.DC[2]), SessionE0);
         d.Body.DC[0] = r.Position.X; d.Body.DC[1] = r.Position.Y; d.Body.DC[2] = r.Position.Z;
-        SessionE0 = r.SessionFieldE0;
+        Economy.FE0 = r.SessionFieldE0;
     }
 
     /// <summary>Basis from the heading axis: row2 = axis, row0 = up x axis, row1 = axis x row0.</summary>
@@ -367,8 +480,8 @@ public sealed class SkyCaptainSystem
 
     private static int Fmul(int a, int b) => unchecked((int)(((long)a * b) >> 16));
 
-    /// <summary>StrategicDroneTick.IWorld + IHoverEnemyWorld over the scene, one per tick.</summary>
-    private sealed class TickWorld : StrategicDroneTick.IWorld, IHoverEnemyWorld
+    /// <summary>The strategy, timer and mover services share one scene and one drone.</summary>
+    private sealed class TickWorld : StrategicDroneTick.IWorld, DroneStrategy.IWorld, IHoverEnemyWorld
     {
         private readonly SkyCaptainSystem _sys;
         private readonly StrategicDrone _d;
@@ -402,13 +515,93 @@ public sealed class SkyCaptainSystem
                 self.Ai.TickTimer = 0;
                 self.UnkF4 = _sys.BaseF4;
                 self.UnkF8 = self.Ai.PromoteTo;
-                _sys.SessionE0 = 4;
+                _sys.Economy.FE0 = 4;
             }
         }
 
-        // func_80033608 / func_800336DC: recorded, wiring DroneStrategy is a later task.
-        public void SetDroneAttackTarget(StrategicDroneTick.DroneEntity self) => _sys.AttackTargetCalls++;
-        public void UpdateDroneStrategy(StrategicDroneTick.DroneEntity self) => _sys.StrategyCalls++;
+        public void SetDroneAttackTarget(StrategicDroneTick.DroneEntity self) =>
+            SetDroneAttackTarget(_sys._strategy, null);
+
+        public void UpdateDroneStrategy(StrategicDroneTick.DroneEntity self)
+        {
+            _sys.StrategyCalls++;
+            foreach (var unit in _sys._strategyUnits) unit.RefreshObjective();
+
+            var strategy = _sys._strategy;
+            strategy.Strats.Mode = self.Ai.Mode;
+            strategy.Fa = self.UnkFA;
+            strategy.C8Ref = _sys._strategyUnits.Find(u => ReferenceEquals(u.Hit, _d.Body.C8))?.Strategy;
+            DroneStrategy.Tick(strategy, this);
+            self.Ai.Mode = (byte)strategy.Strats.Mode;
+            self.UnkFA = (byte)strategy.Fa;
+        }
+
+        public IEnumerable<DroneStrategy.StrategyUnit> Units => _sys._strategyUnits.Select(u => u.Strategy);
+        public DroneStrategy.Glob G => _sys.Economy;
+        public DroneStrategy.StrategyUnit? PlayerEntities => _sys._playerUnit?.Strategy;
+        private static readonly byte[] DefaultClaimOrder = { 3, 2, 1, 0 };
+        private static readonly byte[] AlternateClaimOrder = { 1, 0, 3, 2 };
+        public byte[] SlotClaimOrder => DefaultClaimOrder;
+        public byte[] AlternateSlotClaimOrder => AlternateClaimOrder;
+        public int Sqrt12(int v) => MechMath.Sqrt12(v);
+        public void SetSinglePlayerAiS4C(int value) => _sys._strategy.Strats.S4C = value;
+
+        public void SetDroneAttackTarget(DroneStrategy.Self self, DroneStrategy.StrategyUnit? unit)
+        {
+            _sys.AttackTargetCalls++;
+            var target = unit is null ? null : FindStrategyUnit(unit);
+            var attack = _sys._attackTarget;
+            bool modeChanged = target is null && attack.Mode != 4;
+            bool targetChanged = target is not null && !ReferenceEquals(attack.Target, target.Target);
+            attack.Set(target?.Target);
+            self.Aq6 = attack.Mode;
+            // func_80033608's null path parks the slot but leaves +0xB8 intact.
+            if (target is not null) self.B8Ref = unit;
+            ApplyAttackMirror(_d.Slot0, attack.First, target, modeChanged, targetChanged);
+            ApplyAttackMirror(_d.Slot1, attack.Second, target, modeChanged, targetChanged);
+        }
+
+        private static void ApplyAttackMirror(AttackSlot slot, DroneAttackMirror mirror,
+            SceneStrategyUnit? target, bool modeChanged, bool targetChanged)
+        {
+            if (target is null)
+            {
+                slot.Retry16 = (short)mirror.Value;
+                if (modeChanged)
+                {
+                    slot.TargetClass06 = mirror.Mode;
+                    slot.Value08 = mirror.RestoredValue;
+                }
+            }
+            else if (targetChanged)
+            {
+                slot.Target18 = target.Enemy;
+                slot.Target18Value = mirror.CachedValue;
+            }
+        }
+
+        public void SetDronePursuitTarget(DroneStrategy.Self self, DroneStrategy.StrategyUnit unit)
+        {
+            var target = FindStrategyUnit(unit);
+            var pursuit = _sys._pursuitTarget;
+            pursuit.Set(target.Target);
+            self.C8Ref = unit;
+            self.Fa = pursuit.Dirty;
+            _d.Body.C8 = target.Hit;
+            _d.Body.CC = pursuit.CachedValue;
+        }
+
+        public void UpdateStrategicPosition(DroneStrategy.Self self)
+        {
+            _d.Ai.Mode = (byte)self.Strats.Mode;
+            // The timer owns +0xDC until the hover tick pushes its shared words back.
+            Array.Copy(_d.Drone.Pos, _d.Body.DC, 3);
+            _sys.UpdateStrategicPosition(_d);
+            Array.Copy(_d.Body.DC, _d.Drone.Pos, 3);
+        }
+
+        private SceneStrategyUnit FindStrategyUnit(DroneStrategy.StrategyUnit unit) =>
+            _sys._strategyUnits.First(u => ReferenceEquals(u.Strategy, unit));
 
         /// <summary>func_8004D958: the unit leaves the search list.</summary>
         public void RetireEntity(StrategicDroneTick.Type16Unit unit) => _sys.Type16Units.Remove(unit);
@@ -458,7 +651,7 @@ public sealed class SkyCaptainSystem
         public void SpawnEntitySlotTypes(int tableIndex, HoverEnemy o, int a2, int a3, int a4) { }
         public void FlagQuartileChange(HoverEnemy o) { }
         public int SessionWord13() => _sys.Difficulty;
-        public int FrameTime() => 0;
+        public int FrameTime() => _sys._frameTime;
         public void RunDeathScript(HoverEnemy o) { }
         public bool IsPlayerBlockClass(int id) => false;
         public void CreditPlayerKill() { }

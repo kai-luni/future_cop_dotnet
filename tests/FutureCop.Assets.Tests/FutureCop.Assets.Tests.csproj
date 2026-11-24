@@ -45,6 +45,7 @@
     <None Include="../golden/shot.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/shot.vectors" />
     <None Include="../golden/shot-move.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/shot-move.vectors" />
     <None Include="../golden/cadence.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/cadence.vectors" />
+    <None Include="../golden/drone-strategy.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/drone-strategy.vectors" />
     <None Include="../golden/lead-direction.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/lead-direction.vectors" />
     <None Include="../golden/mdec-frame.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/mdec-frame.vectors" />
     <None Include="../golden/wve-block.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/wve-block.vectors" />
