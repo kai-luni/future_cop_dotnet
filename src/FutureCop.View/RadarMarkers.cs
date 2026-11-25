@@ -4,6 +4,36 @@ using FutureCop.Game.Mech;
 namespace FutureCop.View;
 
 /// <summary>
+/// PS1 <c>LINE_F2</c> primitive packet emitted by <c>func_8005A740</c> (<c>gEmitAngledLine</c>,
+/// <c>8005A740.c:4-11,41-58</c>), matching the retail <c>struct LineF2</c> layout (<c>u32 tag</c>,
+/// <c>u32 code</c>, <c>s16 x0, y0, x1, y1</c>; 16 bytes written into a <c>0x1C</c>-byte slot of
+/// <c>D_8009FA90</c>).
+/// </summary>
+public readonly record struct RadarLinePacket(
+    uint Tag,
+    uint CodeWord,
+    short X0,
+    short Y0,
+    short X1,
+    short Y1)
+{
+    /// <summary>Red channel (bits 0..7 of <see cref="CodeWord"/>; <c>0x80</c> in retail).</summary>
+    public byte R => unchecked((byte)(CodeWord & 0xFFu));
+
+    /// <summary>Green channel (bits 8..15 of <see cref="CodeWord"/>; <c>0x80</c> in retail).</summary>
+    public byte G => unchecked((byte)((CodeWord >> 8) & 0xFFu));
+
+    /// <summary>Blue channel (bits 16..23 of <see cref="CodeWord"/>; <c>0x80</c> in retail).</summary>
+    public byte B => unchecked((byte)((CodeWord >> 16) & 0xFFu));
+
+    /// <summary>PS1 GPU primitive opcode byte (bits 24..31 of <see cref="CodeWord"/>; <c>0x40</c> = <c>LINE_F2</c>).</summary>
+    public byte GpuCode => unchecked((byte)(CodeWord >> 24));
+
+    /// <summary>DMA payload word count (bits 24..31 of <see cref="Tag"/>; 3 words for <c>LINE_F2</c>).</summary>
+    public byte TagLength => unchecked((byte)(Tag >> 24));
+}
+
+/// <summary>
 /// PS1 <c>POLY_F3</c> primitive packet emitted by <c>func_8005A828</c> (<c>gEmitRadarTriangle</c>),
 /// matching the retail <c>struct LineF3</c> layout (<c>u32 tag</c>, <c>u32 code</c>, <c>s16 xy[6]</c>;
 /// 20 bytes written into a <c>0x1C</c>-byte slot of <c>D_8009FA90</c>).
@@ -55,26 +85,26 @@ public readonly record struct RadarMarkerSlot(byte Flags, short PosA, short PosB
 public sealed record RadarMarkerNode(uint ActiveMask, IReadOnlyList<RadarMarkerSlot> Slots);
 
 /// <summary>
-/// Pure output of <c>func_8005A9C4</c> (<c>gDrawRadarMarkers</c>): the resolved 16.16 radar X origin,
-/// the player heading line angle (<c>-heading - 0x800</c>), the optional 2P other-player bearing angle
-/// (when <c>gPlayerCount &gt;= 2</c>, <c>gGameSession-&gt;unk5C == 0</c>, and the dead-zone gate passes),
-/// and the emitted <c>POLY_F3</c> target marker packets (0..8).
+/// Pure output of <c>func_8005A9C4</c> (<c>gDrawRadarMarkers</c>, <c>8005A9C4.c:95-145</c>): the
+/// resolved 16.16 radar X origin, the player heading line angle (<c>-heading - 0x800</c>) and its
+/// emitted <c>LINE_F2</c> packet (<c>func_8005A740</c>, <c>8005A9C4.c:111-112</c>), the optional 2P
+/// other-player bearing angle and <c>LINE_F2</c> packet (<c>8005A9C4.c:114-123</c>), and the emitted
+/// <c>POLY_F3</c> target marker packets (0..8, <c>8005A9C4.c:125-144</c>).
 /// </summary>
-/// <remarks>
-/// <c>func_8005A740</c> (<c>gEmitAngledLine</c>) is not ported yet, so the two angled-line calls
-/// (<c>8005A9C4.c:112</c> and <c>:121</c>) are surfaced as their exact retail origin/angle values while
-/// every active marker triangle is emitted as a full <see cref="RadarTrianglePacket"/>.
-/// </remarks>
 public sealed record RadarMarkerDrawResult(
     int OriginX,
     int HeadingLineAngle,
+    RadarLinePacket HeadingLine,
     int? OtherPlayerBearingAngle,
+    RadarLinePacket? OtherPlayerBearingLine,
     IReadOnlyList<RadarTrianglePacket> Triangles);
 
 /// <summary>
-/// Pure ports of the radar marker routines: <c>func_8005A828</c> (<c>gEmitRadarTriangle</c>),
-/// <c>func_8005A934</c> (<c>gCheckRadarTargetBearing</c>), and <c>func_8005A9C4</c>
-/// (<c>gDrawRadarMarkers</c>).
+/// Pure ports of the radar marker routines: <c>func_8005A740</c> (<c>gEmitAngledLine</c>),
+/// <c>func_8005A828</c> (<c>gEmitRadarTriangle</c>), <c>func_8005A934</c>
+/// (<c>gCheckRadarTargetBearing</c>), and <c>func_8005A9C4</c> (<c>gDrawRadarMarkers</c>),
+/// paired with the retail colour table <c>D_800A6F60</c> initialised by <c>func_8004CAE4</c>
+/// (<c>gInitMarkerColorsAndPools</c>, <c>8004CAE4.c:57-105</c>).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -88,30 +118,46 @@ public sealed record RadarMarkerDrawResult(
 /// (<c>0x8009AFB4 - 0x80010000 + 0x800</c>).
 /// </para>
 /// <para>
-/// The 32-word colour table <c>D_800A6F60</c> (<c>gMarkerColorTable</c>) lies outside the
-/// <c>SLUS_007.39</c> executable image (<c>0x80010000..0x8009F7FF</c>, file length <c>0x90000</c>):
-/// it resides in BSS and is populated at runtime, so <see cref="PlaceholderMarkerColorTable"/>
-/// provides a documented fallback when no runtime palette is supplied.
+/// The 32-word colour table <c>D_800A6F60</c> (<c>gMarkerColorTable</c>) resides in BSS and is
+/// populated at level initialisation by <c>func_8004CAE4</c> (<c>8004CAE4.c:57-105</c>, called from
+/// <c>func_80024A24</c> at <c>80024A24.c:199</c>). Entries 17..19 are additionally pulsed each frame
+/// by <c>func_8004CC68</c> (<c>8004CC68.c:32-48</c>).
 /// </para>
 /// </remarks>
 public static class RadarMarkers
 {
+    /// <summary><c>func_8005A740</c> (<c>8005A740.c:52</c>): DMA tag word for <c>LINE_F2</c> (length 3, link 0).</summary>
+    public const uint LinePacketTag = 0x03000000u;
+
+    /// <summary>
+    /// <c>func_8005A740</c> (<c>8005A740.c:53</c>): hard-coded <c>LINE_F2</c> command + colour word
+    /// (<c>0x40</c> opcode, <c>R=0x80, G=0x80, B=0x80</c>); the third argument passed by
+    /// <c>func_8005A9C4</c> (<c>8005A9C4.c:112,121</c>) is ignored by retail <c>func_8005A740</c>.
+    /// </summary>
+    public const uint LineF2CodeWord = 0x40808080u;
+
+    /// <summary><c>func_8005A740</c> (<c>8005A740.c:54-55</c>): inner radius of the angled radar line in pixels.</summary>
+    public const int LineInnerRadius = 24;
+
+    /// <summary><c>func_8005A740</c> (<c>8005A740.c:56-57</c>): outer radius of the angled radar line in pixels.</summary>
+    public const int LineOuterRadius = 30;
+
     /// <summary><c>func_8005A828</c> (<c>8005A828.c:79</c>): DMA tag word (length 4, link 0).</summary>
     public const uint PacketTag = 0x04000000u;
 
     /// <summary><c>func_8005A828</c> (<c>8005A828.c:80</c>): <c>POLY_F3</c> opcode OR-ed into <c>code</c>.</summary>
     public const uint PolyF3Opcode = 0x20000000u;
 
-    /// <summary><c>func_8005A828</c> (<c>8005A828.c:73</c>): packet cursor advance when <c>gPacketCursor &lt; gPacketLimit</c>.</summary>
+    /// <summary><c>func_8005A740</c> (<c>8005A740.c:50</c>) / <c>func_8005A828</c> (<c>8005A828.c:73</c>): packet cursor advance when <c>gPacketCursor &lt; gPacketLimit</c>.</summary>
     public const int PacketStrideBytes = 0x1C;
 
-    /// <summary><c>func_8005A828</c> (<c>8005A828.c:76</c>): Y screen origin in 16.16 fixed point (44 px).</summary>
+    /// <summary><c>func_8005A740</c> (<c>8005A740.c:55,57</c>) / <c>func_8005A828</c> (<c>8005A828.c:76</c>): Y screen origin in 16.16 fixed point (44 px).</summary>
     public const int RadarYBias = 0x2C0000;
 
-    /// <summary><c>func_8005A828</c> (<c>8005A828.c:22</c>): radar X origin in 16.16 fixed point (120 px, side 1).</summary>
+    /// <summary><c>func_8005A9C4</c> (<c>8005A9C4.c:109</c>): radar X origin in 16.16 fixed point (120 px, side 1).</summary>
     public const int RightSideOriginX = 0x780000;
 
-    /// <summary><c>func_8005A828</c> (<c>8005A828.c:23</c>): radar X origin in 16.16 fixed point (40 px, side 0 / default).</summary>
+    /// <summary><c>func_8005A9C4</c> (<c>8005A9C4.c:109</c>): radar X origin in 16.16 fixed point (40 px, side 0 / default).</summary>
     public const int LeftSideOriginX = 0x280000;
 
     /// <summary>Retail ROM address of <c>gRadiusTable</c> (6 x <c>s16</c> vertex pairs).</summary>
@@ -136,9 +182,9 @@ public static class RadarMarkers
     public static ReadOnlySpan<short> RadiusTable => DefaultRadiusTable;
 
     /// <summary>
-    /// Retail RAM address of <c>gMarkerColorTable[32]</c> (<c>8005A9C4.c:44</c>).
-    /// Outside the <c>SLUS_007.39</c> executable image (<c>0x80010000..0x8009F7FF</c>; file offset
-    /// would be <c>0x97760</c> vs file size <c>0x90000</c>), so it lives in BSS and is filled at runtime.
+    /// Retail RAM address of <c>gMarkerColorTable[32]</c> (<c>8005A9C4.c:44</c>, <c>8004CAE4.c:19</c>).
+    /// Lives in BSS outside <c>SLUS_007.39</c> and is populated at level init by <c>func_8004CAE4</c>
+    /// (<c>8004CAE4.c:57-105</c>).
     /// </summary>
     public const uint MarkerColorTableAddress = 0x800A6F60u;
 
@@ -146,34 +192,51 @@ public static class RadarMarkers
     public const int MarkerColorTableLength = 32;
 
     /// <summary>
-    /// Documented placeholder palette for <c>D_800A6F60</c> (<c>gMarkerColorTable[32]</c>) in PS1
-    /// <c>0x00BBGGRR</c> format. Because <c>0x800A6F60</c> is in BSS outside <c>SLUS_007.39</c>, its
-    /// runtime-populated values are not present in the retail executable image.
+    /// Retail <c>D_800A6F60</c> (<c>gMarkerColorTable[32]</c>) in PS1 <c>0x00BBGGRR</c> format,
+    /// verbatim from <c>func_8004CAE4</c> (<c>gInitMarkerColorsAndPools</c>, <c>8004CAE4.c:57-105</c>,
+    /// called from <c>func_80024A24</c> at <c>80024A24.c:199</c>).
     /// </summary>
-    private static readonly int[] DefaultPlaceholderMarkerColors =
+    private static readonly int[] RetailMarkerColors =
     {
-        0x0000FF00, 0x000000FF, 0x00FF8000, 0x0000FFFF,
-        0x00FF00FF, 0x00FFFF00, 0x00FFFFFF, 0x008080FF,
-        0x0000C000, 0x000000C0, 0x00C06000, 0x0000C0C0,
-        0x00C000C0, 0x00C0C000, 0x00C0C0C0, 0x006060C0,
-        0x0040FF40, 0x004040FF, 0x00FFA040, 0x0040FFFF,
-        0x00FF40FF, 0x00FFFF40, 0x00E0E0E0, 0x00A0A0FF,
-        0x00008000, 0x00000080, 0x00804000, 0x00008080,
-        0x00800080, 0x00808000, 0x00808080, 0x00404080,
+        0x00000000, // [ 0] 8004CAE4.c:69
+        0x000000F8, // [ 1] 8004CAE4.c:75
+        0x00F80000, // [ 2] 8004CAE4.c:76
+        0x0000F800, // [ 3] 8004CAE4.c:77
+        0x00F8F800, // [ 4] 8004CAE4.c:57,78
+        0x0000F8F8, // [ 5] 8004CAE4.c:79
+        0x00F800F8, // [ 6] 8004CAE4.c:58,80
+        0x00F8F8F8, // [ 7] 8004CAE4.c:59,81
+        0x000078F8, // [ 8] 8004CAE4.c:82
+        0x00000078, // [ 9] 8004CAE4.c:83
+        0x00780000, // [10] 8004CAE4.c:84
+        0x00007800, // [11] 8004CAE4.c:85
+        0x00787800, // [12] 8004CAE4.c:60,86
+        0x00007878, // [13] 8004CAE4.c:87
+        0x00780078, // [14] 8004CAE4.c:61,88
+        0x00787878, // [15] 8004CAE4.c:62,89
+        0x00003878, // [16] 8004CAE4.c:90
+        0x000000F8, // [17] 8004CAE4.c:91  (pulsed per frame by func_8004CC68, 8004CC68.c:45)
+        0x00F80000, // [18] 8004CAE4.c:92  (pulsed per frame by func_8004CC68, 8004CC68.c:46)
+        0x0000F800, // [19] 8004CAE4.c:93  (pulsed per frame by func_8004CC68, 8004CC68.c:47)
+        0x008080F8, // [20] 8004CAE4.c:63,94
+        0x00F88070, // [21] 8004CAE4.c:64,95
+        0x0080F880, // [22] 8004CAE4.c:65,96
+        0x000000F8, // [23] 8004CAE4.c:97
+        0x00F80000, // [24] 8004CAE4.c:98
+        0x0000F800, // [25] 8004CAE4.c:99
+        0x00F8F800, // [26] 8004CAE4.c:57,100
+        0x0000F8F8, // [27] 8004CAE4.c:101
+        0x00F800F8, // [28] 8004CAE4.c:58,102
+        0x00F8F8F8, // [29] 8004CAE4.c:59,103
+        0x000078F8, // [30] 8004CAE4.c:104
+        0x00787878, // [31] 8004CAE4.c:62,105
     };
 
     /// <summary>
-    /// Documented placeholder for <c>D_800A6F60</c> (<c>gMarkerColorTable[32]</c>, BSS outside
-    /// <c>SLUS_007.39</c>); callers with runtime-derived colours can pass a custom 32-entry table.
+    /// Retail 32-entry colour table <c>D_800A6F60</c> (<c>gMarkerColorTable[32]</c>) initialised by
+    /// <c>func_8004CAE4</c> (<c>8004CAE4.c:57-105</c>) in PS1 <c>0x00BBGGRR</c> format.
     /// </summary>
-    public static ReadOnlySpan<int> PlaceholderMarkerColorTable => DefaultPlaceholderMarkerColors;
-
-    /// <summary>
-    /// Colour word (<c>0x00F8F8F8</c>) used by <see cref="InGameHud"/> when drawing the player's own
-    /// heading pointer triangle as a stand-in for <c>func_8005A740(origin, -heading - 0x800, 0xF8F8F8)</c>
-    /// (<c>8005A9C4.c:111-112</c>) until <c>func_8005A740</c> is ported.
-    /// </summary>
-    public const int PlayerPointerColor = 0x00F8F8F8;
+    public static ReadOnlySpan<int> MarkerColorTable => RetailMarkerColors;
 
     /// <summary><c>func_8005A934</c> (<c>8005A934.c:49-50</c>): per-axis dead-zone threshold; targets must strictly exceed this.</summary>
     public const int TargetBearingDeadZone = 0x2000;
@@ -211,6 +274,38 @@ public static class RadarMarkers
     public static int HeadingLineAngle(short heading) => unchecked(-(int)heading - HeadingLineAngleOffset);
 
     /// <summary>
+    /// Port of <c>func_8005A740</c> (<c>gEmitAngledLine</c>, <c>8005A740.c:41-58</c>): emits a
+    /// radial <c>LINE_F2</c> segment from radius 24 to radius 30 around <c>(origin, 0x2C0000)</c>
+    /// at <paramref name="angle"/> (4096-step convention via <c>func_8001846C</c> /
+    /// <see cref="MechMath.SinCos"/>), with hard-coded tag <c>0x03000000</c> and code
+    /// <c>0x40808080</c>.
+    /// </summary>
+    public static RadarLinePacket EmitAngledLine(int origin, int angle)
+    {
+        // 8005A740.c:47 - gSinCos(id, &first, &second); first = sine, second = cosine.
+        var (sine, cosine) = MechMath.SinCos(angle);
+
+        // 8005A740.c:52-57 - wrapping 32-bit signed arithmetic, MIPS sra by 16, truncation to s16.
+        unchecked
+        {
+            short x0 = (short)((origin + cosine * LineInnerRadius) >> 16);
+            short y0 = (short)((sine * LineInnerRadius + RadarYBias) >> 16);
+            short x1 = (short)((origin + cosine * LineOuterRadius) >> 16);
+            short y1 = (short)((sine * LineOuterRadius + RadarYBias) >> 16);
+
+            return new RadarLinePacket(
+                Tag: LinePacketTag,
+                CodeWord: LineF2CodeWord,
+                X0: x0, Y0: y0,
+                X1: x1, Y1: y1);
+        }
+    }
+
+    /// <summary>Unsigned-angle convenience overload of <see cref="EmitAngledLine(int, int)"/>.</summary>
+    public static RadarLinePacket EmitAngledLine(int origin, uint angle) =>
+        EmitAngledLine(origin, unchecked((int)angle));
+
+    /// <summary>
     /// Port of <c>func_8005A828</c> (<c>gEmitRadarTriangle</c>, <c>8005A828.c:47-89</c>) using the
     /// retail <c>D_8009AFB4</c> (<see cref="RadiusTable"/>) shape table.
     /// </summary>
@@ -230,16 +325,6 @@ public static class RadarMarkers
     /// convention via <c>func_8001846C</c> / <see cref="MechMath.SinCos"/>) and returns the exact
     /// PS1 <c>POLY_F3</c> packet fields written to <c>D_8009FA90</c>.
     /// </summary>
-    /// <param name="origin">
-    /// X origin in 16.16 fixed point (<see cref="RightSideOriginX"/> = <c>0x780000</c> = 120 px,
-    /// <see cref="LeftSideOriginX"/> = <c>0x280000</c> = 40 px).
-    /// </param>
-    /// <param name="angle">Rotation angle in 4096-step units (<c>u32</c>; masked to 12 bits by <c>func_8001846C</c>).</param>
-    /// <param name="code">Caller colour word (<c>0x00BBGGRR</c>, plus optional command bits); <c>0x20000000</c> is OR-ed in.</param>
-    /// <param name="shapePoints">
-    /// Six <c>s16</c> values (<c>x0, y0, x1, y1, x2, y2</c>) corresponding to <c>D_8009AFB4</c> (<c>gRadiusTable</c>).
-    /// </param>
-    /// <returns>The <c>POLY_F3</c> packet with tag <c>0x04000000</c>, code word <c>code | 0x20000000</c>, and 3 <c>s16</c> vertices.</returns>
     public static RadarTrianglePacket EmitRadarTriangle(
         int origin,
         uint angle,
@@ -290,18 +375,6 @@ public static class RadarMarkers
     /// computes the relative bearing from <paramref name="reference"/> to a target at
     /// <c>(targetX, targetZ)</c> when either axis distance exceeds <c>0x2000</c>.
     /// </summary>
-    /// <param name="reference">Reference object position (<c>+0x50</c>/<c>+0x58</c>) and <c>s16</c> heading (<c>+0xB0</c>).</param>
-    /// <param name="targetZ">Target Z coordinate (second argument <c>z</c> of <c>func_8005A934</c>).</param>
-    /// <param name="targetX">Target X coordinate (third argument <c>x</c> of <c>func_8005A934</c>).</param>
-    /// <param name="angle">
-    /// Updated with <c>((gAtan2(dx, dz) &lt;&lt; 12) &gt;&gt; 12) - heading - 0x400</c> when returning
-    /// <see langword="true"/>; left untouched when returning <see langword="false"/>, matching C
-    /// (<c>8005A934.c:55-58</c>).
-    /// </param>
-    /// <returns>
-    /// <see langword="true"/> (C return <c>1</c>) when the branchless <c>|dz| &gt; 0x2000 || |dx| &gt; 0x2000</c>
-    /// gate passes; <see langword="false"/> (C return <c>0</c>) inside the dead zone.
-    /// </returns>
     public static bool CheckRadarTargetBearing(RadarReference reference, int targetZ, int targetX, ref int angle)
     {
         unchecked
@@ -330,8 +403,8 @@ public static class RadarMarkers
 
     /// <summary>
     /// Pure port of <c>func_8005A9C4</c> (<c>gDrawRadarMarkers</c>, <c>8005A9C4.c:95-145</c>) using
-    /// the retail <see cref="RadiusTable"/> (<c>D_8009AFB4</c>) and documented
-    /// <see cref="PlaceholderMarkerColorTable"/> (for BSS table <c>D_800A6F60</c>).
+    /// the retail <see cref="RadiusTable"/> (<c>D_8009AFB4</c>) and retail
+    /// <see cref="MarkerColorTable"/> (<c>D_800A6F60</c>, <c>8004CAE4.c:57-105</c>).
     /// </summary>
     public static RadarMarkerDrawResult DrawRadarMarkers(
         RadarReference reference,
@@ -343,7 +416,7 @@ public static class RadarMarkers
         RadarReference? otherPlayer = null) =>
         DrawRadarMarkers(
             reference, side, frameTime, node,
-            PlaceholderMarkerColorTable, RadiusTable,
+            MarkerColorTable, RadiusTable,
             playerCount, sessionMode, otherPlayer);
 
     /// <summary>
@@ -366,12 +439,13 @@ public static class RadarMarkers
 
     /// <summary>
     /// Pure port of <c>func_8005A9C4</c> (<c>gDrawRadarMarkers</c>, <c>8005A9C4.c:95-145</c>):
-    /// resolves the radar origin from <paramref name="side"/>, computes the player heading line angle,
-    /// tests the 2P other-player bearing when <paramref name="playerCount"/> &gt;= 2 and
-    /// <paramref name="sessionMode"/> == 0, and — while <c>(frameTime &amp; 0x180) != 0</c> — walks
-    /// <paramref name="node"/>'s 3-bit-strided mask (<c>0x249249</c>) to emit one
-    /// <see cref="EmitRadarTriangle(int, int, int, ReadOnlySpan{short})"/> packet per active target
-    /// that passes <see cref="CheckRadarTargetBearing"/>.
+    /// resolves the radar origin from <paramref name="side"/>, emits the player heading
+    /// <c>LINE_F2</c> (<c>func_8005A740</c>, <c>8005A9C4.c:111-112</c>), emits the 2P other-player
+    /// bearing <c>LINE_F2</c> when <paramref name="playerCount"/> &gt;= 2 and
+    /// <paramref name="sessionMode"/> == 0 (<c>8005A9C4.c:114-123</c>), and — while
+    /// <c>(frameTime &amp; 0x180) != 0</c> — walks <paramref name="node"/>'s 3-bit-strided mask
+    /// (<c>0x249249</c>) to emit one <see cref="EmitRadarTriangle(int, int, int, ReadOnlySpan{short})"/>
+    /// packet per active target that passes <see cref="CheckRadarTargetBearing"/>.
     /// </summary>
     public static RadarMarkerDrawResult DrawRadarMarkers(
         RadarReference reference,
@@ -395,13 +469,18 @@ public static class RadarMarkers
         // 8005A9C4.c:111-112 - player heading line: func_8005A740(origin, -unkB0 - 0x800, 0xF8F8F8).
         int angle = HeadingLineAngle(reference.Heading);
         int headingAngle = angle;
+        var headingLine = EmitAngledLine(origin, headingAngle);
 
         // 8005A9C4.c:114-123 - 2P co-op / split-off partner bearing line when playerCount >= 2 && session.unk5C == 0.
         int? otherAngle = null;
+        RadarLinePacket? otherLine = null;
         if (playerCount >= 2 && sessionMode == 0 && otherPlayer is { } other)
         {
             if (CheckRadarTargetBearing(reference, other.Z, other.X, ref angle))
+            {
                 otherAngle = angle;
+                otherLine = EmitAngledLine(origin, angle);
+            }
         }
 
         // 8005A9C4.c:125-144 - blinking point-marker triangles gated by gFrameTime & 0x180.
@@ -434,7 +513,9 @@ public static class RadarMarkers
         return new RadarMarkerDrawResult(
             OriginX: origin,
             HeadingLineAngle: headingAngle,
+            HeadingLine: headingLine,
             OtherPlayerBearingAngle: otherAngle,
+            OtherPlayerBearingLine: otherLine,
             Triangles: triangles is not null ? triangles : Array.Empty<RadarTrianglePacket>());
     }
 }

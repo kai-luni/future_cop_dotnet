@@ -422,10 +422,12 @@ public sealed class MenuFlow
         // func_8002703C caps each frame at 0x3C clock ticks; func_800588D4 carries the
         // remainder and passes one locomotion substep per eight ticks to func_800549F0.
         _pendingWalkerTicks += Math.Min(seconds * RetailClock.TicksPerSecond, 0x3C);
-        // D_8009FAA4 is a monotonically growing frame stamp in the retail build; only its bit 0x80 and
-        // the >= 0x80 comparison matter to the HUD, so the port advances it by the drawn ticks.
-        int frameTime = Globals.FrameTime + (int)Math.Min(seconds * RetailClock.TicksPerSecond, 0x3C);
-        Globals = Globals with { FrameTime = frameTime & 0xFF };
+        // D_8009FAA4 (gFrameTime) is a monotonically growing s32 clock in retail (8002703C.c:15,71).
+        // HUD consumers test bit 0x40 (8006BF44.c:79, 8006C080.c:72), bit 0x80 (80047F30.c:194,217,256;
+        // 80047BE8.c:18,78-79 via u8 load >= 0x80), and bits 0x180 (8005A9C4.c:125), so do not truncate
+        // the clock to 8 bits.
+        int frameTime = unchecked(Globals.FrameTime + (int)Math.Min(seconds * RetailClock.TicksPerSecond, 0x3C));
+        Globals = Globals with { FrameTime = frameTime };
         int steps = (int)(_pendingWalkerTicks / 8);
         if (steps == 0) return;
         _pendingWalkerTicks -= steps * 8;
