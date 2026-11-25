@@ -1,0 +1,38 @@
+# Shared golden vectors for the retirement chain of a type-0x24 outpost: damage (8002AA1C.c), the
+# deferred message 4 (8004CE04.c:59-60), the retire (8002A810.c, 8004D958.c), the sweep's message 5
+# (8004D598.c:54, 8002D664.c:179-225) and the level reset (8004CCDC.c).
+# Verified against unchanged PS1 C via tests/host/outpost-retirement/run.sh (gcc 2.7.2 + qemu-mipsel).
+# Setup: 1P, player team 1 at score index 0, drone id 287 on team 2 (timer 500), session +0xE0 = 4.
+# Outpost id 113 / runtime 1 (F6 = 1, F7 = 2, flags 0x910149, +0x19 = 0x15, model 31 coord), child
+# runtime 2 linked first (flags 0xA10051, model 32 coord), both at the origin; the player stands at
+# the origin. Each hit frame adds one projectile (record 12|0x8000, damage word +0x1A, model 44
+# coord) at (shotDx, shotDy, 0). Scripts: bit 0 = damage script +0x94, bit 1 = retire script +0x98.
+# Inputs : name health damage hits frames fe extraFlags slot desc childHit near shotDy reset scripts targetable shotDx
+# Outputs: -> outHealth outAlive outFreed outFlags out8C childHealth childFlags childAlive childFreed
+#            score0 score1 total0 total1 p0Count10 stCount38 stTimer18 e0
+#            footprints footprintOwners footMask refreshes unitRetired dmgScripts lastDead retScripts lastRetArg
+one_hit_drone_held_scores_player   500 600  1  3 2         0   0 0 0 1    0 0 0 0    0 -> -100 0 1 563151192  3 -100 564199513 0 1 1 0 1 0 0 1 500 8 0 0 0 0 0 0 0 0 0
+one_hit_player_held_scores_drone   500 600  1  3 1         0   0 0 0 1    0 0 0 0    0 -> -100 0 1 563151192  3 -100 564199513 0 1 0 1 0 1 1 0   0 4 0 0 0 0 0 0 0 0 0
+open_outpost_retires_unscored      500 600  1  3 0         0   0 0 0 1    0 0 0 0    0 -> -100 0 1 563151193  3 -100 564199513 0 1 0 0 0 0 0 0 500 4 0 0 0 0 0 0 0 0 0
+lethal_hit_retires_next_frame      500 600  1  1 2         0   0 0 0 1    0 0 0 0    0 -> -100 1 0 579928392  3 -100 580976721 1 0 0 0 0 0 0 0 500 4 0 0 0 0 0 0 0 0 0
+twenty_one_hits_of_25              500  25 25 30 2         0   0 0 0 1    0 0 0 0    0 ->  -25 0 1 563151192 23  -25 564199513 0 1 1 0 1 0 0 1 500 8 0 0 0 0 0 0 0 0 0
+child_pair_doubles_the_damage      500 100  3  4 2         0   0 0 1 1    0 0 0 0    0 -> -100 0 1 563151192  5 -100 564199513 0 1 1 0 1 0 0 1 500 8 0 0 0 0 0 0 0 0 0
+child_pair_three_frames            500 100  3  3 2         0   0 0 1 1    0 0 0 0    0 -> -100 1 0 579928392  5 -100 580976721 1 0 0 0 0 0 0 0 500 4 0 0 0 0 0 0 0 0 0
+ignore_flag_0x80                   500 600  2  3 2       128   0 0 0 1    0 0 0 0    0 ->  500 1 0 546374088  0  500 547422289 1 0 0 0 0 0 0 0 500 4 0 0 0 0 0 0 0 0 0
+shot_above_the_height_box          500 600  2  3 2         0   0 0 0 1 2672 0 0 0    0 ->  500 1 0 546373960  0  500 547422289 1 0 0 0 0 0 0 0 500 4 0 0 0 0 0 0 0 0 0
+shot_inside_the_height_box         500 600  1  3 2         0   0 0 0 1 2671 0 0 0    0 -> -100 0 1 563151192  3 -100 564199513 0 1 1 0 1 0 0 1 500 8 0 0 0 0 0 0 0 0 0
+quartile_latch_refreshes           500 130  1  2 2         0 101 1 0 1    0 0 0 0    0 ->  370 1 0 546373960  0  370 547422289 1 0 0 0 0 0 0 0 500 4 0 0 0 1 0 0 0 0 0
+quartile_without_descriptor        500 130  1  2 2         0 101 0 0 1    0 0 0 0    0 ->  370 1 0 546373960  0  370 547422289 1 0 0 0 0 0 0 0 500 4 0 0 0 0 0 0 0 0 0
+footprint_with_projectile_owner    500 600  1  3 2         0 101 0 0 1    0 0 0 0    0 -> -100 0 1 563151192  3 -100 564199513 0 1 1 0 1 0 0 1 500 8 2 1 0 0 0 0 0 0 0
+far_child_retires_one_frame_later  500 600  1  2 2         0 101 0 0 0    0 0 0 0    0 -> -100 0 1 563151192  3 -100  44105817 1 0 1 0 1 0 0 1 500 8 1 1 0 0 0 0 0 0 0
+far_child_freed_after_third_frame  500 600  1  3 2         0 101 0 0 0    0 0 0 0    0 -> -100 0 1 563151192  3 -100 564199513 0 1 1 0 1 0 0 1 500 8 2 1 2 0 0 0 0 0 0
+reset_after_capture_scores_nothing 500 600  0  1 2         0   0 0 0 1    0 1 3 1    0 ->  500 0 1 881918280  0  500 614531153 0 1 0 0 0 0 0 0 500 4 0 0 0 0 1 0 0 1 0
+reset_after_lethal_hit             500 600  1  1 2         0   0 0 0 1    0 1 3 0    0 -> -100 0 1 647037256  3 -100 648085585 0 1 0 0 0 0 0 0 500 4 0 0 0 0 0 1 1 1 0
+scripts_on_damage_and_retire       500 600  1  3 2         0   0 0 0 1    0 0 3 0    0 -> -100 0 1 563151192  3 -100 564199513 0 1 1 0 1 0 0 1 500 8 0 0 0 0 0 1 1 1 1
+damage_script_not_lethal           500 100  1  2 2         0   0 0 0 1    0 0 1 0    0 ->  400 1 0 546373960  0  400 547422289 1 0 0 0 0 0 0 0 500 4 0 0 0 0 0 1 0 0 0
+no_retire_script_flag              500 600  1  3 2 134217728   0 0 0 1    0 0 3 0    0 -> -100 0 1 697368920  3 -100 564199513 0 1 1 0 1 0 0 1 500 8 0 0 0 0 0 1 1 0 0
+spawned_unit_bookkeeping           500 600  1  3 2         0   0 0 0 1    0 0 0 1    0 -> -100 0 1 831586648  3 -100 564199513 0 1 1 0 1 0 0 1 500 8 0 0 0 0 1 0 0 0 0
+sphere_gate_rejects_box_overlap    500 600  1  3 2         0   0 0 0 1 2650 0 0 0 8400 ->  500 1 0 546373960  0  500 547422289 1 0 0 0 0 0 0 0 500 4 0 0 0 0 0 0 0 0 0
+sphere_and_boxes_overlap           500 600  1  3 2         0   0 0 0 1 2000 0 0 0 8400 -> -100 0 1 563151192  3 -100 564199513 0 1 1 0 1 0 0 1 500 8 0 0 0 0 0 0 0 0 0
+width_box_edge_misses              500 600  1  3 2         0   0 0 0 1    0 0 0 0 8464 ->  500 1 0 546373960  0  500 547422289 1 0 0 0 0 0 0 0 500 4 0 0 0 0 0 0 0 0 0
+width_box_inside_hits              500 600  1  3 2         0   0 0 0 1    0 0 0 0 8463 -> -100 0 1 563151192  3 -100 564199513 0 1 1 0 1 0 0 1 500 8 0 0 0 0 0 0 0 0 0

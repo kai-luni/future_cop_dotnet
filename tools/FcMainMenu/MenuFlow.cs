@@ -270,7 +270,7 @@ public sealed class MenuFlow
                 Preview = new WireframeScene(mission, new ViewerOptions(Assembly: true, Textured: true, AutoFire: false));
             else
             {
-                var level = new LevelScene(mission);
+                var level = new LevelScene(mission) { EnableCsacSpawner = _enableLevelMovement };
                 if (_enableLevelMovement) level.EnableMechMovement();
                 if (_enableLevelMovement) level.EnableFiring();
                 Level = level;
@@ -452,7 +452,8 @@ public sealed class MenuFlow
     /// <summary>
     /// Match state of the running level (<c>D_8009FA94</c>) and the HUD globals (<c>D_8009FA00</c>,
     /// <c>D_8009FA0C</c>, <c>D_8009FAA4</c>). The score block appears only with
-    /// <see cref="HudSession.Mode"/> 1; the port has no match scoring yet, so it stays hidden.
+    /// <see cref="HudSession.Mode"/> 1: the running level paints it with the live words of
+    /// <see cref="LevelScene.ScoreSession"/> laid over this base session.
     /// </summary>
     public HudSession Session { get; set; } = new() { Mode = 0 };
 
@@ -524,7 +525,7 @@ public sealed class MenuFlow
             if (!Profile)
             {
                 Level.Render(Camera);
-                InGameHud.Paint(Level.Rgb, BuildHud(), Session, Globals, Level.Vram);
+                InGameHud.Paint(Level.Rgb, BuildHud(), Level.ScoreSession(Session), Globals, Level.Vram);
                 FrameBlit.RgbToBgrx(Level.Rgb, LevelScene.Width, LevelScene.Height, bgrx, scale);
                 return;
             }
@@ -537,7 +538,7 @@ public sealed class MenuFlow
             Cells = Level.VisibleCells;
             t = Stopwatch.GetTimestamp();
             a = GC.GetAllocatedBytesForCurrentThread();
-            InGameHud.Paint(Level.Rgb, BuildHud(), Session, Globals, Level.Vram);
+            InGameHud.Paint(Level.Rgb, BuildHud(), Level.ScoreSession(Session), Globals, Level.Vram);
             BytesHud = GC.GetAllocatedBytesForCurrentThread() - a;
             MsHud = Stopwatch.GetElapsedTime(t).TotalMilliseconds;
             t = Stopwatch.GetTimestamp();

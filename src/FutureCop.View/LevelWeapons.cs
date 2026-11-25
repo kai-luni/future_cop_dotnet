@@ -399,7 +399,96 @@ public sealed class LevelWeapons
     /// </summary>
     public void AdvanceBeams()
     {
+        // gWeaponSlotUpdate sends the slot types 0x0A..0x0C and 0x0E to gBeamPartUpdate every frame
+        // the trigger is held, so a live beam delivers its direct hit once per frame.
+        if (BeamHitWorld is { } world) DeliverBeamHits(world);
         foreach (var beam in Beams) beam.Advance();
         Beams.RemoveAll(b => b.Expired);
+    }
+
+    /// <summary>
+    /// The entity world the beam hits deliver message 14 into (func_8006B23C `do_cb`,
+    /// 8006B23C.c:196-201). Null keeps the beams decorative; the level owns this wiring.
+    /// </summary>
+    public EntityWorld? BeamHitWorld { get; set; }
+
+    /// <summary>
+    /// The source word of a beam hit, <c>cb.unk00 = self-&gt;unk14</c> (func_8006B23C:198): the firing
+    /// entity's record id - the scene passes the player actor id ORed with 0x8000, the same word
+    /// <see cref="ProjectileContact"/> carries for shots, and ApplyBaseDamage strips it with 0x7FFF
+    /// (8002AA1C.c:98).
+    /// </summary>
+    public uint BeamSourceWord { get; set; }
+
+    /// <summary>
+    /// The attacking entity of a beam hit, <c>cb.unk08 = self</c> (func_8006B23C:200). The port has no
+    /// live entity for the player's weapon object, so this stays null by default; message 14 then
+    /// leaves the wounded entity's SourceUnitWord unchanged (the 8002AA1C.c:116 guard).
+    /// </summary>
+    public LiveEntity? BeamAttacker { get; set; }
+
+    /// <summary>
+    /// The direct-hit callback of gBeamPartUpdate (func_8006B23C:196-201, <c>do_cb</c>, the same
+    /// record 8005F018.c:407 builds): a beam whose segment reaches an entity delivers message 14
+    /// with the <see cref="DirectHit"/> payload - damage <c>s3-&gt;unk0C</c> (def + 0x0C), kind
+    /// <c>e-&gt;unk1F</c> (def + 0x1F, the byte gWeaponSlotUpdate passes as gBeamPartUpdate's arg2),
+    /// source <c>self-&gt;unk14</c> - to every entity the segment touches. Returns the number of hits
+    /// delivered this frame.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The C fires the callback on its locked target handle only; the port has no lock-on, so the
+    /// segment test against the active entities takes that place - the same approximation the shot
+    /// pass makes with its projectile pairs. A map hit keeps the C from firing
+    /// (<c>s5 &amp; 0xFF</c>); the port's ground clip only shortens the segment (<see cref="Beam.ClipToGround"/>),
+    /// so a beam blocked by terrain stops short of the entities behind it as well.
+    /// </para>
+    /// <para>The radial spread of the second half (s3-&gt;unk0E, gApplyRadialContactDamage) is not ported.</para>
+    /// </remarks>
+    /// <param name="world">The entity world the beams deliver into (see <see cref="BeamHitWorld"/>).</param>
+    public int DeliverBeamHits(EntityWorld world)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        int hits = 0;
+        foreach (var beam in Beams)
+        {
+            var definition = beam.Definition;
+            var hit = new DirectHit(
+                BeamSourceWord,
+                unchecked((short)definition.DamageWord),
+                KindOf(definition),
+                BeamAttacker);
+            foreach (var entity in world.Active)
+            {
+                if (entity.RuntimeId <= 0 || (entity.Flags & 4) != 0 || entity.Coord is not { } coord) continue;
+                var (cx, cy, cz) = ClosestSegmentPoint(beam, coord);
+                if (!EntityPairCollision.ReachesPartTest(coord, new CollisionCoord(cx, cy, cz, 0, 0, 0)))
+                    continue;
+                entity.HandleMessage(14, world, hit);
+                hits++;
+            }
+        }
+        return hits;
+    }
+
+    /// <summary>def + 0x1F of a half: the byte gWeaponSlotUpdate passes into gBeamPartUpdate as its arg2.</summary>
+    private byte KindOf(ShotDefinition half)
+    {
+        int offset = half.RecordOffset + 0x04 + half.Half * 0x20 + 0x1F;
+        var bytes = _file.Bytes;
+        return (uint)offset < bytes.Length ? bytes[offset] : (byte)0;
+    }
+
+    /// <summary>The point of the beam segment closest to the entity's collision center (long math).</summary>
+    private static (int X, int Y, int Z) ClosestSegmentPoint(Beam beam, CollisionCoord coord)
+    {
+        long dx = beam.End.X - beam.X, dy = beam.End.Y - beam.Y, dz = beam.End.Z - beam.Z;
+        long lengthSq = dx * dx + dy * dy + dz * dz;
+        if (lengthSq == 0) return (beam.X, beam.Y, beam.Z);
+        long dot = (coord.X - beam.X) * dx + (coord.Y - beam.Y) * dy + (coord.Z - beam.Z) * dz;
+        long t = Math.Clamp(dot, 0, lengthSq);
+        return ((int)(beam.X + t * dx / lengthSq),
+                (int)(beam.Y + t * dy / lengthSq),
+                (int)(beam.Z + t * dz / lengthSq));
     }
 }

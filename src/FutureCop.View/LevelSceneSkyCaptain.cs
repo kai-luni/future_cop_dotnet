@@ -68,10 +68,12 @@ public sealed class SkyCaptainSystem
     private bool _enableBuildOrderSpawner;
 
     /// <summary>
-    /// Opt-in flag for the non-retail <see cref="BuildOrderSpawner"/> extension. Off by default so
-    /// the main scene path remains strictly retail-parity. Retail mission scripts spend the same
-    /// score words (S[25]/S[26]) on units through the mission registry; once that script channel is
-    /// ported, enabling this flag alongside it would produce units twice.
+    /// Opt-in flag for the retired non-retail <see cref="BuildOrderSpawner"/> stopgap. Off by default
+    /// so the main scene path uses the retail <see cref="CsacUnitSpawner"/> + <c>Cfun</c> RPNS timer
+    /// pipeline (<c>GameSession[44..55]</c> -&gt; <c>ScriptVars</c> -&gt; op 60 <c>SPWID</c>). Kept
+    /// behind this switch for existing <c>BuildOrderSpawner</c> tests and callers that want simple
+    /// marching placeholder units without full per-type unit AI. Do not enable alongside
+    /// <see cref="LevelScene.EnableCsacSpawner"/> when testing retail parity.
     /// Transitioning from <c>false</c> to <c>true</c> re-baselines <see cref="Spawner"/> to the
     /// current <see cref="Economy"/> counters so earlier production does not burst-spawn on toggle.
     /// </summary>
@@ -88,6 +90,13 @@ public sealed class SkyCaptainSystem
 
     /// <summary>Units currently spawned by <see cref="Spawner"/> (port extension beyond retail).</summary>
     public IReadOnlyList<BuiltUnit> BuiltUnits => Spawner.Units;
+
+    /// <summary>
+    /// The strategy candidates the drone scan reads (<c>D_800A8F90</c> view of the scene), refreshed
+    /// by every strategy tick through <c>SceneStrategyUnit.RefreshObjective</c>.
+    /// </summary>
+    public IReadOnlyList<DroneStrategy.StrategyUnit> StrategyUnits =>
+        _strategyUnits.Select(u => u.Strategy).ToList();
 
     /// <summary>gGameSession +0x4C, clamped at spawn by func_800331CC.</summary>
     public int Difficulty { get => Economy.S4C; set => Economy.S4C = value; }
@@ -252,6 +261,9 @@ public sealed class SkyCaptainSystem
             var objective = r.Type == CaptureObjective.EntityType
                 ? objectives?.FirstOrDefault(o => o.Id == r.Id)
                 : null;
+            // A freed outpost has no runtime block any more (gSweepRetiredEntities, 8004D598.c:66):
+            // it is not a strategy candidate - the scan pass would keep targeting it.
+            if (objective is { Freed: true }) continue;
             if (r.Container != EntityContainer.Cact && objective is null) continue;
             var unit = new SceneStrategyUnit(r, objective);
             _strategyUnits.Add(unit);
@@ -294,6 +306,14 @@ public sealed class SkyCaptainSystem
         public void RefreshObjective()
         {
             if (Objective is not { } objective) return;
+            // The retirement sweep freed the outpost (gSweepRetiredEntities, 8004D598.c:54):
+            // the scan pass of DroneStrategy only reads Active (:164), so a freed objective is
+            // taken out of the candidate set instead of keeping its last team state.
+            if (objective.Freed)
+            {
+                Strategy.Active = false;
+                return;
+            }
             Strategy.Team = objective.Team;
             Enemy.Type18 = (byte)objective.Team;
         }
