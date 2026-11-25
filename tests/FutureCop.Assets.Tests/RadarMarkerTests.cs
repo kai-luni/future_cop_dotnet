@@ -376,11 +376,11 @@ public sealed class RadarMarkerTests
                 res.Triangles[2]);
         }
 
-        // Default overload uses documented PlaceholderMarkerColorTable[flags & 0x1F].
+        // Default overload uses documented MarkerColorTable[flags & 0x1F].
         var defaultRes = RadarMarkers.DrawRadarMarkers(reference, side: 0, frameTime: 0x80, node);
         Assert.Equal(3, defaultRes.Triangles.Count);
         Assert.Equal(
-            (uint)RadarMarkers.PlaceholderMarkerColorTable[3] | RadarMarkers.PolyF3Opcode,
+            (uint)RadarMarkers.MarkerColorTable[3] | RadarMarkers.PolyF3Opcode,
             defaultRes.Triangles[0].CodeWord);
     }
 
@@ -412,7 +412,10 @@ public sealed class RadarMarkerTests
     public void InGameHud_Paint_WiresPlayerPointerAndTargetTrianglesThroughHudDraw()
     {
         // Side 0 (origin 40, 44), heading = 0 -> player pointer angle = -0 - 0x800 = -2048 (2048):
-        //   D_8009AFB4 rotated by 2048 -> vertices (16, 47), (10, 44), (16, 41) -> centroid (14, 44).
+        //   func_8005A740 LINE_F2 from radius 24 to 30 -> (16, 44)..(10, 44), passing through (14, 44).
+        //   Colour is the hard-coded LINE_F2 code 0x40808080 -> RGB (0x80, 0x80, 0x80): 8005A9C4.c:112
+        //   passes 0xF8F8F8 as a third argument, but func_8005A740 takes two parameters and sets
+        //   line->code = 0x40808080 (8005A740.c:52-53; prose at 8005A9C4.c:84-91).
         // Active target in slot 0 at +X (PosA=0, PosB=0x20 -> X=0x4000, Z=0), flags=0:
         //   bearing = 0 -> vertices (64, 41), (70, 44), (64, 47) -> centroid (66, 44).
         var targetNode = new RadarMarkerNode(
@@ -430,7 +433,7 @@ public sealed class RadarMarkerTests
             Player = new HudPlayerBlock { Value64 = 2, ValueC1 = 0 },
         };
         InGameHud.Paint(pointerOnly, gameWithoutTargets, session, new HudGlobals { FrameTime = 0x00 });
-        Assert.Equal((0xF8, 0xF8, 0xF8), Pixel(pointerOnly, 14, 44));
+        Assert.Equal((0x80, 0x80, 0x80), Pixel(pointerOnly, 14, 44));
         Assert.Equal((0x00, 0x00, 0x00), Pixel(pointerOnly, 66, 44));
 
         // 2. With target node + blink on (FrameTime = 0x80): both pointer and target triangle are painted.
@@ -440,18 +443,18 @@ public sealed class RadarMarkerTests
             Player = gameWithoutTargets.Player with { RadarMarkers = targetNode },
         };
         InGameHud.Paint(withTargets, gameWithTargets, session, new HudGlobals { FrameTime = 0x80 });
-        int expectedColor = RadarMarkers.PlaceholderMarkerColorTable[0];
+        int expectedColor = RadarMarkers.MarkerColorTable[0];
         var expectedRgb = (
             (byte)(expectedColor & 0xFF),
             (byte)((expectedColor >> 8) & 0xFF),
             (byte)((expectedColor >> 16) & 0xFF));
-        Assert.Equal((0xF8, 0xF8, 0xF8), Pixel(withTargets, 14, 44));
+        Assert.Equal((0x80, 0x80, 0x80), Pixel(withTargets, 14, 44));
         Assert.Equal(expectedRgb, Pixel(withTargets, 66, 44));
 
         // 3. With target node + blink off (FrameTime = 0x00): pointer still painted, target triangle gated off.
         var blinkOff = new byte[LevelScene.Width * LevelScene.Height * 3];
         InGameHud.Paint(blinkOff, gameWithTargets, session, new HudGlobals { FrameTime = 0x00 });
-        Assert.Equal((0xF8, 0xF8, 0xF8), Pixel(blinkOff, 14, 44));
+        Assert.Equal((0x80, 0x80, 0x80), Pixel(blinkOff, 14, 44));
         Assert.Equal((0x00, 0x00, 0x00), Pixel(blinkOff, 66, 44));
 
         // 4. Without Radar reference: radar pass is skipped (no pixels touched at (14, 44)).
