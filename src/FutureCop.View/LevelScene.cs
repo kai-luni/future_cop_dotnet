@@ -284,9 +284,11 @@ public sealed class LevelScene
         var script = pads.Pool.Slice(offset);
         if (script.IsEmpty || script[0] == 0) return; // 80069D68.c:163-165
 
+        if (_skyCaptain is { } sky) pads.SyncFromEconomy(sky.Economy);
         pads.SyncFromMatchScore(objectives.Score);
         RpnsScriptVm.Execute(script, pads.VmState, arg1, arg2);
         pads.SyncToMatchScore(objectives.Score);
+        if (_skyCaptain is { } skyAfter) pads.SyncToEconomy(skyAfter.Economy);
     }
 
     private SkyCaptainSystem? _skyCaptain;
@@ -415,9 +417,17 @@ public sealed class LevelScene
 
     /// <summary>
     /// The HUD session with the live score words (D_8009FA94 + 0x64). +0x5C is 1 in a Precinct Assault
-    /// match: the match end branches on it (80027D9C.c:78, 80060A0C.c:114). The counters +0x6C..+0x78
-    /// and the totals +0x84/+0x88 are read from the same session words of the RPNS VM
-    /// (gGameSession[27..30], [33..34]) when the mission has purchase pads.
+    /// match: the match end branches on it (80027D9C.c:78, 80060A0C.c:114). The unit counters
+    /// +0x6C..+0x78 (gGameSession[27..30]) and the claimed-outpost totals +0x84/+0x88
+    /// (gGameSession[33..34]) come from the RPNS VM's session bank when the mission has purchase pads.
+    /// No C function writes +0x84/+0x88 directly (gInitRuntime zeroes 0..0x38 at 80076EB0.c:82-85);
+    /// the retail writer is gInterpretEntityScript op 21 (gGameSession[a]++, 80069D68.c:243-245),
+    /// invoked by the slot-2 RPNS scripts of the outpost helipads (type-14 cmd 0x7A, 80031004.c:65-78;
+    /// P1 pads 151/167/189/211 -> [33], P2/Sky-Captain pads 153/171/193/215 -> [34] across all five
+    /// PA maps). The same two words are read by gDrawInGameHud (80047F30.c:41,218-223,257-262, gating
+    /// the >= 30 score flash on total1 + total2 &lt; 4), gUpdatePlayerEntity (800588D4.c:22,251),
+    /// gUpdateDroneStrategy (800336DC.c:71-72,750,818,822 as f84/f88), and gGetPlayerResultsStat
+    /// (80059E9C.c:48-50, stat id 12).
     /// </summary>
     public HudSession ScoreSession(HudSession session)
     {
@@ -1099,29 +1109,47 @@ public sealed class LevelScene
     }
 
     /// <summary>
-    /// Draws the purchase pads as ground outlines on top of the frame and returns the number of lines
-    /// drawn. Viewer presentation, not retail: a pad is an invisible trigger box in the C (80031C74.c,
-    /// 8002F8B8.c) and the visible pad is map geometry, so the outline is the box the port tests
-    /// (<see cref="PurchasePadSystem.IsInsidePad"/>: centre +/- extent on x and z) at the box centre height.
+    /// Draws the player-usable purchase and outpost-claim pads as ground outlines on top of the frame
+    /// and returns the number of lines drawn. Viewer presentation, not retail: a pad is an invisible
+    /// trigger box in the C (80031C74.c, 8002F8B8.c) and the visible pad is map geometry, so the
+    /// outline shows the x/z box the port tests (<see cref="PurchasePadSystem.IsInsidePad"/>).
     /// Type-95 map zones are a green rectangle; type-14 attachment pads a yellow rectangle with both
     /// diagonals, grey while flag 0x10 disables them (8003151C.c:106). A one-shot map zone that fired
     /// and was freed (80031DE8.c:176-184) is no longer drawn.
     /// </summary>
+    /// <remarks>
+    /// Three viewer-usability rules derived from rendered inspection on CONFT.MIS:
+    /// (1) Raw tACT <c>WorldY</c> is 0 for every pad while raised outpost platforms sit at +2560
+    /// (18 of 54 pads in CONFT.MIS have <c>GroundY != 0</c>), so drawing at <c>WorldY</c> shifts
+    /// outpost markers visibly below the floor; snapping to <see cref="LevelGround.Height"/> matches
+    /// the retail load-time surface snap (<c>gLoadMapZone</c> 800319D4.c:131-132,
+    /// <c>gInitTriggerAttachmentEntity</c> 80030DE0.c:150).
+    /// (2) Non-walker type-95 zones (<c>Flags &amp; 4 == 0</c>, 26-28 per PA map) are huge base-perimeter
+    /// intrusion boxes (98304 x 163840) and Csac scoring zones rather than player buy pads; skipping
+    /// them keeps the 4 type-95 and 24 type-14 walker pads readable without lines slicing through walls.
+    /// (3) Pads farther than the retail solo cull range (<c>0x38000</c>, 8004DF28.c:142-143) are
+    /// omitted so un-depth-tested lines from the opposite base do not streak across distant rooftops.
+    /// </remarks>
     private int PadMarkers(Gte.Mat view)
     {
         if (_purchasePads is not { Pads.Count: > 0 } pads) return 0;
+        const int maxPadDist = 0x38000;
         int lines = 0;
         foreach (var pad in pads.Pads)
         {
+            if (!pad.RequiresWalkerMode) continue;
             bool mapZone = pad.Kind == PurchasePadKind.MapZone;
             if (mapZone && (pad.Flags & 2) == 0 && _retiredMapZonePads.Contains(pad.RecordId)) continue;
+            if (Math.Abs(pad.WorldX - MechWorld.X) >= maxPadDist || Math.Abs(pad.WorldZ - MechWorld.Z) >= maxPadDist)
+                continue;
             byte[] colour = mapZone ? PadZoneColour : pad.IsEnabled ? PadAttachmentColour : PadDisabledColour;
+            int y = LevelGround.Height(Map, pad.WorldX, 0x100000, pad.WorldZ, out _);
             int x0 = pad.WorldX - pad.ExtentX, x1 = pad.WorldX + pad.ExtentX;
             int z0 = pad.WorldZ - pad.ExtentZ, z1 = pad.WorldZ + pad.ExtentZ;
-            var c00 = ProjectWorld(x0, pad.WorldY, z0, view);
-            var c10 = ProjectWorld(x1, pad.WorldY, z0, view);
-            var c11 = ProjectWorld(x1, pad.WorldY, z1, view);
-            var c01 = ProjectWorld(x0, pad.WorldY, z1, view);
+            var c00 = ProjectWorld(x0, y, z0, view);
+            var c10 = ProjectWorld(x1, y, z0, view);
+            var c11 = ProjectWorld(x1, y, z1, view);
+            var c01 = ProjectWorld(x0, y, z1, view);
             lines += PadLine(c00, c10, colour) + PadLine(c10, c11, colour)
                 + PadLine(c11, c01, colour) + PadLine(c01, c00, colour);
             if (!mapZone) lines += PadLine(c00, c11, colour) + PadLine(c10, c01, colour);

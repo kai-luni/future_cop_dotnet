@@ -13,8 +13,10 @@ All claims about PS1 retail behavior reference `future-cop-lapd-ps1/src/game/*.c
   Mission-Records (`conft`, `slim`, `hk`, `ovmp`, `joke`) und 4 Loadout-Listen.
 - **Menu-Flow & HUD**: `tools/FcMainMenu/MenuFlow.cs` wechselt aus PA in
   `LevelScene`, treibt den Walker via `Steps` (8-Tick-Akkumulator, `:429`) und
-  rendert `InGameHud`, setzt aber `Session = new() { Mode = 0 }` (`MenuFlow.cs:457`).
-  Der Sky-Captain-Tick laeuft mit (`Level.AdvanceSkyCaptain(...)`, `MenuFlow.cs:441`).
+  rendert `InGameHud` mit dem Live-Match-Status aus `Level.ScoreSession(Session)`
+  (`MenuFlow.cs:528,541`; Mode `1`, `Score0`/`Score1`, Einheitenzaehler `Count1..4`
+  und Claimed-Outpost-Totals `Total1`/`Total2`). Der Sky-Captain-Tick laeuft mit
+  (`Level.AdvanceSkyCaptain(...)`, `MenuFlow.cs:441`).
 - **Level-Szene & Player-Mech**: `src/FutureCop.View/LevelScene.cs` laedt
   Terrain, `MissionEntities`, `ObjectiveField`, `SkyCaptainSystem`, `PickupItems`
   (`type 0x10`) und `LevelWeapons` (`WeaponSlots`, `Shot`, `Beam`). `src/FutureCop.Game/Mech/`
@@ -22,29 +24,97 @@ All claims about PS1 retail behavior reference `future-cop-lapd-ps1/src/game/*.c
   `MechHover`, `MechAnimation`, `MechGround`, `MechCollision`, `MechMath`, plus
   `PlayerForm`) portiert 1P-Bewegung, Formwechsel, Wand-/Boden-Kollision und
   Teile-Assembly vollstaendig. `AttachWalker` erzwingt `body.Port == 0`
-  (`LevelScene.cs:178`), `MechWalker.cs:460` und `MechHover.cs:24` werfen
+  (`LevelScene.cs:446`), `MechWalker.cs:460` und `MechHover.cs:24` werfen
   `NotSupportedException` bei `world.Players != 1`.
-- **Outposts (`type 0x24`) & Sky Captain (`type 0x25`) auf `main` verdrahtet**:
-  - `src/FutureCop.Game/CaptureObjective.cs` portiert den Proximity-Capture-Kern
-    aus `8002D1A0.c` (`CaptureObjective.TryCapture`, `MatchScore`, `ObjectiveField`).
-    `LevelScene.EnableObjectives()` (`LevelScene.cs:124-143`) laedt alle `0x24`-Records,
-    `AdvanceWalker` ruft `_objectives?.Touch(...)` auf (`LevelScene.cs:217`), und
-    `Render` zeichnet Outpost + Child-Modell (`LevelScene.cs:576-593`).
-  - `src/FutureCop.Game/StrategicDrone.cs` (`StrategicDroneInit`, `StrategicDroneHandler`
-    fuer Msg 1/2/4/6/9/11/14, `RearmDroneWander`), `StrategicDroneTick.cs` (`8003532C.c`),
-    `DroneTargets.cs` und `DroneStrategicPosition.cs` sind portiert.
-  - `src/FutureCop.View/LevelSceneSkyCaptain.cs` (`SkyCaptainSystem`) spawnt Sky Captain
-    in `EnableObjectives()`, verdrahtet `DroneStrategy` + `Economy` (`DroneStrategy.Glob`,
-    Score-Sync `Economy.F68 <-> Score[1]` in `LevelSceneSkyCaptain.cs:430-432`) und
-    `LevelMap`-Raycasts (`BindMap`, `:180-198`); `LevelScene.AdvanceSkyCaptain` (`:151`)
-    tickt ihn, `LevelScene.Render` (`:598-616`) zeichnet ihn.
-  - **Ebenfalls auf `main` (PR #6)**: 1P-Zweig fuer `gSinglePlayerEntity` in
-    `MatchScore.RecordCapture` (`CaptureObjective.cs:230-241`, nach `8002D1A0.c:216-222`),
-    `src/FutureCop.Game/BuildOrderSpawner.cs` (opt-in Port-Erweiterung ueber
-    `EnableBuildOrderSpawner` in `LevelSceneSkyCaptain.cs:66-85,479`: spawnt
-    sichtbare, geradeaus fahrende/fliegende `BuiltUnit`-Instanzen aus `DroneStrategy.Glob`-
-    Zaehlern ohne KI/Kampf), deren Rendering in `LevelScene.Render` (`LevelScene.cs:621-646`)
-    sowie der Host-Harness `tests/host/capture-objective/harness.c`.
+- **Occupancy-Registry & Kartenplatzierung (`MapObjectRegistry.cs`)**:
+  Vollstaendige Retail-Ladereihenfolge in `LevelScene.EnableObjectives()`
+  (`InitMissionSpawnState` `8003F79C.c:44-69` -> `LoadFromMission` mit
+  `Csfx`-/`Cact`-Deskriptoren `8003BFD0.c` / `8003BC7C.c` / `8003C404.c` /
+  `8003C2A4.c` -> sofortige vs. verzoegerte Occupancy-Registrierung ueber
+  `D_8009F70C`/`D_8009F708` nach `8002A5F4.c:167` / `8003FA34.c:52-72` ->
+  Kettenmarkierung `8003C590.c` / `8003C500.c` / `8003C4C4.c` und LIFO-Replay in
+  `FinishLevelLoad` `8003FAD4.c:76-104`). Dazu `LiveObjectRegistry` mit
+  `BroadcastMessage6` und `EntityWorld` (`EntityLifecycle.cs`, `D_8009FA40` /
+  `D_800A8F90`, Culling `8004DF28.c`, Deferred-Updates `8004CE04.c`,
+  Paar-Kollision `800620D8.c`, Sweep `8004D598.c`). Verifiziert durch
+  Host-Harness `tests/host/map-occupancy/` (14 Vektoren).
+- **Retail-Spawner (`CsacUnitSpawner.cs`) & Kauf-Pfad (`PurchasePadSystem.cs`, `RpnsScriptVm.cs`)**:
+  - `RpnsScriptVm.cs` portiert `gInterpretEntityScript` (`80069D68.c:146-416`),
+    inkl. `GameSession`-Bank (`D_8009FA94`), `ScriptVars` (`D_8009FAD4`),
+    `Countdowns` (`D_8009F9A4`), `OpcodeTable` (`D_8009F9F8`, Init `80069B58.c:47-54`)
+    und der Opcodes `op 11/12/13/56/60/61`.
+  - `PurchasePadSystem.cs` laedt `RPNS`, `Cact` Typ `95` (`800319D4.c`/`80031C74.c`)
+    und Typ `14` (`80030DE0.c`/`8003151C.c`/`80031004.c`/`8002F8B8.c`) sowie die
+    `Cfun`-Timer (`80049420.c:85-92`, `80049564.c:49-82`), die sowohl
+    Spieler-Panzerqueues (`ScriptVars`) als auch Sky-Captain-Build-Orders
+    (`D_8009FA94 +0xB0..+0xDC`) per `op 60`/`op 61` in `CsacUnitSpawner`
+    entleeren. Verifiziert durch Host-Harnesses `tests/host/rpns-purchase/`
+    und `tests/host/csac-spawner/` (10 Vektoren).
+  - `CsacUnitSpawner.cs` portiert `D_8009F800` (`80060E74.c`, `800616A0.c`,
+    `8006125C.c`) inkl. `SpawnerUnitStats` (`8006125C.c:50-73`),
+    Spawn-Zeit-Occupancy (`8002A5F4.c:167`) und Eintrag in `EntityWorld`.
+  - `BuildOrderSpawner.cs` ist gegenueber `CsacUnitSpawner` retiret und bleibt
+    nur noch hinter dem Opt-in-Schalter `EnableBuildOrderSpawner` in
+    `LevelSceneSkyCaptain.cs` (da `CsacUnitSpawner` bewusst an der Grenze zu den
+    Per-Type-Bewegungshandlern stoppt).
+- **Outposts (`type 0x24`) & Sky Captain (`type 0x25`)**:
+  - `src/FutureCop.Game/CaptureObjective.cs` portiert Proximity-Capture aus
+    `8002D1A0.c` vollstaendig: 1P-Zweig fuer `gSinglePlayerEntity` (`:216-222`),
+    `0x12`-Carrier-Aufloesung (`:141-144`), Spieler-Modellradius (`:169`),
+    `unk104`-Child-Part-Synchronisation (`:201,209,211`), `StateA6`/`StateDE`
+    (`:202-203`), `unk9C`-Post-Capture-Script (`:238-239`, ueber
+    `LevelScene.RunPostCaptureScript` an `RpnsScriptVm` angeschlossen) sowie
+    Message-5-Scoring (`8002D664.c:179-225`). Verifiziert durch die
+    Host-Harnesses `tests/host/capture-objective/` (12 Vektoren),
+    `tests/host/outpost-message5/` und `tests/host/outpost-retirement/`.
+  - `src/FutureCop.Game/StrategicDrone.cs`, `StrategicDroneTick.cs` (`8003532C.c`),
+    `DroneTargets.cs`, `DroneStrategicPosition.cs` und
+    `src/FutureCop.View/LevelSceneSkyCaptain.cs` spawnen, ticken und zeichnen
+    den Sky Captain (`type 0x25`), inkl. Economy-Sync `DroneStrategy.Glob <->
+    RpnsVmState.GameSession`.
+- **Fahrstuehle (`type 10`, `Elevator.cs`)**:
+  Vollstaendige Typ-10-Kette (`80041B6C.c`, `80041488.c`, `80041880.c`,
+  `80041728.c`) in `LevelScene` verdrahtet: Platzierung aus `Cact` (`CONFT`: 4
+  `[15, 24, 37, 39]`, `JOKE`: 2 `[262, 249]`, `SLIM`: 2 `[262, 249]`, `HK`: 0,
+  `OVMP`: 0), `ProbeGroundObjects` / `ReadElevatorRider`, Tick in
+  `AdvanceWalker` bzw. `BroadcastMessage6`, RPNS `op 56` (`0x52`/`0x53`),
+  Culling (`8004DF28.c:142-143`) und Rendering (`ElevatorPrimitives`).
+  Verifiziert durch Host-Harness `tests/host/elevator/`. Typ `20` (Mounted Turret
+  Carrier, `MountedTurretCarrier.cs`) bleibt bewusst unverdrahtet (Zensus aller
+  fuenf PA-Karten: **0 Instanzen**).
+- **Sichtbarkeit im Level (`LevelScene.Render` & `ScoreSession`)**:
+  - **Gekaufte Einheiten**: `LevelScene.Render` zeichnet jede lebende
+    `SpawnedCsacUnit` einmalig aus `EntityWorld.Units` (`SpawnedUnitPrimitives`;
+    der nach dem Merge entstandene Doppel-Zeichenpass ueber
+    `CsacUnitSpawner.SpawnedUnits` wurde entfernt, `SpawnedCsacUnitPrimitives`
+    ist ein Alias derselben Zaehlung). Retirete Einheiten (`RuntimeId == 0`,
+    `8004D958.c:59` bzw. entfernt durch `8004D598.c:55-64`) werden uebersprungen.
+  - **Pad-Marker (`PadMarkers` / `PadMarkerLines`)**: Viewer-Praesentation ohne
+    Retail-Vorbild (Pads sind im C unsichtbare Trigger-Boxen, `80031C74.c`,
+    `8002F8B8.c`). Typ-95-Kaufpads erscheinen gruen, aktive Typ-14-Pads gelb
+    mit beiden Diagonalen, deaktivierte (`Flags & 0x10`, `8003151C.c:106`) grau.
+    Aus Sichtpruefung am gerenderten Bild (`CONFT.MIS`) auf Bodenhoehe
+    `LevelGround.Height` gesnappt (analog `800319D4.c:131-132` und
+    `80030DE0.c:150`, da `tACT`-Rohhoehe `0` ist, 18/54 Pads aber auf
+    `GroundY != 0` bis `+/-2560` liegen), auf Walker-Pads (`Flags & 4 != 0`:
+    4 Typ-95 + 24 Typ-14 je PA-Karte) gefiltert (blendet die 26-28 grossen
+    Basis-Perimeter-/Csac-Zonen aus) und auf Solo-Cull-Distanz `0x38000`
+    (`8004DF28.c:142-143`) begrenzt.
+  - **HUD-Score & Totals (`+0x84`/`+0x88`)**: `LevelScene.ScoreSession` speist
+    `InGameHud` mit `Score0`/`Score1`, `Count1..4` (`gGameSession[27..30]`) und
+    `Total1`/`Total2` (`gGameSession[33..34]`, `+0x84`/`+0x88`). C-Trace ueber
+    alle 82 `D_8009FA94`-Dateien bestaetigt: Kein C-Code schreibt `+0x84`/`+0x88`
+    direkt (`gInitRuntime` nullt `0..0x38` in `80076EB0.c:82-85`); der Retail-Writer
+    ist `gInterpretEntityScript` Opcode 21 (`gGameSession[a]++`, `80069D68.c:243-245`)
+    in den Slot-2-RPNS-Scripts der Outpost-Helipads (`cmd 0x7A`, `80031004.c:65-78`:
+    P1 `151/167/189/211` -> `+0x84`, P2/Sky Captain `153/171/193/215` -> `+0x88`
+    in allen fuenf PA-Karten). Dieselben zwei Woerter lesen `gDrawInGameHud`
+    (`80047F30.c:41,218-223,257-262`, Blink-Bedingung `total1 + total2 < 4` ab
+    `score >= 30`), `gUpdatePlayerEntity` (`800588D4.c:22,251`),
+    `gUpdateDroneStrategy` (`800336DC.c:71-72,750,818,822` als `f84`/`f88`) und
+    `gGetPlayerResultsStat` (`80059E9C.c:48-50`, Stat-ID 12). Durch
+    `RpnsScriptVm` + `PurchasePadSystem` + Economy-Sync in `AdvancePurchasePads`
+    und `RunEntityScript` sind sie im Port live beschrieben.
 - **Wireframe-Ansicht**: `src/FutureCop.View/WireframeScene.cs` zeigt nur
   statische/animierte `Cobj`-Modelle und lokale Test-Projektile (`_shots`).
 - **Weitere AI-/Gegner-Module**:
@@ -62,49 +132,42 @@ All claims about PS1 retail behavior reference `future-cop-lapd-ps1/src/game/*.c
   - `src/FutureCop.Game/EnemyCorpseCleanup.cs` + `EnemyMath.cs`
 
 ### Was fuer "PA 1P komplett spielbar" fehlt
-1. **Kartenplatzierte Objekte & Occupancy-Registry**: Es fehlt die komplette
-   Spawn-/Belegungs-Pipeline (`D_800A0C70`, sofortige vs. verzoegerte Registrierung
-   `8003FA34.c` -> `8003BC0C.c` / `8003B838.c`, Replay beim Ladeende `8003FAD4.c`)
-   sowie eine allgemeine Entity-Registry analog `D_8009FA40` / `D_800A8F90` mit
-   Message-6-Broadcast pro Frame (`LevelScene` treibt bisher nur Spieler,
-   Sky Captain und opt-in `BuiltUnit`-Instanzen aus `BuildOrderSpawner`).
-2. **Spawner (`Csac`) & Factory-Dispatch**: `MissionEntities.cs` parst `Cact` und
-   `Csac` inkl. 3 `RPNS`-Script-Offsets (`Scripts`), aber es gibt keinen
-   Retail-Laufzeit-Spawner fuer `Csac` (`D_8009F800`, `80060E74.c` -> `800616A0.c` ->
-   `8006125C.c`) und keinen allgemeinen Type-Handler-Switch (`8002AE54.c`).
-3. **Second Mech (Sky Captain `type 0x25`) Restintegration**: Kernlogik und
-   Szenen-Rendering sind auf `main`, und `MenuFlow.cs:441` tickt ihn per
-   `Level.AdvanceSkyCaptain(...)`; Msg-4-Respawn-Loop und Treffer-/Crash-Zustellung
+*(Erledigt aus der frueheren Liste: Occupancy-Registry & Kartenplatzierung
+`MapObjectRegistry`, Retail-`Csac`-Spawner `CsacUnitSpawner` + `Cfun`-Timer,
+Kauf-Pfad `PurchasePadSystem`/`RpnsScriptVm`, `CaptureObjective`-Restlogik
+`0x12`/`unk104`/`unk9C`/Msg-5-Scoring, Fahrstuehle Typ 10 sowie Level-Sichtbarkeit
+inkl. HUD-Score. Typ-20-Turret-Carrier bleiben bewusste Notiz ohne Verdrahtung,
+da alle fuenf PA-Karten 0 Instanzen enthalten.)*
+
+1. **Per-Type-Handler der PA-Armee (Types `5`, `9`, `28`/`0x1C`, `8`)**:
+   `CsacUnitSpawner` spawnt und rendert gekaufte Einheiten als generische
+   `SpawnedCsacUnit` in `EntityWorld` (inkl. Treffer/Retirement/Scoring), aber
+   der allgemeine Type-Handler-Switch (`8002AE54.c`) fuer bewegliche/kaempfende
+   Armee-Einheiten -- Type `5` (Rail-Fahrzeug, `800382B4.c`/`800378BC.c`),
+   Type `9` (Hover-Drohne, `800324E0.c`, headless als `HoverEnemy` vorhanden),
+   Type `28`/`0x1C` (Multi-Turret-Panzer, `800398EC.c`) und Type `8`
+   (Base-Defender, `8002D664.c`) -- ist noch nicht an `LevelScene` angeschlossen.
+   Ausserdem waehlt `AdvancePurchasePads` noch den Spieler direkt statt der
+   `D_800A8F90`-Kandidatensuche (`80031DE8.c:119-159`) fuer `Csac`-zielende
+   One-Shot-MapZones (`CONFT`: `5, 9, 235..244`).
+2. **Second Mech (Sky Captain `type 0x25`) Restintegration**: Kernlogik,
+   Wirtschafts-Sync und Szenen-Rendering laufen ueber `Level.AdvanceSkyCaptain(...)`
+   (`MenuFlow.cs:441`); Msg-4-Respawn-Loop und Treffer-/Crash-Zustellung
    (`msg 9/11/14`) aus `StrategicDroneHandler` sind noch nicht an `LevelScene`
    angeschlossen.
-4. **PA-Armee, Outpost-Restlogik & Basen-Besitz**: Types `5` (Rail-Fahrzeug),
-   `9` (Hover-Drohne), `28`/`0x1C` (Multi-Turret-Panzer) und `8` (Base-Defender)
-   sind im Retail-Pfad weder gespawnt noch gerendert. Bei `CaptureObjective.cs`
-   (`type 0x24`) ist der 1P-Zweig fuer `gSinglePlayerEntity` inzwischen auf `main`;
-   es fehlen noch `0x12`-Carrier-Aufloesung (`8002D1A0.c:141-144`),
-   Child-Part-Synchronisation (`obj->unk104`, `8002D1A0.c:201,209,211`),
-   Post-Capture-Script (`8002D1A0.c:238-239`) und Message-5-Scoring
-   (`8002D664.c:179-225`).
-5. **Bewegliche Karten-Elemente (Fahrstuehle & Turret-Carrier)**: Weder die
-   Type-10-Lift-Kette (`80041B6C.c` / `80041488.c` / `80041880.c` / `80041728.c`)
-   noch die Type-20-Mounted-Turret-Carrier-Kette (`80039504.c` / `800395A8.c` /
-   `80039418.c` / `80039298.c`) ist im .NET-Port vorhanden.
-6. **Treffer-, Schadens- & Todeslogik**: `LevelWeapons` prueft keine Kollision
-   gegen gegnerische Entities; in `EnemyWeaponFire.cs` (mit portiertem
-   `LeadDirectionSolver` `8005E2A0.c`) sind nur `8005E47C` (`env.SpawnDirectShot`,
-   `:234`) und `8005F018` (`env.OnFireRayAttack`, `:205`) als unverdrahtete
-   Delegates vorhanden, waehrend `8005E9E4`, `8005EB74`, `8005ECB8` und `8005EE04`
-   `NotImplementedException` werfen (`:284-291`; die Spielerseite von `8005E47C`
-   ist bereits teilweise in `src/FutureCop.View/Shot.cs` / `LevelWeapons.cs`
-   portiert). Player-Death/Respawn (`80058D78`, `80058714`) fehlt.
-7. **PA Spielregeln, Wirtschaft & Sieg/Niederlage**: `DroneStrategy` schreibt
-   Felder auf `D_8009FA94` (`+0xA0..+0xDF`), und Spieler haben in PA eine
-   Punkte-/Kauf-Oekonomie (L1-Bauaktion an Basiskonsolen), aber der zugehoerige
-   Retail-Kauf-/Input-Pfad sowie die RPNS-Script-VM (`80069D68.c`) sind weder
-   vollstaendig getraced noch portiert. `LevelScene.ScoreSession` ist nicht in
-   `MenuFlow` / Endscreen (`80028164.c`) angeschlossen.
-8. **Audio / Voice**: `WeaponSoundEvent` in `LevelWeapons` ist stumm; Retail-SFX/
-   Announcer/Mech-Voices (`80046C84`, `80047088`) sind nicht angeschlossen.
+3. **Treffer-, Schadens- & Todeslogik**: Spieler-Projektile treffen Outposts
+   und `SpawnedCsacUnit`-Instanzen ueber `EntityWorld` (`DeliverShotContacts`),
+   aber Gegner-Waffen und Spieler-Tod fehlen noch: in `EnemyWeaponFire.cs`
+   sind nur `8005E47C` (`env.SpawnDirectShot`, `:234`) und `8005F018`
+   (`env.OnFireRayAttack`, `:205`) als unverdrahtete Delegates vorhanden,
+   waehrend `8005E9E4`, `8005EB74`, `8005ECB8` und `8005EE04`
+   `NotImplementedException` werfen (`:284-291`). Player-Death/Respawn
+   (`80058D78.c`, `80058714.c`) fehlt.
+4. **Match-Ende & Auswertung**: `LevelScene.ScoreSession` speist das In-Game-HUD
+   (`MenuFlow.cs:528,541`), aber Victory-/Game-Over-Uebergang (`80061020.c`)
+   und Endscreen (`80028164.c`, `80027F80.c` -> `80059E9C.c`) fehlen.
+5. **Audio / Voice**: `WeaponSoundEvent` in `LevelWeapons` ist stumm; Retail-SFX/
+   Announcer/Mech-Voices (`80046C84.c`, `80047088.c`) sind nicht angeschlossen.
 
 ---
 
@@ -267,7 +330,7 @@ Loader-/Registry-Module tickt Mechs oder spielt Voices ab:
   Herausforderer ist; welcher Spieler bzw. welches Team den Wert aus `+0x68`
   (`unk64[1]`) im 1P-HUD angezeigt bekommt.
 
-### Einheiten-Produktion (Csac-Spawner) & offener Kauf-Pfad
+### Einheiten-Produktion (Csac-Spawner) & Kauf-Pfad (getraced & portiert)
 - **Confirmed**:
   - `gRegisterUnitSpawner` (`80060E74.c:112-159`, aus `Csac` in `80024EC8.c`)
     haengt den Descriptor an `D_8009F800` (`:122`), loest `'CASt'`/`'LSRa'`/`'TCAt'`
@@ -280,25 +343,26 @@ Loader-/Registry-Module tickt Mechs oder spielt Voices ab:
     ueber `gTrySpawnRegisteredUnit` (`:62-69`) und dekrementiert bei
     `unk16 < unk0E && unk12 != 0 && !(flags & 1)` den Timer `unk14` (`:70-76`).
   - `gTrySpawnRegisteredUnit` (`8006125C.c:41-78`) wertet `gInterpretEntityScript(s->arg1, 0, -1, 0)`
-    aus (`:47`), aktualisiert Zaehler und (bei `gGameSession->active == 1`, `:50-73`;
-    dass `1` fuer PA steht, ist plausibel, aber **Unproven**) Statistiken, spawnt ueber
-    `gSpawnTargetableEntityId(s->def)` (`:75`) und fuehrt Post-Spawn-Script `s->arg2` aus
-    (`gInterpretEntityScript(s->arg2, 0, -1, 0)`, `:76`).
-  - Keine der drei auditierten Spawner-Units (`80060E74.c`, `800616A0.c`,
-    `8006125C.c`) enthaelt eine Preis-, Kosten- oder Punkte-Pruefung.
-- **Extern belegt (Gameplay/Handbuch), im C noch nicht lokalisiert**:
-  - In Precinct Assault existiert eine spielerseitige Punkte-Oekonomie (L1-Bauaktion
-    an Basiskonsolen; bekannte Kosten: Panzer/Flugzeug 1 Punkt, 2 an einem Outpost,
-    Outpost-Claim 30 Punkte, Dreadnought/Flying Fortress 50 Punkte). Das Fehlen von
-    Preis-Checks in den drei Spawner-Units (und das Fehlen von `buy`/`cost`-Strings
-    in `SLUS_007.39`) belegt **nicht**, dass es keine Kauf-Mechanik gibt.
-  - Der eigentliche Kauf-Ausloeser im Retail-C wurde noch **nicht getraced**
-    (**Unproven** im Code). **Likely**: Das Preis-Gate bzw. der Punkte-Abzug liegt
-    im `arg1`-Gate-Script (`8006125C.c:47`) ueber die RPNS-VM-Opcodes `case 25:
-    gGameSession[a]--` (`80069D68.c:255-257`) und `case 52: gGameSession[a] -= b`
-    (`80069D68.c:279-281`) auf `gGameSession[25/26]` (`+0x64`/`+0x68`), ggf. gekoppelt
-    an einen L1-Input-Handler; zu beweisen durch Dekodierung der `Csac`-Scripts aus
-    `CONFT.MIS`. Das ist der naechste offene C-Trace.
+    aus (`:47`), aktualisiert Zaehler und (bei `gGameSession->active == 1`, `:50-73`)
+    Statistiken, spawnt ueber `gSpawnTargetableEntityId(s->def)` (`:75`) und fuehrt
+    Post-Spawn-Script `s->arg2` aus (`gInterpretEntityScript(s->arg2, 0, -1, 0)`, `:76`).
+  - **Kauf-Pfad (geloest und in `PurchasePadSystem.cs` / `RpnsScriptVm.cs` portiert)**:
+    Preis-Gates und Punkte-Abzuege liegen in den `RPNS`-Scripts der
+    `Cact`-Trigger-Pads (`80069D68.c:219-282`):
+    - Hauptbasis-Pads sind `Cact` Typ `95` (`800319D4.c`, `80031C74.c:84-102`,
+      Walker-Gate `Flags & 4`, Kosten `1`; z. B. `CONFT.MIS` `106`/`107` P1,
+      `108`/`109` P2). Helikopter feuern direkt `op 60` (`func_8006158C`),
+      Panzer inkrementieren `ScriptVars` und werden ueber `Cfun`-Timer
+      (`80049420.c:85-92`, `80049564.c:49-82`) per `op 60` entleert.
+    - Outpost-Pads (Claim `30`, Einheiten `2`) und Dreadnought-/Fortress-Pads
+      (`50`) sind `Cact` Typ `14` (`80030DE0.c`, `8003151C.c`, `8002F8B8.c:64-125`).
+      Neutral-Claim-Pads (`152/169/191/213`) senden `op 56` (`cmd 0x7A`,
+      `80031004.c:65-78`) an die zugehoerigen Outpost-Tankpads (`150/166/188/210`
+      P1 bzw. `149/170/192/214` P2; im 1P-Modus fuer Sky Captain ueber `Cfun`-Timer
+      `T22..T25` bei `gGameSession[40..43] == 2`), deren `Script2` `30` Punkte
+      abbucht und per `cmd 0x7A` die Outpost-Helipads (`151/167/189/211` P1 bzw.
+      `153/171/193/215` P2) aktiviert -- deren `Script2` fuehrt `op 21`
+      (`gGameSession[33]++` / `[34]++`, `80069D68.c:243-245`) auf `+0x84`/`+0x88` aus.
 
 ### Bewegliche Elemente: Fahrstuehle (Type 10) & Turret-Carrier (Type 20)
 - **Confirmed**:
@@ -348,10 +412,16 @@ Loader-/Registry-Module tickt Mechs oder spielt Voices ab:
 - **Likely**: `218`/`300` in `gInitElevator` sind Zeit-/Skalierungsfaktoren; das
   Sound-Paar `func_800457B8`/`func_80047284` schaltet den Lift-Motor; Bit `0x02000000`
   markiert Beschaedigung.
-- **Unproven**: Ob PA-Missionsdaten (`CONFT.MIS` etc.) Type 10 oder Type 20
-  tatsaechlich platzieren (bisher keine `.MIS`-Inspektion fuer diese Typen);
-  Aufrufer/Gameplay-Effekt von Msg 11 auf `+0xC4`; Grund fuer `flags & 0x7FFFDFFF`
-  im Kind-Spawn; interne Ziel-/Anim-Logik von `gUpdateMountedTurret` (`80038A00.c`).
+- **Confirmed (.MIS-Zensus aller fuenf PA-Karten)**:
+  - **Type `10` (Fahrstuehle)**: `CONFT.MIS`: 4 (`15, 24, 37, 39`), `JOKE.MIS`:
+    2 (`262, 249`), `SLIM.MIS`: 2 (`262, 249`), `HK.MIS`: 0, `OVMP.MIS`: 0.
+    Portiert und in `LevelScene` verdrahtet (`Elevator.cs`).
+  - **Type `20` (Mounted Turret Carrier)**: **0 Instanzen** in allen fuenf
+    PA-Karten (`CONFT`, `HK`, `JOKE`, `OVMP`, `SLIM`). Bleibt bewusst ohne
+    Szenen-Verdrahtung (Hinweis in `LevelScene.cs:190-196`).
+- **Unproven**: Aufrufer/Gameplay-Effekt von Msg 11 auf `+0xC4`; Grund fuer
+  `flags & 0x7FFFDFFF` im Kind-Spawn; interne Ziel-/Anim-Logik von
+  `gUpdateMountedTurret` (`80038A00.c`).
 
 ---
 
@@ -507,39 +577,28 @@ So werden die bereits vorhandenen headless Module in `LevelScene` live geschalte
 
 ## Offene Fragen
 
-1. **Konkrete `CONFT.MIS`-Record-Werte & Mover-Platzierung (Unproven)**:
-   - Exakte Anzahlen/IDs/Script-Indizes der `Type 0x25`-, `5`-, `9`-, `0x1C`-,
-     `0x24`- sowie insbesondere `Type 10`- (Fahrstuhl) und `Type 20`-Records
-     (Turret-Carrier) in `CONFT.MIS` und den uebrigen PA-Karten (`Cact` vs.
-     `Csac`) sind noch per Asset-Inspector oder xUnit-Test zu verifizieren.
-2. **Spieler-Kaufaktion (L1) & RPNS-Script-VM (`80069D68.c`, `8006125C.c:47`)**:
-   - Naechster offener C-Trace: Wo im Retail-Code der spielerseitige L1-Kauf
-     an Basiskonsolen ausgewertet wird und Punkte auf `D_8009FA94` (`+0x64` /
-     `+0xA0..+0xDF`) dekrementiert -- die bisher auditierten Spawner-Units
-     (`80060E74.c`, `800616A0.c`, `8006125C.c`) enthalten keinen Preis-Check.
-   - **Likely**: Das Preis-Gate bzw. der Punkte-Abzug liegt im `arg1`-Gate-Script
-     (`8006125C.c:47`) ueber die RPNS-VM-Opcodes `case 25: gGameSession[a]--`
-     (`80069D68.c:255-257`) und `case 52: gGameSession[a] -= b` (`80069D68.c:279-281`)
-     auf `gGameSession[25/26]` (`+0x64`/`+0x68`); zu beweisen durch Dekodierung
-     der `Csac`-Scripts aus `CONFT.MIS`.
-3. **Unportierte Projektile fuer `EnemyWeaponFire.cs`**:
-   - `LeadDirectionSolver.cs` (`8005E2A0.c`) ist bereits auf `main` portiert
-     und in `EnemyWeaponFire.cs:115` angeschlossen. In `EnemyWeaponFire.cs` sind
-     nur `8005E47C` (`env.SpawnDirectShot`, `:234`) und `8005F018`
+1. **Per-Type-Handler der PA-Armee (Types `5`, `9`, `28`/`0x1C`, `8`)**:
+   - `CsacUnitSpawner` spawnt und rendert Einheiten als `SpawnedCsacUnit` in
+     `EntityWorld`; offen bleibt die Verdrahtung der Typ-Handler aus
+     `8002AE54.c` (Fortbewegung, Wegpunkte, Geschuetze, Kampf) sowie die
+     `D_800A8F90`-Kandidatensuche (`80031DE8.c:119-159`) fuer `Csac`-zielende
+     One-Shot-MapZones (`CONFT`: `5, 9, 235..244`).
+2. **Unportierte Projektile fuer `EnemyWeaponFire.cs`**:
+   - `LeadDirectionSolver.cs` (`8005E2A0.c`) ist portiert und in
+     `EnemyWeaponFire.cs:115` angeschlossen. In `EnemyWeaponFire.cs` sind nur
+     `8005E47C` (`env.SpawnDirectShot`, `:234`) und `8005F018`
      (`env.OnFireRayAttack`, `:205`) als (noch unverdrahtete) Delegates
      vorhanden, waehrend `8005E9E4`, `8005EB74`, `8005ECB8` und `8005EE04`
      `NotImplementedException` werfen (`:284-291`). Die Spielerseite von
      `8005E47C` ist bereits teilweise in `src/FutureCop.View/Shot.cs` und
      `src/FutureCop.View/LevelWeapons.cs` portiert; gefuehrte Projektile
      (`80035B7C.c`) fehlen weiterhin.
-4. **Offene C-Funktionen & Globals (noch nicht vollstaendig aufgeloest)**:
+3. **Offene C-Funktionen & Globals (noch nicht vollstaendig aufgeloest)**:
    - `D_800A2300` (`gEffectKeyTable`, geladen in `80060838.c`): genaue Belegung
      der Waffen-Keys fuer Type `0x25` und Type `9` im PA-Level.
    - `D_8009FA94->unkE0` Event-Codes (gesetzt auf `5` bei `800357C0.c` Msg 9/11/14):
      Anbindung an PA-Announcer / HUD-Meldungen (`InGameHud`).
-   - `func_80031DE8` (`80031DE8.c:87`, Trigger-Box-Test `func_80031C74`) und
-     `func_80052098` (2P-Kollision): Abgrenzung zwischen Mission-Script-Triggern
-     und PA-Triggerzonen.
+   - `func_80052098` (2P-Kollision) und `gScreenState == 0xD` (`8003FA34.c:56`).
    - `func_80060238` (`80060238.c`) Slot-Flags `+0x20`/`+0x23`: Rest-Unklarheiten
      fuer Multi-Turret-Einheiten (`type 0x1C`).
    - Zeiteinheit `gFrameDelta` (`dt`) zwischen `LevelScene` (`8` Walker-Subticks
