@@ -9,24 +9,7 @@ string path = args.Length > 0 ? args[0] : "build/disc/files/CW/FE.MIS";
 var flow = new MenuFlow(path, MenuFlow.SceneKindFrom(Environment.GetEnvironmentVariable("FC_MENU_SCENE")),
     Console.Out, Console.Error, enableLevelMovement: true);
 var menu = flow.Menu;
-FrontEndText? text = null;
-try { text = FrontEndText.FromMisFile(path); }
-catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException)
-{
-    // A mission archive carries no front-end text: the labels, and with them the weapon names of
-    // the loadout rows, live in the front-end archive next to it. Fall back to that one before
-    // giving up, so a level started directly still shows real names instead of bare ids.
-    var frontEnd = Path.Combine(Path.GetDirectoryName(path) ?? ".", "..", "CW", "FE.MIS");
-    try
-    {
-        text = FrontEndText.FromMisFile(frontEnd);
-    }
-    catch (Exception inner) when (inner is IOException || inner is InvalidDataException || inner is UnauthorizedAccessException)
-    {
-        Console.Error.WriteLine($"Menu text unavailable: {ex.Message} (front-end fallback: {inner.Message})");
-    }
-}
-string Label(ushort id, string fallback) => (text?.Lookup(id) ?? fallback).Replace('\n', ' ');
+var label = MenuLabels.Load(path, AppContext.BaseDirectory, Console.Error);
 using var window = MenuWindow.Open(width, height);
 if (window == null) { Console.Error.WriteLine("Cannot open X11 display."); return; }
 MenuAudio? audio = MenuAudio.TryStart(path);
@@ -78,7 +61,7 @@ while (true) {
         window.DrawScene(flow);
         drawMs = Stopwatch.GetElapsedTime(drawStart).TotalMilliseconds;
     }
-    else if (flow.Panel(Label) is { } panel) window.DrawPanel(panel.Heading, panel.Entries, panel.Selected, panel.Hint, flow.LastLoadError);
+    else if (flow.Panel(label) is { } panel) window.DrawPanel(panel.Heading, panel.Entries, panel.Selected, panel.Hint, flow.LastLoadError);
     if (frameLog != null) {
         frameLog.WriteLine($"{frameIndex},{periodMs:F2},{drawMs:F2},{MenuWindow.LastSceneRenderMs:F2},{MenuWindow.LastScenePresentMs:F2},{MenuFlow.MsLevel:F2},{MenuFlow.MsHud:F2},{MenuFlow.MsBlit:F2},{MenuFlow.BytesLevel / 1024.0:F1},{MenuFlow.BytesHud / 1024.0:F1},{MenuFlow.BytesBlit / 1024.0:F1},{MenuFlow.Packets},{MenuFlow.Cells},{GC.GetTotalAllocatedBytes(false) / 1048576.0:F3},{GC.CollectionCount(0)},{GC.CollectionCount(2)},{screen}");
         if ((++frameIndex % 60) == 0) frameLog.Flush();
@@ -478,9 +461,14 @@ sealed class MenuWindow : IDisposable
     }
 
     private void Text(string text, int y, ulong color) {
-        int w = font == IntPtr.Zero ? text.Length * 6 : XTextWidth(font, text, text.Length);
+        TextAt(text, (width - MeasureText(text)) / 2, y, color);
+    }
+    private int MeasureText(string text) =>
+        font == IntPtr.Zero ? text.Length * 6 : XTextWidth(font, text, text.Length);
+
+    private void TextAt(string text, int x, int y, ulong color) {
         XSetForeground(display, DrawGc, color);
-        XDrawString(display, Target, DrawGc, (width - w) / 2, y * 2 + 14, text, text.Length);
+        XDrawString(display, Target, DrawGc, x, y * 2 + 14, text, text.Length);
     }
     public void Draw(MainMenu menu) {
         XSetForeground(display, DrawGc, 0x10182e); XFillRectangle(display, Target, DrawGc, 0, 0, (uint)width, (uint)height);
@@ -497,8 +485,8 @@ sealed class MenuWindow : IDisposable
     public void DrawPanel(string heading, IReadOnlyList<string> entries, int selection, string hint, string? error = null) {
         XSetForeground(display, DrawGc, 0x10182e); XFillRectangle(display, Target, DrawGc, 0, 0, (uint)width, (uint)height);
         Text(heading, 50, 0x73c5ff);
-        for (int i = 0; i < entries.Count; i++)
-            Text(entries[i], 84 + i * 16, i == selection ? 0xffff80UL : 0xffffffUL);
+        foreach (var row in X11PanelLayout.Rows(entries, selection, width, MeasureText))
+            TextAt(row.Text, row.X, row.Y, row.Color);
         Text(hint, 218, 0xc0c0c0);
         if (error != null) Text(error, 232, 0xff8080);
         Present();
