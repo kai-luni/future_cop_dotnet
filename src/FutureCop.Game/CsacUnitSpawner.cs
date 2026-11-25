@@ -413,4 +413,30 @@ public sealed class CsacUnitSpawner
         OnPostSpawnScript?.Invoke(slot, unit);
         return unit;
     }
+
+    /// <summary>
+    /// Port of func_80061020 (gRecordSpawnedUnitRetirement), run by the retirement sweep for every
+    /// entity with the spawned-unit flag (8004D598.c:51-53): the live counter of every registered
+    /// slot whose record id matches the retired unit's record id drops by one, so the drain gate
+    /// of func_800616A0 (<c>TotalSpawned &lt; MaxConcurrent</c>) frees the slot to spawn a
+    /// replacement - this is what lets a destroyed outpost come back.
+    /// </summary>
+    /// <remarks>
+    /// The retail function keeps decrementing every matching entry and has no floor at zero;
+    /// a slot never spawned through <see cref="TrySpawn"/> goes to -1 exactly as in the C. The
+    /// statistics half of func_80061020 - the +0xAC kill counters of the player blocks and the
+    /// +0x134 mirrors, incremented by definition type when D_8009FA94 +0x5C is 1 - has no ported
+    /// counterpart and is left out; the unk18 timer reset it performs for types 1..4 is already
+    /// modelled on the capture path through <see cref="MatchScore.OnSinglePlayerCapture"/>.
+    /// </remarks>
+    public void RecordSpawnedUnitRetirement(LiveEntity entity)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        int targetId = entity.RecordId;
+        for (int i = 0; i < _count; i++)
+        {
+            if (_slots[i]!.Record.Id == targetId)
+                _slots[i]!.TotalSpawned--;
+        }
+    }
 }

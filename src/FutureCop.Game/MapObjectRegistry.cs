@@ -4,13 +4,23 @@ using FutureCop.Game.Mech;
 namespace FutureCop.Game;
 
 /// <summary>
-/// One entry of the 256-slot spawn-descriptor table D_800A0C70 (gSlotSpawnDescs):
-/// byte [0] is the primary occupancy column read by func_8003B838, and byte [1] is the
-/// secondary destruction spawn column read by func_8003B7D8.
+/// One entry of the 256-slot spawn-descriptor table D_800A0C70 (gSlotSpawnDescs), laid out as the
+/// 0x1C-byte block func_8003BC7C (gSetSlotSpawnDescriptor) allocates from a Csfx chunk.
 /// </summary>
-/// <param name="ColumnKind">entry[0]: primary spawn column (func_8003B838).</param>
-/// <param name="SpawnColumn">entry[1]: secondary destruction spawn column (func_8003B7D8; 0 defaults to 0x5B in func_8002C174).</param>
-public readonly record struct SlotSpawnDescriptor(byte ColumnKind, byte SpawnColumn);
+/// <summary>One of the five 4-byte slot groups of a D_800A0C70 descriptor (block + 4..+0x14).</summary>
+public readonly record struct SlotSpawnItem(byte Unk0, byte Unk1, byte Unk2, byte Unk3);
+
+/// <summary>
+/// One D_800A0C70 slot descriptor as func_8003BC7C (gSetSlotSpawnDescriptor) builds it from a Csfx
+/// chunk: <see cref="ColumnKind"/> (block +0x00) is the active-column byte func_8003B838 reads,
+/// <see cref="SpawnColumn"/> (block +0x01) the destruction column of func_8003B7D8,
+/// <see cref="SlotFlags"/> (block +0x18) gates the random override of func_8003B4E0,
+/// <see cref="OverrideColumn"/> (block +0x1A) is the column that override selects, and
+/// <see cref="Items"/> (block +4..+0x14) holds the five slot groups func_8003B4E0 / func_8003B5AC read.
+/// </summary>
+public readonly record struct SlotSpawnDescriptor(
+    byte ColumnKind, byte SpawnColumn, ushort SlotFlags = 0, byte OverrideColumn = 0,
+    IReadOnlyList<SlotSpawnItem>? Items = null);
 
 /// <summary>
 /// One deferred spawn request parked by func_800402DC via func_8003FD74 when a map cell's flag
@@ -444,6 +454,184 @@ public sealed class MapObjectRegistry
 
     /// <summary>Reads D_800A0C70[<paramref name="slot"/>].</summary>
     public SlotSpawnDescriptor? GetSlotDescriptor(byte slot) => _slotDescriptors[slot];
+
+    /// <summary>
+    /// Optional random source for the slot-0 override of <see cref="SelectEntitySlotType"/>: retail
+    /// calls func_80019668 and takes bit 0. Null (the default) keeps the override off, which is the
+    /// behaviour of an RNG whose low bit is clear.
+    /// </summary>
+    public Func<int>? RandomSource { get; set; }
+
+    /// <summary>
+    /// Port of func_8003B4E0 (gSelectEntitySlotType): the <see cref="SlotSpawnItem.Unk0"/> byte of
+    /// descriptor[<paramref name="slot"/>], with the random override to
+    /// <see cref="SlotSpawnDescriptor.OverrideColumn"/> when the descriptor's flag bit 0 is clear,
+    /// the slot is 0, the mode is non-zero and the RNG bit 0 is set.
+    /// </summary>
+    public byte SelectEntitySlotType(byte index, byte slot, bool mode)
+    {
+        var entry = _slotDescriptors[index];
+        if (!entry.HasValue) return 0;
+        if ((entry.Value.SlotFlags & 1) == 0 && slot == 0 && mode &&
+            (RandomSource?.Invoke() & 1) == 1)
+        {
+            return entry.Value.OverrideColumn;
+        }
+        var items = entry.Value.Items;
+        if (items is null || slot >= items.Count) return 0;
+        return items[slot].Unk0;
+    }
+
+    /// <summary>
+    /// Port of func_8003B5AC (gGetSlotSpawnByte): <see cref="SlotSpawnItem.Unk3"/> for mode 0,
+    /// <see cref="SlotSpawnItem.Unk2"/> for mode 1 and every other mode, <see cref="SlotSpawnItem.Unk1"/>
+    /// for mode 2, and 0 for mode 3 or a null descriptor.
+    /// </summary>
+    public byte GetSlotSpawnByte(byte index, byte slot, int mode)
+    {
+        var entry = _slotDescriptors[index];
+        if (!entry.HasValue) return 0;
+        var items = entry.Value.Items;
+        if (items is null || slot >= items.Count) return 0;
+        return mode switch
+        {
+            0 => items[slot].Unk3,
+            2 => items[slot].Unk1,
+            3 => 0,
+            _ => items[slot].Unk2,
+        };
+    }
+
+    /// <summary>
+    /// Port of func_8003B898 (gSpawnEntitySlotTypes): registers an entity's map occupancy in one or
+    /// more grid columns. Flag 0x40000 writes the entity's own column directly; otherwise a non-null
+    /// descriptor is required: mode 0 spawns its column kind, other modes spawn one column per set
+    /// mask bit through <see cref="SelectEntitySlotType"/> with the special variant (mode 2), falling
+    /// back to slot 0 when no mask bit hit.
+    /// </summary>
+    /// <param name="index">Entity's D_800A0C70 index (+0x20, passed as first C argument).</param>
+    /// <param name="entity">The entity taking occupancy; supplies id, type and links for the spawn bank.</param>
+    /// <param name="arg2">Second C argument, forwarded to <see cref="TrySpawnAtOwner"/>.</param>
+    /// <param name="flags">Five-bit column mask, <c>(+0x19 &gt;&gt; 3) &amp; 0x1E</c> at both call sites.</param>
+    /// <param name="mode">0 for the single-entry column, 2 for the retire-footprint special.</param>
+    public int SpawnEntitySlotTypes(byte index, MapOccupancySubject entity, int arg2, int flags, int mode)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        if ((entity.Flags & MapOccupancySubject.SelfPositionedFlag) != 0)
+        {
+            return TrySpawnAtOwner(entity, (byte)entity.TableIndex, arg2,
+                GetEntitySpawnBank(entity), 0);
+        }
+        var entry = _slotDescriptors[index];
+        if (!entry.HasValue) return 0;
+        if (mode == 0)
+        {
+            // struct Entry of 8003B898/8003B4E0: flags at +0x18, this column at +0x1A.
+            if (entry.Value.OverrideColumn == 0) return 0;
+            return TrySpawnAtOwner(entity, entry.Value.OverrideColumn, arg2, GetEntitySpawnBank(entity), 0);
+        }
+        bool special = mode == 2;
+        bool found = false;
+        int delivered = 0;
+        for (byte i = 0; i < 5; i++)
+        {
+            if ((flags & 1) != 0)
+            {
+                byte column = SelectEntitySlotType(index, i, special);
+                if (column != 0)
+                {
+                    delivered += TrySpawnAtOwner(entity, column, arg2, GetEntitySpawnBank(entity), 0);
+                    found = true;
+                }
+            }
+            flags >>= 1;
+        }
+        if (!found)
+        {
+            byte column = SelectEntitySlotType(index, 0, special);
+            if (column != 0)
+                delivered += TrySpawnAtOwner(entity, column, arg2, GetEntitySpawnBank(entity), 0);
+        }
+        return delivered;
+    }
+
+    /// <summary>
+    /// Port of func_8003BAE4 (gRefreshEntitySlotSpawns): resolves the health quartile of the
+    /// entity's s16 words at +0x1C/+0x1E and spawns one column per set mask bit through
+    /// <see cref="GetSlotSpawnByte"/>, with the slot-0 fallback when no bit hit. A full-health
+    /// entity (quartile 3) registers nothing, exactly like the C.
+    /// </summary>
+    /// <remarks>
+    /// gRetireOwnedSpawnSlots (func_8003B6A4) walks the D_800A1070 spawn-slot lists, which the port
+    /// does not model; there is nothing registered for it to retire, so that first call is dropped.
+    /// </remarks>
+    /// <param name="entity">The entity refreshing its occupancy; +0x20 selects the descriptor, the type byte the bank.</param>
+    /// <param name="flags">Five-bit column mask, <c>(+0x19 &gt;&gt; 3) &amp; 0x1E</c> (8004CE04.c:61-63).</param>
+    /// <param name="healthMaxWord">The two s16 words the C reads at entity +0x1C and +0x1E.</param>
+    public int RefreshEntitySlotSpawns(MapOccupancySubject entity, int flags,
+        (short Health, short Max) healthMaxWord)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        int type = LiveEntity.QuarterIndex(healthMaxWord.Health, healthMaxWord.Max);
+        if (type == 3) return 0;
+
+        int delivered = 0;
+        bool found = false;
+        BatchSpawnActive = 1;                                   // D_8009F31C raised for the placement
+        for (byte i = 0; i < 5; i++)
+        {
+            if ((flags & 1) != 0)
+            {
+                byte column = GetSlotSpawnByte((byte)entity.TableIndex, i, type);
+                if (column != 0)
+                {
+                    delivered += TrySpawnAtOwner(entity, column, 0, GetEntitySpawnBank(entity), 0);
+                    found = true;
+                }
+            }
+            flags >>= 1;
+        }
+        if (!found)
+        {
+            byte column = GetSlotSpawnByte((byte)entity.TableIndex, 0, type);
+            if (column != 0)
+                delivered += TrySpawnAtOwner(entity, column, 0, GetEntitySpawnBank(entity), 0);
+        }
+        BatchSpawnActive = 0;
+        return delivered;
+    }
+
+    /// <summary>
+    /// The occupancy view of a live entity the hooks hand over: +0x14 id, type byte, +0x20 slot and
+    /// the +0x24 flag word. +0x08 is the runtime id in the entity layout, so it becomes the
+    /// deferred-request owner word of func_800402DC:88. The +0xC0/+0xC8 links of
+    /// func_8003BF50 have no live-entity counterpart, so the spawn bank stays 0 unless the type
+    /// is 1 or 0x12.
+    /// </summary>
+    private static MapOccupancySubject SubjectOf(LiveEntity entity) => new()
+    {
+        Id = entity.RecordId,
+        EntityType = unchecked((byte)entity.DispatchType),
+        TableIndex = entity.SlotIndex,
+        Flags = entity.Flags,
+        DeferSpawnWord = entity.RuntimeId,
+    };
+
+    /// <summary>
+    /// <see cref="SpawnEntitySlotTypes(byte, MapOccupancySubject, int, int, int)"/> for the retire
+    /// footprint hook <c>OnRetireFootprint(entity, record, mask)</c> (func_8003B898 mode 2): the
+    /// record block the C forwards as its arg2 is not ported and arg2 stays 0.
+    /// </summary>
+    public int SpawnEntitySlotTypes(LiveEntity entity, int flags, int mode = 2) =>
+        SpawnEntitySlotTypes(entity.SlotIndex, SubjectOf(entity), 0, flags, mode);
+
+    /// <summary>
+    /// <see cref="RefreshEntitySlotSpawns(MapOccupancySubject, int, (short, short))"/> for the
+    /// quartile hook <c>OnRefreshSlotSpawns(entity, mask)</c> (func_8003BAE4): the health words
+    /// come from the live entity.
+    /// </summary>
+    public int RefreshEntitySlotSpawns(LiveEntity entity, int flags) =>
+        RefreshEntitySlotSpawns(SubjectOf(entity), flags, (entity.Health, entity.MaxHealth));
 
     /// <summary>Sets D_800A7040[<paramref name="row"/>][<paramref name="column"/>].</summary>
     public void SetSpawnCell(int row, byte column, int value)
