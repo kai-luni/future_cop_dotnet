@@ -176,6 +176,12 @@ public sealed class CaptureObjective : LiveEntity
     /// <summary>obj+0xA8 (copied to +0xDC): the team the captured outpost now opposes.</summary>
     public int OpposingTeam { get; private set; }
 
+    /// <summary>obj+0xA6: set to 4 on capture (8002D1A0.c:202).</summary>
+    public byte StateA6 { get; private set; }
+
+    /// <summary>obj+0xDE: set to 4 on capture (8002D1A0.c:203).</summary>
+    public byte StateDE { get; private set; }
+
     /// <summary>obj+0x92 / +0x93.</summary>
     public int Value92 { get; private set; }
     public int Value93 { get; private set; }
@@ -334,6 +340,8 @@ public sealed class CaptureObjective : LiveEntity
         int mode = other.Team == TeamA ? 1 : 2;                                  // 8002D1A0.c:197-198
         CaptureMode = mode;                                                      // 8002D1A0.c:199
         Team = other.Team;                                                       // 8002D1A0.c:200
+        StateA6 = 4;                                                             // 8002D1A0.c:202
+        StateDE = 4;                                                             // 8002D1A0.c:203
         OpposingTeam = mode == 1 ? TeamB : TeamA;                                // 8002D1A0.c:204-206
         Mark = mode == 1 ? MarkA : MarkB;                                        // 8002D1A0.c:207
         Value92 = (byte)(Value92 + StepA * mode);                                // 8002D1A0.c:208
@@ -526,9 +534,10 @@ public sealed class MatchScore
         for (int i = 0; i < 2; i++)
         {
             if (PlayerTeams[i] < 0 || PlayerTeams[i] != team) continue;
-            Score[i]++;
-            Total[i]++;
-            Captures[i]++;
+            if (PlayerScoreIndices[i] is not int index) continue;
+            Score[index]++;                                           // 8002D1A0.c:229: m->unk64[(*p)->unkAC->unkC1]++
+            Total[index]++;                                           // 8002D1A0.c:230: m->unk7C[(*p)->unkAC->unkC1]++
+            Captures[i]++;                                            // 8002D1A0.c:231: (*p)->unkAC->unk12++
         }
     }
 

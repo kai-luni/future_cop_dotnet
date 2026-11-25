@@ -1,0 +1,14 @@
+# Shared golden vectors for Csac spawner runtime (80060E74, 800616A0, 8006125C, 800614BC, 8006158C, 8002AE54).
+# Verified against unchanged PS1 C via tests/host/csac-spawner/run.sh (gcc 2.7.2 + qemu-mipsel).
+# Inputs (13): name rawDelay maxConc initFlags initRem randVal cmd cmdArg elapsed gateRet entityType team infoType sessionActive
+# Outputs (9): -> scaledDelay initTimer spawns postCalls totalSpawned remAfter timerAfter flagsAfter statSum
+neg_delay_timer_not_due    -4 2 0  3   0  0 0  15 1  5 1 1 1 ->  20 20 0 0 0  3  5 0    0
+neg_delay_timer_fires      -4 2 0  3   0  0 0  21 1  5 1 1 1 ->  20 20 1 1 1  2 19 0    1
+pos_delay_mod_rand         20 2 0 -1 137  0 0  38 1  9 2 2 1 -> 100 37 1 1 1 -1 99 0   10
+paused_flag_skips_timer   -10 5 1  5   0  0 0 100 1  5 1 1 1 ->  50 50 0 0 0  5 50 1    0
+cmd46_enable_zeroes_timer -10 5 1  5   0 70 1   1 1  5 1 3 1 ->  50 50 1 1 1  4 49 0  100
+cmd47_burst_mode1_paused  -10 5 1  5   0 71 1   0 1 28 2 4 1 ->  50 50 1 1 1  4 50 1 1000
+cmd47_burst_mode0_paused  -10 5 1  5   0 71 0   0 1  5 1 2 1 ->  50 50 1 1 1  4 50 1   10
+gate_reject_no_mutation    -1 2 0  2   0  0 0  10 0  5 1 1 1 ->   5  5 0 0 0  2  0 0    0
+inactive_session_no_stats  -4 2 0  3   0  0 0  21 1  5 2 3 0 ->  20 20 1 1 1  2 19 0    0
+exhausted_remaining_skips  -1 2 0  0   0  0 0  10 1  5 1 1 1 ->   5  5 0 0 0  0  5 0    0

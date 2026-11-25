@@ -11,10 +11,14 @@ namespace FutureCop.Assets.Tests;
 /// </summary>
 public sealed class CaptureObjectiveGoldenTests
 {
+    private const int InputCount = 18;
+
     private static readonly string[] OutputFields =
     {
         "mode", "outTeam", "score0", "score1", "total0", "total1",
         "p0Cap", "p1Cap", "spCap", "spTimerOut", "e0Out",
+        "childTeam", "child92", "child93", "stateA6", "stateDE",
+        "scriptCalled", "scriptArg2",
     };
 
     public static IEnumerable<object[]> Rows()
@@ -25,13 +29,13 @@ public sealed class CaptureObjectiveGoldenTests
             var line = raw.Trim();
             if (line.Length == 0 || line.StartsWith('#')) continue;
             var words = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-            if (words.Length != 1 + 14 + 1 + OutputFields.Length || words[15] != "->")
+            if (words.Length != 1 + InputCount + 1 + OutputFields.Length || words[1 + InputCount] != "->")
                 throw new FormatException($"Invalid capture-objective vector: {line}");
             yield return new object[]
             {
                 words[0],
-                Array.ConvertAll(words[1..15], Parse),
-                Array.ConvertAll(words[16..], Parse),
+                Array.ConvertAll(words[1..(1 + InputCount)], Parse),
+                Array.ConvertAll(words[(2 + InputCount)..], Parse),
             };
         }
     }
@@ -57,17 +61,38 @@ public sealed class CaptureObjectiveGoldenTests
         int otherZ = input[11];
         int spTimer = input[12];
         int sessionE0 = input[13];
+        int carrierMode = input[14];
+        int carriedId = input[15];
+        bool scriptFlag = input[16] != 0;
+        int scriptByte = input[17];
 
         var outpost = new CaptureObjective(112, 0, 0, 0,
-            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 0, reachWord: 0x400);
+            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 5, reachWord: 0x400,
+            flags: 1u | (scriptFlag ? CaptureObjective.ScriptFlag : 0u),
+            childModelId: 32,
+            script: scriptByte > 0 ? 1 : 0);
         var score = new MatchScore(p0Team, p1Team, spTeam, spId, playerCount)
         {
             OnSinglePlayerCapture = () => spTimer = 0,
             OnSessionE0Changed = v => sessionE0 = v,
         };
-        var field = new ObjectiveField(new[] { outpost }, score);
-        field.Touch(new CaptureCandidate(otherId, otherType, otherTeam, otherX, otherY, otherZ, 0));
+        int scriptCalled = 0, scriptArg2 = -1;
+        var field = new ObjectiveField(new[] { outpost }, score)
+        {
+            OnPostCaptureScript = (_, claimantId) =>
+            {
+                scriptCalled++;
+                scriptArg2 = claimantId;
+            },
+        };
 
+        CaptureCandidate? carried = carrierMode is 1 or 3
+            ? new CaptureCandidate(carriedId, 1, otherTeam, 0, 0, 0, 0, Busy: carrierMode == 3)
+            : null;
+        field.Touch(new CaptureCandidate(otherId, otherType, otherTeam, otherX, otherY, otherZ, 0,
+            Carried: carried));
+
+        var child = outpost.ChildPart!;
         int[] actual =
         {
             outpost.CaptureMode, outpost.Team,
@@ -75,6 +100,9 @@ public sealed class CaptureObjectiveGoldenTests
             score.Total[0], score.Total[1],
             score.Captures[0], score.Captures[1],
             score.SinglePlayerCaptures, spTimer, sessionE0,
+            child.Team, child.Value92, child.Value93,
+            outpost.StateA6, outpost.StateDE,
+            scriptCalled, scriptArg2,
         };
         var diffs = OutputFields.Select((f, i) => (f, i))
             .Where(x => actual[x.i] != expected[x.i])

@@ -68,10 +68,12 @@ public sealed class SkyCaptainSystem
     private bool _enableBuildOrderSpawner;
 
     /// <summary>
-    /// Opt-in flag for the non-retail <see cref="BuildOrderSpawner"/> extension. Off by default so
-    /// the main scene path remains strictly retail-parity. Retail mission scripts spend the same
-    /// score words (S[25]/S[26]) on units through the mission registry; once that script channel is
-    /// ported, enabling this flag alongside it would produce units twice.
+    /// Opt-in flag for the retired non-retail <see cref="BuildOrderSpawner"/> stopgap. Off by default
+    /// so the main scene path uses the retail <see cref="CsacUnitSpawner"/> + <c>Cfun</c> RPNS timer
+    /// pipeline (<c>GameSession[44..55]</c> -&gt; <c>ScriptVars</c> -&gt; op 60 <c>SPWID</c>). Kept
+    /// behind this switch for existing <c>BuildOrderSpawner</c> tests and callers that want simple
+    /// marching placeholder units without full per-type unit AI. Do not enable alongside
+    /// <see cref="LevelScene.EnableCsacSpawner"/> when testing retail parity.
     /// Transitioning from <c>false</c> to <c>true</c> re-baselines <see cref="Spawner"/> to the
     /// current <see cref="Economy"/> counters so earlier production does not burst-spawn on toggle.
     /// </summary>

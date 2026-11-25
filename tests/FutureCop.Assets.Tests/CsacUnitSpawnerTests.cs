@@ -1,3 +1,4 @@
+using System.Globalization;
 using FutureCop.Assets;
 using FutureCop.Game;
 using FutureCop.Game.Mech;
@@ -181,5 +182,113 @@ public sealed class CsacUnitSpawnerTests
         // Opt in: enabling drains CsacSpawner and broadcasts message 6 without throwing.
         scene.EnableCsacSpawner = true;
         scene.AdvanceSkyCaptain(RetailClock.LocomotionTicks);
+    }
+
+    public static IEnumerable<object[]> CsacSpawnerGoldenRows()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "golden", "csac-spawner.vectors");
+        foreach (var raw in File.ReadLines(path))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            var words = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length != 1 + 13 + 1 + 9 || words[14] != "->")
+                throw new FormatException($"Invalid csac-spawner vector: {line}");
+            yield return new object[]
+            {
+                words[0],
+                Array.ConvertAll(words[1..14], s => int.Parse(s, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture)),
+                Array.ConvertAll(words[15..], s => int.Parse(s, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture)),
+            };
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(CsacSpawnerGoldenRows))]
+    public void CsacUnitSpawner_MatchesOriginalMips(string name, int[] input, int[] expected)
+    {
+        var source = new byte[0x54];
+        source[0x1C] = (byte)input[10];
+        source[0x1D] = (byte)input[11];
+        var record = new EntityRecord(77, input[9], 0, 0, 0, 0, 0x100, input[10], EntityContainer.Csac,
+            0, 0, source, new[] { 0, 0, 0 }, new[] { new ResourceReference("Cobj", 30) });
+
+        var spawner = new CsacUnitSpawner
+        {
+            SessionActive = input[12],
+            SinglePlayerTeam = 2,
+            Player0Team = 1,
+            GatePredicate = (_, _) => input[8] != 0,
+        };
+        int postCalls = 0;
+        spawner.OnPostSpawnScript = (_, _) => postCalls++;
+
+        var slot = spawner.Register(record, new CsacSpawnerParameters(
+            RespawnDelayRaw: (short)input[0],
+            MaxConcurrent: (short)input[1],
+            InitialFlags: (ushort)input[2],
+            InitialCount: (short)input[3]))!;
+
+        // For positive delay cases, seed the exact timer value that (uint)randVal % (uint)delay yields
+        // so the deterministic vector compares every post-register field against gcc 2.7.2 + qemu.
+        if (input[0] > 0)
+            slot.Timer = (int)((uint)input[4] % (uint)slot.RespawnDelay);
+        int initTimer = slot.Timer;
+
+        if (input[5] != 0)
+            Assert.True(spawner.ApplyCommandById(77, input[5], input[6]));
+
+        int spawns = spawner.Drain(input[7]);
+
+        int statSum = spawner.SinglePlayerStats.Type1 + spawner.SinglePlayerStats.Type2 * 10
+            + spawner.SinglePlayerStats.Type3 * 100 + spawner.SinglePlayerStats.Type4 * 1000
+            + spawner.Player0Stats.Type1 + spawner.Player0Stats.Type2 * 10
+            + spawner.Player0Stats.Type3 * 100 + spawner.Player0Stats.Type4 * 1000;
+
+        int[] actual =
+        {
+            slot.RespawnDelay, initTimer, spawns, postCalls,
+            slot.TotalSpawned, slot.RemainingCount, slot.Timer, slot.Flags, statSum,
+        };
+        Assert.True(actual.SequenceEqual(expected),
+            $"{name}: expected [{string.Join(", ", expected)}], got [{string.Join(", ", actual)}]");
+    }
+
+    [RetailFact]
+    public void SkyCaptainBuildOrders_DrainThroughRetailCfunTimersIntoCsacUnitSpawnerAndRender()
+    {
+        string path = ConftPath()!;
+        var scene = new LevelScene(path) { EnableCsacSpawner = true };
+        scene.EnableMechMovement();
+        scene.EnableFiring();
+
+        var sky = Assert.IsType<SkyCaptainSystem>(scene.SkyCaptain);
+        Assert.False(sky.EnableBuildOrderSpawner);
+
+        // Seed one Sky Captain base aircraft order (FB4, D_8009FA94+0xB4 = GameSession[45]).
+        // Retail CONFT.MIS Cfun T0 drains GameSession[45] into ScriptVars[10], and T17 dispatches
+        // op 60 (SPWID) to Csac 33 (team-2 aircraft spawner).
+        sky.Economy.FB0 = 0;
+        sky.Economy.FB4 = 1;
+        sky.Economy.FB8 = 0;
+        sky.Economy.FBC = 0;
+
+        for (int i = 0; i < 60 && !scene.CsacSpawner!.SpawnedUnits.Any(u => u.SourceSlot.Record.Id == 33); i++)
+        {
+            scene.AdvanceSkyCaptain(50);
+        }
+
+        Assert.Equal(0, sky.Economy.FB4);
+        var spawned = Assert.Single(scene.CsacSpawner!.SpawnedUnits.Where(u => u.SourceSlot.Record.Id == 33));
+        Assert.Equal(9, spawned.EntityType);
+        Assert.Contains(spawned, scene.Entities!.Units);
+
+        // Anchor the camera at the spawned unit and verify LevelScene.Render draws its Cobj model.
+        scene.Walker!.X = spawned.X;
+        scene.Walker.Y = spawned.Y;
+        scene.Walker.Z = spawned.Z;
+        scene.AttachWalker(scene.Walker);
+        scene.Render(new LevelCamera(0.0, 20.0, 0x1200));
+        Assert.True(scene.SpawnedCsacUnitPrimitives > 0, "retail Csac unit produced no rendered faces");
     }
 }

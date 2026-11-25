@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using FutureCop.Assets;
 using FutureCop.Game.Mech;
 
@@ -27,6 +28,39 @@ public readonly record struct SlotSpawnDescriptor(
 /// word satisfies <c>(flags &amp; 5) == 4</c> and the owner's +0x08 word is non-zero.
 /// </summary>
 public readonly record struct DeferredSpawnRequest(byte Column, int Row, MapOccupancySubject Owner, int Arg3);
+
+/// <summary>
+/// Metadata of one installed <c>D_800A7040</c> (<c>gSpawnRecordMap</c>) spawn record
+/// (installed by <c>func_8003C404</c>, <c>8003C404.c:55-69</c>, and traversed by
+/// <c>func_8003C590</c> / <c>func_8003C500</c> during <c>gFinishLevelLoad</c>,
+/// <c>8003FAD4.c:81-82</c>).
+/// </summary>
+public sealed class SpawnRecordCell
+{
+    /// <summary>Record type byte (+0x04): 0x57..0x5A, 0x5C..0x5E (8003C590.c:9,110-125).</summary>
+    public byte Type { get; init; }
+
+    /// <summary>Column id (+0x14, 8003C404.c:57, 8003C500.c:55).</summary>
+    public byte Id { get; init; }
+
+    /// <summary>Next column link in the same bank (+0x15, 8003C590.c:12,139-151).</summary>
+    public byte Next { get; init; }
+
+    /// <summary>Word at +0x20 checked by func_8003C590 (8003C590.c:14,131).</summary>
+    public int Unk20 { get; init; }
+
+    /// <summary>Normalized s16 at +0x28 (8003C404.c:61-67, 8003C590.c:16,106).</summary>
+    public short Unk28 { get; set; }
+
+    /// <summary>Normalized s16 at +0x2A (8003C404.c:61-67, 8003C590.c:17,106).</summary>
+    public short Unk2A { get; set; }
+
+    /// <summary>s16 at +0x48 checked for type 0x5C (8003C590.c:19,112).</summary>
+    public short Unk48 { get; init; }
+
+    /// <summary>Flags halfword at +0x32 checked by func_8003C2A4 (8003C2A4.c:68,81).</summary>
+    public ushort RecordFlags { get; init; }
+}
 
 /// <summary>
 /// Entity fields consulted by the retail map-occupancy and spawn-gate functions
@@ -311,17 +345,55 @@ public sealed class MapObjectRegistry
     /// <summary>Fallback spawn column when func_8003B7D8 returns 0 (used by func_8002C174).</summary>
     public const byte DefaultDestructionSpawnColumn = 0x5B;
 
-    /// <summary>Screen state values that force immediate occupancy registration (8003FA34.c:56).</summary>
+    /// <summary>
+    /// Screen state values (<c>D_8009FA00[0]</c>) tested by <c>gQueueOrApplyMapOccupancy</c>
+    /// (<c>8003FA34.c:56</c>).
+    /// </summary>
+    /// <remarks>
+    /// Proven retail gate: occupancy applies immediately when <c>gDeferredRegPool == 0</c>,
+    /// <c>gScreenState[0] == 4</c>, or <c>gScreenState[0] == 0xD</c>; otherwise it defers onto
+    /// <c>D_8009F708</c>. State <c>4</c> is the active in-game screen loop (player input
+    /// <c>800588D4.c:257</c>, HUD <c>80047F30.c:188</c>, loop guard <c>80027EE4.c:54</c>); state
+    /// <c>5</c> is written on load entry (<c>80078C88.c:92</c>, <c>8007E3EC.c:90</c>). The exact
+    /// meaning of state <c>0xD</c> is unproven in the audited C and is modeled solely as the
+    /// verified immediate-path branch of <c>8003FA34.c:56</c>.
+    /// </remarks>
     public const int ScreenStateImmediatePlay = 4;
+    /// <summary>Loading screen state written before mission chunks stream (<c>80078C88.c:92</c>, <c>8007E3EC.c:90</c>).</summary>
+    public const int ScreenStateLoading = 5;
+    /// <summary>Second immediate-apply screen state of <c>8003FA34.c:56</c>; exact gameplay role unproven.</summary>
     public const int ScreenStateImmediateAlt = 0xD;
+
+    /// <summary>Count of <c>D_800A1070</c> list-head words zeroed by <c>func_8003F79C</c> (<c>8003F79C.c:66-68</c>).</summary>
+    public const int ListHeadCount = 7;
+
+    private const uint TagShoc = 0x53484F43u;
+    private const uint TagShdr = 0x53484452u;
+    private const uint TagSdat = 0x53444154u;
+    private const uint TagFill = 0x46494C4Cu;
+    private const uint TagCact = 0x43616374u;
+    private const uint TagCsfx = 0x43736678u;
+    private const uint TagTact = 0x74414354u;
+    private const int SectorStride = 0x6000;
 
     private readonly SlotSpawnDescriptor?[] _slotDescriptors = new SlotSpawnDescriptor?[SlotTableSize];
     private readonly int[,] _spawnRecordMap = new int[SpawnGridRows, SlotTableSize];
+    private readonly SpawnRecordCell?[,] _spawnRecordCells = new SpawnRecordCell?[SpawnGridRows, SlotTableSize];
     private readonly ushort[,] _cellFlags = new ushort[SpawnGridRows, SlotTableSize];
+    private readonly int[] _listHeads = new int[ListHeadCount];
     private readonly Stack<MapOccupancySubject> _deferredQueue = new();
     private readonly List<DeferredSpawnRequest> _deferredSpawnRequests = new();
 
     private int _deferredPoolRemaining;
+
+    /// <summary>D_8009F310 (<c>gSpawnTableRow</c>): active bank (0 or 1) selected by Csfx 0x56 (8003F79C.c:60, 8003BFD0.c:79).</summary>
+    public int SpawnTableRow { get; set; }
+
+    /// <summary>D_800A1070[0..6] list-head words cleared by <see cref="InitMissionSpawnState"/> (8003F79C.c:66-68).</summary>
+    public IReadOnlyList<int> ListHeads => _listHeads;
+
+    /// <summary>Number of deferred registrations replayed by the most recent <see cref="FinishLevelLoad"/> call.</summary>
+    public int LastLoadReplayedCount { get; private set; }
 
     /// <summary>D_8009F70C != 0: whether the deferred-registration node pool is active.</summary>
     public bool HasDeferralPool { get; private set; }
@@ -345,6 +417,9 @@ public sealed class MapObjectRegistry
     public LiveObjectRegistry LiveObjects { get; } = new();
 
     private readonly List<Elevator> _groundElevators = new(24);
+
+    /// <summary>Placed type-10 elevators registered in the ground-object table (max 24, 8006314C.c:36-47).</summary>
+    public IReadOnlyList<Elevator> Elevators => _groundElevators;
 
     /// <summary>Static terrain query for type-10 initialization; pass the record's full XYZ probe.</summary>
     public Func<Vec3, int>? GroundHeight { get; set; }
@@ -385,6 +460,24 @@ public sealed class MapObjectRegistry
             if (lift.Probe(position) is { } hit) return hit;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Applies the active-cull bit (<c>0x20000000</c>) of <c>gCullActiveEntitiesSolo</c>
+    /// (<c>8004DF28.c:142-143,182-188</c>) to placed elevators so <see cref="ProbeGroundObjects"/>
+    /// (<c>8006320C.c:55</c>) sees active lifts (including <c>AlwaysActiveFlag</c> bit 8) in range.
+    /// </summary>
+    public void CullActiveElevators(int x, int z)
+    {
+        foreach (var lift in _groundElevators)
+        {
+            int adx = Math.Abs(lift.X - x), adz = Math.Abs(lift.Z - z);
+            int dist = adx + adz - Math.Min(adx, adz) / 2;
+            if ((lift.ObjectFlags & LiveEntity.AlwaysActiveFlag) != 0 || dist < EntityWorld.ActiveRange)
+                lift.ObjectFlags = (lift.ObjectFlags | 0x20000000u) & 0xFDFFFFFFu;
+            else
+                lift.ObjectFlags &= 0xDFFFFFFFu;
+        }
     }
 
     internal IRegisteredMapObject? CreateMissionObject(EntityRecord record, int runtimeId)
@@ -432,15 +525,19 @@ public sealed class MapObjectRegistry
     public Func<MapOccupancySubject?, byte, int, int, int, byte, int>? SpawnFactory { get; set; }
 
     /// <summary>
-    /// Port of func_8003F79C (gInitMissionSpawnState): clears all 256 slots of D_800A0C70, both
-    /// 256-entry rows of D_800A7040 (and cell flags), clears D_8009F708, and allocates the
-    /// 256-node deferral pool D_8009F70C.
+    /// Port of func_8003F79C (gInitMissionSpawnState, 8003F79C.c:44-69): clears all 256 slots of
+    /// D_800A0C70, both 256-entry rows of D_800A7040 (and cell flags), D_8009F310, D_800A1070[0..6],
+    /// clears D_8009F708, and allocates the 256-node deferral pool D_8009F70C.
     /// </summary>
     public void InitMissionSpawnState()
     {
         Array.Clear(_slotDescriptors);
         Array.Clear(_spawnRecordMap);
+        Array.Clear(_spawnRecordCells);
         Array.Clear(_cellFlags);
+        Array.Clear(_listHeads);
+        SpawnTableRow = 0;
+        LastLoadReplayedCount = 0;
         _deferredQueue.Clear();
         _deferredSpawnRequests.Clear();
         _groundElevators.Clear();
@@ -448,12 +545,210 @@ public sealed class MapObjectRegistry
         _deferredPoolRemaining = DeferredPoolCapacity;
     }
 
-    /// <summary>Sets D_800A0C70[<paramref name="slot"/>].</summary>
+    /// <summary>
+    /// Sets D_800A0C70[<paramref name="slot"/>].
+    /// Retail writers verified across <c>src/game/*.c</c>: <c>func_8003BC7C</c>
+    /// (<c>gSetSlotSpawnDescriptor</c>, <c>8003BC7C.c:46</c>) is the sole non-zero writer of
+    /// <c>D_800A0C70</c>, with exactly two callers: <c>func_8003BDA0</c> (<c>Cact</c> type
+    /// <c>0x5B</c>, <c>8003BDA0.c:41</c>) and <c>func_8003BFD0</c> (<c>Csfx</c> chunk type
+    /// <c>0x5B</c>, <c>8003BFD0.c:94</c>).
+    /// </summary>
     public void SetSlotDescriptor(byte slot, SlotSpawnDescriptor? descriptor) =>
         _slotDescriptors[slot] = descriptor;
 
     /// <summary>Reads D_800A0C70[<paramref name="slot"/>].</summary>
     public SlotSpawnDescriptor? GetSlotDescriptor(byte slot) => _slotDescriptors[slot];
+
+    /// <summary>
+    /// Port of <c>gSetSlotSpawnDescriptor</c> (<c>func_8003BC7C</c>, <c>8003BC7C.c:37-61</c>):
+    /// parses a 0x30-byte <c>tACT</c> type-0x5B payload (starting at chunk + 8) and populates
+    /// <c>D_800A0C70[data[0x14]]</c>.
+    /// </summary>
+    public bool SetSlotDescriptorFromChunk(ReadOnlySpan<byte> data)
+    {
+        if (data.Length < 0x30) return false;
+        byte slot = data[0x14];
+        byte overrideColumn = data[0x15];
+        ushort slotFlags = BinaryPrimitives.ReadUInt16LittleEndian(data[0x16..]);
+        byte columnKind = data[0x18];
+        byte spawnColumn = data[0x19];
+        var items = new SlotSpawnItem[5];
+        for (int i = 0; i < 5; i++)
+        {
+            int o = 0x1C + i * 4;
+            items[i] = new SlotSpawnItem(data[o], data[o + 1], data[o + 2], data[o + 3]);
+        }
+        _slotDescriptors[slot] = new SlotSpawnDescriptor(columnKind, spawnColumn, slotFlags, overrideColumn, items);
+        return true;
+    }
+
+    /// <summary>
+    /// Port of <c>gInstallSpawnRecord</c> (<c>func_8003C404</c>, <c>8003C404.c:55-69</c>):
+    /// clears the low byte of <c>D_800A6578[SpawnTableRow][id]</c>, normalizes <c>+0x28/+0x2A</c>,
+    /// and installs the record at <c>D_800A7040[SpawnTableRow][id]</c>.
+    /// </summary>
+    public SpawnRecordCell? InstallSpawnRecord(ReadOnlySpan<byte> data)
+    {
+        if (data.Length < 0x2C || (uint)SpawnTableRow >= SpawnGridRows) return null;
+        byte type = data[0x04];
+        byte id = data[0x14];
+        byte next = data[0x15];
+        int unk20 = BinaryPrimitives.ReadInt32LittleEndian(data[0x20..]);
+        short unk28 = BinaryPrimitives.ReadInt16LittleEndian(data[0x28..]);
+        short unk2A = BinaryPrimitives.ReadInt16LittleEndian(data[0x2A..]);
+        ushort recordFlags = data.Length >= 0x34 ? BinaryPrimitives.ReadUInt16LittleEndian(data[0x32..]) : (ushort)0;
+        short unk48 = data.Length >= 0x4A ? BinaryPrimitives.ReadInt16LittleEndian(data[0x48..]) : (short)0;
+
+        // 8003C2A4.c:68,80-83: when flags bit 0 is set and the slot already has a bit-0 entry,
+        // the registrars return early without overwriting D_800A7040.
+        if ((recordFlags & 1) != 0
+            && _spawnRecordCells[SpawnTableRow, id] is { } existing
+            && (existing.RecordFlags & 1) != 0)
+        {
+            return null;
+        }
+
+        // 8003C404.c:57: clear low byte of D_800A6578[row][id].
+        _cellFlags[SpawnTableRow, id] = (ushort)(_cellFlags[SpawnTableRow, id] & 0xFF00);
+        // 8003C404.c:61-67: normalize unk28/unk2A.
+        if (unk28 == 1) unk2A = 0;
+        if (unk2A <= 0)
+        {
+            unk2A = 0;
+            unk28 = -1;
+        }
+
+        var cell = new SpawnRecordCell
+        {
+            Type = type,
+            Id = id,
+            Next = next,
+            Unk20 = unk20,
+            Unk28 = unk28,
+            Unk2A = unk2A,
+            Unk48 = unk48,
+            RecordFlags = recordFlags,
+        };
+        _spawnRecordCells[SpawnTableRow, id] = cell;
+        _spawnRecordMap[SpawnTableRow, id] = 1;
+        return cell;
+    }
+
+    /// <summary>Returns the <see cref="SpawnRecordCell"/> installed at D_800A7040[row][column], or null.</summary>
+    public SpawnRecordCell? GetSpawnRecordCell(int row, byte column)
+    {
+        ValidateRow(row);
+        return _spawnRecordCells[row, column];
+    }
+
+    /// <summary>
+    /// Port of <c>gParseCsfxChunks</c> (<c>func_8003BFD0</c>, <c>8003BFD0.c:44-117</c>): walks a
+    /// <c>Csfx</c> SDAT chunk stream and dispatches types <c>0x56..0x5E</c> to update
+    /// <see cref="SpawnTableRow"/>, <c>D_800A0C70</c> (<c>0x5B</c>), and <c>D_800A7040</c>.
+    /// </summary>
+    public bool ParseCsfxChunks(ReadOnlySpan<byte> payload)
+    {
+        int oldRow = SpawnTableRow;
+        SpawnTableRow = 0;
+        int offset = 0;
+        while (offset + 13 <= payload.Length)
+        {
+            int size = (int)BinaryPrimitives.ReadUInt32LittleEndian(payload[(offset + 4)..]);
+            if (size < 13 || offset + size > payload.Length) return false;
+            var data = payload.Slice(offset + 8, size - 8);
+            byte type = data[4];
+            if (type < 0x56 || type > 0x5E) return false;
+            switch (type)
+            {
+                case 0x56:
+                    if (data.Length >= 0x18)
+                        SpawnTableRow = BinaryPrimitives.ReadInt32LittleEndian(data[0x14..]);
+                    break;
+                case 0x5B:
+                    SetSlotDescriptorFromChunk(data);
+                    break;
+                default:
+                    InstallSpawnRecord(data);
+                    break;
+            }
+            offset += size;
+        }
+        SpawnTableRow = oldRow;
+        return true;
+    }
+
+    /// <summary>
+    /// Loads <c>D_800A0C70</c> slot descriptors and <c>D_800A7040</c> spawn records from a mission
+    /// archive's <c>Csfx</c> streams (<c>8003C110.c</c> -&gt; <c>8003BFD0.c</c>) and <c>Cact</c>
+    /// definition chunks (<c>0x57..0x5E</c>, including <c>8003BDA0.c</c> for <c>0x5B</c>) in file
+    /// order. Returns the number of descriptors and spawn records installed.
+    /// </summary>
+    public int LoadFromMission(ReadOnlySpan<byte> missionBytes)
+    {
+        int loaded = 0;
+        for (int off = 0; off + 0x30 <= missionBytes.Length; off += 4)
+        {
+            if (BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[off..]) != TagShoc ||
+                BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(off + 0x10)..]) != TagShdr)
+            {
+                continue;
+            }
+
+            uint tag = BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(off + 0x18)..]);
+            if (tag != TagCsfx && tag != TagCact) continue;
+
+            int headerLen = (int)BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(off + 4)..]);
+            if (headerLen < 0x30 || off + headerLen > missionBytes.Length) continue;
+            uint reqId = BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(off + 0x1C)..]);
+
+            int pkt = off + headerLen;
+            if (pkt + 4 <= missionBytes.Length &&
+                BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[pkt..]) == TagFill)
+            {
+                pkt = (pkt / SectorStride + 1) * SectorStride;
+            }
+            if (pkt + 20 > missionBytes.Length ||
+                BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[pkt..]) != TagShoc ||
+                BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(pkt + 0x10)..]) != TagSdat)
+            {
+                continue;
+            }
+            int pktEnd = Math.Min(missionBytes.Length,
+                pkt + (int)BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(pkt + 4)..]));
+            if (pktEnd <= pkt + 20) continue;
+
+            if (tag == TagCsfx)
+            {
+                if (ParseCsfxChunks(missionBytes.Slice(pkt + 20, pktEnd - (pkt + 20))))
+                    loaded++;
+                continue;
+            }
+
+            // Cact: locate matching tACT chunk and handle definition types 0x57..0x5E (8004D6D4.c).
+            for (int q = pkt + 20; q + 12 <= pktEnd; q += 4)
+            {
+                if (BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[q..]) != TagTact ||
+                    BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(q + 8)..]) != reqId)
+                {
+                    continue;
+                }
+                int tlen = (int)BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(q + 4)..]);
+                if (tlen < 0x18 || q + tlen > pktEnd) break;
+                var data = missionBytes.Slice(q + 8, tlen - 8);
+                byte type = data[4];
+                if (type == 0x5B)
+                {
+                    if (SetSlotDescriptorFromChunk(data)) loaded++;
+                }
+                else if (type is >= 0x57 and <= 0x5E)
+                {
+                    if (InstallSpawnRecord(data) is not null) loaded++;
+                }
+                break;
+            }
+        }
+        return loaded;
+    }
 
     /// <summary>
     /// Optional random source for the slot-0 override of <see cref="SelectEntitySlotType"/>: retail
@@ -633,11 +928,13 @@ public sealed class MapObjectRegistry
     public int RefreshEntitySlotSpawns(LiveEntity entity, int flags) =>
         RefreshEntitySlotSpawns(SubjectOf(entity), flags, (entity.Health, entity.MaxHealth));
 
-    /// <summary>Sets D_800A7040[<paramref name="row"/>][<paramref name="column"/>].</summary>
+    /// <summary>Sets D_800A7040[<paramref name="row"/>][<paramref name="column"/>] and clears its low flag byte (8003C404.c:57).</summary>
     public void SetSpawnCell(int row, byte column, int value)
     {
         ValidateRow(row);
         _spawnRecordMap[row, column] = value;
+        _spawnRecordCells[row, column] = null;
+        _cellFlags[row, column] = (ushort)(_cellFlags[row, column] & 0xFF00);
     }
 
     /// <summary>Reads D_800A7040[<paramref name="row"/>][<paramref name="column"/>].</summary>
@@ -776,13 +1073,96 @@ public sealed class MapObjectRegistry
     }
 
     /// <summary>
-    /// Port of func_8003FAD4 (gFinishLevelLoad) replay and pool teardown: walks the LIFO queue
-    /// D_8009F708 newest-first, calls func_8003BC0C per node, then releases the deferral pool
-    /// D_8009F70C and clears both pool and list.
+    /// Final step of <c>gInitEntityBase</c> (<c>8002A5F4.c:167</c>): queues or immediately applies
+    /// map occupancy for a freshly initialized <see cref="LiveEntity"/> via
+    /// <see cref="QueueOrApplyMapOccupancy"/>.
+    /// </summary>
+    public bool QueueOrApplyEntityOccupancy(LiveEntity entity)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        return QueueOrApplyMapOccupancy(SubjectOf(entity));
+    }
+
+    /// <summary>
+    /// Port of <c>gMarkSpawnRecordChains</c> (<c>func_8003C590</c>, <c>8003C590.c:49-162</c>) and
+    /// <c>gMarkSpawnCycleFlags</c> (<c>func_8003C500</c>, <c>8003C500.c:37-56</c>): walks installed
+    /// <c>D_800A7040[row][1..255]</c> chains and ORs bit 2 (<c>0x4</c>) into <c>D_800A6578</c>
+    /// (<c>func_8003C4C4</c>) for qualifying nodes and closed cycles.
+    /// </summary>
+    public void MarkSpawnRecordChains(int row)
+    {
+        ValidateRow(row);
+        Span<short> table = stackalloc short[SlotTableSize];
+        table.Clear();
+
+        for (int i = 1; i < SlotTableSize; i++)
+        {
+            if (_spawnRecordCells[row, i] is null) continue;
+            if (table[i] != 0) continue;
+            if ((_cellFlags[row, i] & 4) != 0) continue;
+
+            byte current = (byte)i;
+            while (current != 0)
+            {
+                var cell = _spawnRecordCells[row, current];
+                if (cell is null) break;
+                if (table[current] == 0) table[current] = (short)i;
+
+                bool mark = cell.Unk28 == 0 && cell.Unk2A > 0;
+                if (!mark)
+                {
+                    bool typeOk = cell.Type switch
+                    {
+                        0x5C => cell.Unk48 == 0,
+                        0x57 or 0x58 or 0x59 => true,
+                        _ => false,
+                    };
+                    mark = typeOk && cell.Unk20 == 0;
+                }
+                if (mark) _cellFlags[row, current] |= 4;
+
+                if (cell.Next != 0)
+                {
+                    if (_spawnRecordCells[row, cell.Next] is null) break;
+                    if (table[cell.Next] == i)
+                    {
+                        table[current] = 0;
+                        MarkSpawnCycleFlags((byte)i, current, row);
+                        break;
+                    }
+                }
+                current = cell.Next;
+            }
+        }
+    }
+
+    private void MarkSpawnCycleFlags(byte startColumn, byte stopId, int row)
+    {
+        // 8003C500.c:50-55: follow cell->next from startColumn, setting flag 4 on each successor
+        // until cell->id == stopId. Guard against malformed cycles lacking stopId.
+        byte col = startColumn;
+        for (int guard = 0; guard <= SlotTableSize; guard++)
+        {
+            var cell = _spawnRecordCells[row, col];
+            if (cell is null) break;
+            col = cell.Next;
+            _cellFlags[row, col] |= 4;
+            if (cell.Id == stopId) break;
+        }
+    }
+
+    /// <summary>
+    /// Port of func_8003FAD4 (gFinishLevelLoad, 8003FAD4.c:76-104) chain marking, replay, and pool
+    /// teardown: runs <see cref="MarkSpawnRecordChains"/> on banks 0 and 1 (:81-82), walks the LIFO
+    /// queue D_8009F708 newest-first calling func_8003BC0C per node (:84-87), then releases the
+    /// deferral pool D_8009F70C and clears both pool and list (:89, :97-98).
     /// Returns the number of queued nodes replayed.
     /// </summary>
     public int FinishLevelLoad()
     {
+        MarkSpawnRecordChains(0);
+        MarkSpawnRecordChains(1);
+
         int replayed = 0;
         while (_deferredQueue.Count > 0)
         {
@@ -791,6 +1171,7 @@ public sealed class MapObjectRegistry
             replayed++;
         }
 
+        LastLoadReplayedCount = replayed;
         HasDeferralPool = false;
         _deferredPoolRemaining = 0;
         return replayed;

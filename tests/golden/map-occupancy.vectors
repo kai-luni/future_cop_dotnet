@@ -1,0 +1,19 @@
+# Shared golden vectors for map-occupancy registry (8003F79C, 8003FA34, 8003B838, 8003B7D8,
+# 8003BC0C, 8003BF50, 8003FAD4, 8003BC7C, 8003C404, 8003C590, 8003C500, 8003C4C4, 8003B3D8).
+# Verified against unchanged PS1 C via tests/host/map-occupancy/run.sh (gcc 2.7.2 + qemu-mipsel).
+# Inputs (12): name screenState dropPool slot colKind destCol objKind flags linkType linkKind cellType cellNext cellUnk20
+# Outputs (9): -> col destCol bank immCount immCol immBank replayCount replayFirstId cellFlag4
+immediate_screen4_bank0         4 0 5 18 52  5      0 0  0  0  0 0 -> 18 52 0 2 18 0 0   0 0
+immediate_screen0xD_bank1      13 0 5 18 52  1      0 0  0  0  0 0 -> 18 52 1 2 18 1 0   0 0
+immediate_no_pool_bank1         5 1 5 18 52 18      0 0  0  0  0 0 -> 18 52 1 2 18 1 0   0 0
+deferred_loading_lifo_replay    5 0 5 18 52  5      0 0  0  0  0 0 -> 18 52 0 0  0 0 2 202 0
+masked_flag_0x40000             5 0 5 18 52  5 262144 0  0  0  0 0 ->  0  0 0 0  0 0 0   0 0
+slot_zero_unassigned            4 0 0 18 52  5      0 0  0  0  0 0 ->  0  0 0 0  0 0 0   0 0
+missing_descriptor              5 0 9  0  0  5      0 0  0  0  0 0 ->  0  0 0 0  0 0 0   0 0
+link_type7_c0_carrier_bank1     4 0 5 21 33  7      0 1 18  0  0 0 -> 21 33 1 2 21 1 0   0 0
+link_type7_c0_other_bank0       4 0 5 21 33  7      0 1  5  0  0 0 -> 21 33 0 2 21 0 0   0 0
+link_type2_c8_carrier_bank1     4 0 5 21 33  2      0 2 18  0  0 0 -> 21 33 1 2 21 1 0   0 0
+link_type0x0F_c8_carrier_bank1  4 0 5 21 33 15      0 2 18  0  0 0 -> 21 33 1 2 21 1 0   0 0
+chain_mark_type57_unk20_zero    5 0 0  0  0  5      0 0  0 87  0 0 ->  0  0 0 0  0 0 0   0 1
+chain_mark_type57_unk20_nonzero 5 0 0  0  0  5      0 0  0 87  0 1 ->  0  0 0 0  0 0 0   0 0
+chain_mark_cycle_type5A         5 0 0  0  0  5      0 0  0 90 11 1 ->  0  0 0 0  0 0 0   0 1

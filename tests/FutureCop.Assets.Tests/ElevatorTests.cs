@@ -3,6 +3,7 @@ using System.Globalization;
 using FutureCop.Assets;
 using FutureCop.Game;
 using FutureCop.Game.Mech;
+using FutureCop.View;
 using Xunit;
 
 namespace FutureCop.Assets.Tests;
@@ -156,5 +157,111 @@ public sealed class ElevatorTests
         Assert.Null(registry.ProbeGroundObjects(probe with { Y = lift.Y - 1000 }));
         registry.BroadcastMessage(5, 0, 0);
         Assert.Null(registry.ProbeGroundObjects(probe));
+    }
+
+    [Fact]
+    public void RemainingElevatorGoldenRowsMatchOriginalMips()
+    {
+        var vectors = File.ReadLines(Path.Combine(AppContext.BaseDirectory, "golden", "elevator.vectors"))
+            .Select(line => line.Split(' '))
+            .ToDictionary(fields => fields[0],
+                fields => fields.Skip(1).Select(v => int.Parse(v, CultureInfo.InvariantCulture)).ToArray());
+
+        void AssertRow(string name, Elevator lift, int stopped, int played)
+        {
+            var f = vectors[name];
+            int wantStopped = f[19] == 0 ? 0 : lift.Id;
+            var expected = (f[0], f[1], f[2], f[3], f[4], f[5], f[6],
+                string.Join(",", f.Skip(7).Take(8)), wantStopped, f[20]);
+            var actual = (lift.Y, lift.Timer, lift.LastStop, lift.NextStop, lift.Direction,
+                lift.HoldTicks, lift.Flags,
+                string.Join(",", lift.CommandSlots.SelectMany(slot => new[] { (int)slot.Op, (int)slot.Arg })),
+                stopped, played);
+            Assert.Equal(expected, actual);
+        }
+
+        // hover-rider and wrong-lift rows (harness.c:140-147)
+        var rec = Record();
+        rec.Source[0x21] = 1;
+        var lift1 = new Elevator(rec, 100);
+        var other = new Elevator(rec, 100);
+        lift1.Tick(10);
+        lift1.Tick(10, new ElevatorRider(lift1, 1));
+        AssertRow("hover-rider", lift1, 0, 0);
+        lift1.Tick(10, new ElevatorRider(other, 0));
+        AssertRow("wrong-lift", lift1, 0, 0);
+
+        // script-only and arm rows (harness.c:162-166)
+        var lift2 = new Elevator(Record(flags: 4), 100);
+        lift2.Tick(10, null, new ElevatorRider(lift2, 0));
+        AssertRow("script-only", lift2, 0, 0);
+        lift2.TryQueueCommand(0x52, 0);
+        lift2.Tick(10, null, new ElevatorRider(lift2, 0));
+        AssertRow("arm", lift2, 0, 0);
+
+        // freeze, unfreeze, held, seek, command-snap-and-freeze (harness.c:168-180)
+        var lift3 = new Elevator(Record(start: 2, count: 3), 100);
+        lift3.OnMessage(11, 0, 0);
+        lift3.OnMessage(11, 0, 0);
+        lift3.TryQueueCommand(0x53, 0);
+        lift3.Tick(50);
+        AssertRow("freeze", lift3, 0, 0);
+        lift3.TryQueueCommand(0x53, 1);
+        lift3.Tick(50);
+        AssertRow("unfreeze", lift3, 0, 0);
+        lift3.Tick(50);
+        AssertRow("held", lift3, 0, 0);
+        lift3.TryQueueCommand(0x99, 42);
+        lift3.TryQueueCommand(0x52, 1);
+        lift3.Tick(1);
+        AssertRow("seek", lift3, 0, 0);
+        lift3.TryQueueCommand(0x52, 13);
+        lift3.TryQueueCommand(0x53, 0);
+        lift3.Tick(0);
+        AssertRow("command-snap-and-freeze", lift3, 0, 0);
+    }
+
+    [RetailFact]
+    public void LevelScene_PlacesRidesCommandsAndRendersConftType10Elevators()
+    {
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!);
+        scene.EnableMechMovement();
+        scene.EnableFiring();
+
+        // CONFT.MIS places 4 type-10 lifts (ids 15, 24, 37, 39) and 0 type-20 carriers.
+        var lifts = scene.ObjectRegistry.Elevators.OrderBy(e => e.Id).ToArray();
+        Assert.Equal(new[] { 15, 24, 37, 39 }, lifts.Select(e => e.Id));
+
+        var lift = lifts[0]; // id 15
+        int y0 = lift.Y;
+
+        // Place walker directly over lift 15's platform surface without pre-setting Platform;
+        // MechWorld.GroundObjects -> ObjectRegistry.ProbeGroundObjects must bind Walker.Platform = lift.
+        var hit = Assert.IsType<GroundObjectHit>(
+            scene.ObjectRegistry.ProbeGroundObjects(new Vec3(lift.X, lift.Y + 0x1000, lift.Z)));
+        Assert.Same(lift, hit.Surface);
+
+        var walker = scene.Walker!;
+        walker.X = lift.X;
+        walker.Y = hit.Height;
+        walker.Z = lift.Z;
+        walker.Form = 0;
+        scene.AttachWalker(walker);
+
+        // First step binds Walker.Platform = lift via MechWorld.GroundObjects and ascends the lift.
+        scene.AdvanceWalker(1, 0, AnalogPad.Digital);
+        Assert.Same(lift, walker.Platform);
+        Assert.True(lift.Y > y0, $"expected lift 15 to ascend from {y0}, got {lift.Y}");
+
+        // RPNS op 56 (cmd 0x53 arg 0) freezes the lift via the scene tag command callback.
+        scene.PurchasePads!.VmState.OnCommandByTag!(lift.Record.Id, 0x53, 0);
+        int yFrozen = lift.Y;
+        scene.AdvanceWalker(1, 0, AnalogPad.Digital);
+        Assert.Equal(yFrozen, lift.Y);
+        Assert.NotEqual(0, lift.Flags & 2);
+
+        // Rendering with camera anchored on the lift draws its Cobj model faces.
+        scene.Render(new LevelCamera(30.0, 35.0, 0x1C00));
+        Assert.True(scene.ElevatorPrimitives > 0, "type-10 elevator produced no rendered faces");
     }
 }

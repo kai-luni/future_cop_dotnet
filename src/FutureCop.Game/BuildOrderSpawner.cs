@@ -85,13 +85,16 @@ public sealed class BuiltUnit
 /// using real unit models from the mission's <see cref="EntityRecord"/> table.
 /// </summary>
 /// <remarks>
-/// Retail parity disclaimer: verified against asm/us/main.s that retail PS1 Future Cop never reads
-/// D_8009FA94+0xA0..0xDF outside func_800336DC and func_800331CC. This spawner is an explicit,
-/// opt-in gameplay extension, not a retail decompilation. Spawned units only exist, render, and move
-/// toward the opposing base (no AI targeting, collision, or damage). Retail mission scripts spend
-/// the same score words (S[25]/S[26]) on units through the mission registry; once that script
-/// channel is ported, enabling this spawner alongside it will double-spawn units.
-/// <see cref="CsacUnitSpawner"/> supersedes this stopgap once the RPNS script VM lands.
+/// Retired stopgap kept behind the opt-in <c>EnableBuildOrderSpawner</c> switch:
+/// retail <c>func_800336DC</c> writes <c>D_8009FA94+0xA0..0xDF</c> (<c>GameSession[40..55]</c>),
+/// and retail mission <c>Cfun</c> RPNS timers (e.g. <c>CONFT.MIS</c> T0/T1/T5/T6/T32..T39) drain
+/// those words into <c>gScriptVmVars</c> and dispatch op 60 (<c>SPWID</c>) to
+/// <see cref="CsacUnitSpawner"/>. <see cref="CsacUnitSpawner"/> + <see cref="PurchasePadSystem"/>
+/// is now the live retail spawner runtime. <see cref="BuildOrderSpawner"/> is retained strictly
+/// behind <c>EnableBuildOrderSpawner</c> (off by default) because existing unit/scene tests exercise
+/// it directly and <see cref="CsacUnitSpawner"/> stops at the per-type handler boundary without
+/// full unit locomotion AI. Enabling both flags simultaneously will double-consume or double-spawn
+/// Sky Captain build orders.
 /// </remarks>
 public sealed class BuildOrderSpawner
 {

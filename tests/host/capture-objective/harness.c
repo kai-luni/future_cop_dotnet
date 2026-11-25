@@ -1,4 +1,6 @@
-/* Executes unchanged func_8002D1A0 (gTryCaptureObjective) with shared golden vectors. */
+/* Executes unchanged func_8002D1A0 (gTryCaptureObjective) with shared golden vectors,
+ * covering 1P/2P scoring, type-0x12 carrier dereference, child-part transfer (obj->unk104),
+ * state bytes (+0xA6/+0xDE), and post-capture script dispatch (obj->unk9C & flag 0x100000). */
 #include "game/types.h"
 
 struct Coord {
@@ -85,8 +87,16 @@ s32 gPlayerCount __asm__("D_8009FA0C");
 struct Ent *gSinglePlayerEntity __asm__("D_8009F9EC");
 struct Menu *gGameSession __asm__("D_8009FA94");
 
+static int g_script_called;
+static s32 g_script_arg2;
+
 void gInterpretEntityScript(u8 *script, s32 a1, s32 a2) __asm__("func_80069D68");
-void gInterpretEntityScript(u8 *script, s32 a1, s32 a2) { (void)script; (void)a1; (void)a2; }
+void gInterpretEntityScript(u8 *script, s32 a1, s32 a2)
+{
+    (void)script; (void)a1;
+    g_script_called++;
+    g_script_arg2 = a2;
+}
 
 void gTryCaptureObjective(struct Ent *self, struct Ent *other) __asm__("func_8002D1A0");
 
@@ -110,13 +120,18 @@ void __main(void) {}
 
 int main(void)
 {
-    char text[8192], *p;
+    char text[16384], *p;
     int len = 0, n, i, count = 0;
-    s32 v[25];
-    struct Ent outpost, child, other, p0, p1, sp;
+    /* Inputs (18): playerCount p0Team p1Team spActive spTeam spId otherId otherType otherTeam
+     *              otherX otherY otherZ spTimerIn e0In carrierMode carriedId scriptFlag scriptByte
+     * Outputs (18): mode outTeam score0 score1 total0 total1 p0Cap p1Cap spCap spTimerOut e0Out
+     *               childTeam child92 child93 stateA6 stateDE scriptCalled scriptArg2 */
+    s32 v[36];
+    struct Ent outpost, child, other, carried, p0, p1, sp;
     struct Sub sub0, sub1;
     struct Trk trk;
     struct Menu menu;
+    u8 scriptBuf[4];
 
     while (len < (int)sizeof(text) - 1) {
         n = read0(text + len, sizeof(text) - 1 - len);
@@ -132,12 +147,11 @@ int main(void)
         while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
         if (*p == '#') { while (*p && *p != '\n') p++; continue; }
         if (!*p) break;
-        /* skip vector name token */
         while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
-        for (i = 0; i < 25; i++) {
+        for (i = 0; i < 36; i++) {
             int sign = 1;
             while (*p == ' ' || *p == '\t') p++;
-            if (i == 14) {
+            if (i == 18) {
                 if (p[0] != '-' || p[1] != '>') return 4;
                 p += 2;
                 while (*p == ' ' || *p == '\t') p++;
@@ -154,6 +168,7 @@ int main(void)
         zero_bytes(&outpost, sizeof(outpost));
         zero_bytes(&child, sizeof(child));
         zero_bytes(&other, sizeof(other));
+        zero_bytes(&carried, sizeof(carried));
         zero_bytes(&p0, sizeof(p0));
         zero_bytes(&p1, sizeof(p1));
         zero_bytes(&sp, sizeof(sp));
@@ -161,16 +176,22 @@ int main(void)
         zero_bytes(&sub1, sizeof(sub1));
         zero_bytes(&trk, sizeof(trk));
         zero_bytes(&menu, sizeof(menu));
+        g_script_called = 0;
+        g_script_arg2 = -1;
+
+        scriptBuf[0] = (u8)v[17];
+        scriptBuf[1] = 0;
 
         outpost.unk14 = 112;
         outpost.unk16 = 0x24;
-        outpost.unk24 = 1;
+        outpost.unk24 = 1u | (v[16] ? 0x100000u : 0u);
+        outpost.unk9C = v[17] >= 0 ? scriptBuf : 0;
         outpost.unkF6 = 1;
         outpost.unkF7 = 2;
         outpost.unkF8 = 1;
         outpost.unkF9 = 2;
         outpost.unkFA = 60;
-        outpost.unkFB = 0;
+        outpost.unkFB = 5;
         outpost.unkFC = 0x400;
         outpost.unk104 = &child;
 
@@ -201,6 +222,19 @@ int main(void)
         other.coord.unk3C = v[11];
         other.coord.unk40 = 0;
 
+        /* carrierMode: 0 = none, 1 = carried player at (0,0,0) with carriedId & team=otherTeam,
+         * 2 = carrier with null unkB4, 3 = carried player with sub0.unk40 = 2 (busy). */
+        if (v[14] == 1 || v[14] == 3) {
+            carried.unk14 = (u16)v[15];
+            carried.unk16 = 1;
+            carried.unk18 = (u8)v[8];
+            carried.coord.unk34 = 0;
+            carried.coord.unk38 = 0;
+            carried.coord.unk3C = 0;
+            other.unkB4 = &carried;
+            if (v[14] == 3) sub0.unk40 = 2;
+        }
+
         gPlayerCount = v[0];
         gPlayerEntities[0] = &p0;
         gPlayerEntities[1] = v[2] >= 0 ? &p1 : 0;
@@ -210,18 +244,25 @@ int main(void)
 
         gTryCaptureObjective(&outpost, &other);
 
-        if ((s32)outpost.unkFE != v[14]) return 10 + count;
-        if ((s32)outpost.unk18 != v[15]) return 20 + count;
-        if (menu.unk64[0] != v[16]) return 30 + count;
-        if (menu.unk64[1] != v[17]) return 40 + count;
-        if (menu.unk7C[0] != v[18]) return 50 + count;
-        if (menu.unk7C[1] != v[19]) return 60 + count;
-        if ((s32)sub0.unk12 != v[20]) return 70 + count;
-        if ((s32)sub1.unk12 != v[21]) return 80 + count;
-        if ((s32)trk.unk3A != v[22]) return 90 + count;
-        if ((s32)trk.unk18 != v[23]) return 100 + count;
-        if (menu.unkE0 != v[24]) return 110 + count;
+        if ((s32)outpost.unkFE != v[18]) return 10 + count;
+        if ((s32)outpost.unk18 != v[19]) return 20 + count;
+        if (menu.unk64[0] != v[20]) return 30 + count;
+        if (menu.unk64[1] != v[21]) return 40 + count;
+        if (menu.unk7C[0] != v[22]) return 50 + count;
+        if (menu.unk7C[1] != v[23]) return 60 + count;
+        if ((s32)sub0.unk12 != v[24]) return 70 + count;
+        if ((s32)sub1.unk12 != v[25]) return 80 + count;
+        if ((s32)trk.unk3A != v[26]) return 90 + count;
+        if ((s32)trk.unk18 != v[27]) return 100 + count;
+        if (menu.unkE0 != v[28]) return 110 + count;
+        if ((s32)child.unk18 != v[29]) return 120 + count;
+        if ((s32)child.unk92 != v[30]) return 130 + count;
+        if ((s32)child.unk93 != v[31]) return 140 + count;
+        if ((s32)outpost.unkA6 != v[32]) return 150 + count;
+        if ((s32)outpost.unkDE != v[33]) return 160 + count;
+        if (g_script_called != v[34]) return 170 + count;
+        if (g_script_arg2 != v[35]) return 180 + count;
         count++;
     }
-    return count == 7 ? 0 : 7;
+    return count == 12 ? 0 : 7;
 }

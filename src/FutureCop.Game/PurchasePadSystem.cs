@@ -438,6 +438,64 @@ public sealed class PurchasePadSystem
     }
 
     /// <summary>
+    /// Copies Sky Captain <see cref="DroneStrategy.Glob"/> strategy and build-order words
+    /// (<c>D_8009FA94+0x4C, +0x84, +0x88, +0x9C..+0xE0</c>, <c>800336DC.c:62-82</c>) into
+    /// <see cref="RpnsVmState.GameSession"/> so retail <c>Cfun</c> script timers (e.g.,
+    /// <c>CONFT.MIS</c> T0/T1/T5/T6/T32..T39) can drain the build-order words at
+    /// <c>+0xB0..+0xDC</c> (indices 44..55) into <see cref="CsacUnitSpawner"/>. Score words
+    /// (<c>+0x64/+0x68/+0x7C/+0x80</c>) are synced by <see cref="SyncFromMatchScore"/>, and active
+    /// unit counts (<c>+0x6C..+0x78</c>, indices 27..30) stay owned by the RPNS scripts.
+    /// </summary>
+    public void SyncFromEconomy(DroneStrategy.Glob economy)
+    {
+        ArgumentNullException.ThrowIfNull(economy);
+        var s = VmState.GameSession;
+        if (s.Length <= 56) return;
+        s[19] = economy.S4C;                          // +0x4C
+        s[33] = economy.F84;                          // +0x84
+        s[34] = economy.F88;                          // +0x88
+        s[39] = economy.F9C;                          // +0x9C
+        for (int i = 0; i < 4; i++) s[40 + i] = economy.A0[i]; // +0xA0..+0xAC
+        s[44] = economy.FB0;                          // +0xB0
+        s[45] = economy.FB4;                          // +0xB4
+        s[46] = economy.FB8;                          // +0xB8
+        s[47] = economy.FBC;                          // +0xBC
+        for (int i = 0; i < 4; i++)
+        {
+            s[48 + i * 2] = economy.C[i][0];          // +0xC0 + i*8
+            s[49 + i * 2] = economy.C[i][1];          // +0xC4 + i*8
+        }
+        s[56] = economy.FE0;                          // +0xE0
+    }
+
+    /// <summary>
+    /// Copies <see cref="RpnsVmState.GameSession"/> strategy and build-order words back into
+    /// <see cref="DroneStrategy.Glob"/> after <c>Cfun</c> timers and RPNS scripts run (for instance,
+    /// after <c>CONFT.MIS</c> timers zero <c>GameSession[44..55]</c> upon queuing unit spawns).
+    /// </summary>
+    public void SyncToEconomy(DroneStrategy.Glob economy)
+    {
+        ArgumentNullException.ThrowIfNull(economy);
+        var s = VmState.GameSession;
+        if (s.Length <= 56) return;
+        economy.S4C = s[19];
+        economy.F84 = s[33];
+        economy.F88 = s[34];
+        economy.F9C = s[39];
+        for (int i = 0; i < 4; i++) economy.A0[i] = s[40 + i];
+        economy.FB0 = s[44];
+        economy.FB4 = s[45];
+        economy.FB8 = s[46];
+        economy.FBC = s[47];
+        for (int i = 0; i < 4; i++)
+        {
+            economy.C[i][0] = s[48 + i * 2];
+            economy.C[i][1] = s[49 + i * 2];
+        }
+        economy.FE0 = s[56];
+    }
+
+    /// <summary>
     /// Applies trigger-entity command <c>0x7A</c> (<c>func_80031004</c>, <c>80031004.c:65-78</c>):
     /// <paramref name="arg"/> == 0 disables the pad (sets bit 0x10); <paramref name="arg"/> != 0
     /// enables it (clears bit 0x10) and, if bit 0x20 is set, executes its slot-2 script

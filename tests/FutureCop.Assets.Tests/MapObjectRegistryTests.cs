@@ -1,4 +1,7 @@
+using System.Buffers.Binary;
+using System.Globalization;
 using FutureCop.Game;
+using FutureCop.View;
 using Xunit;
 
 namespace FutureCop.Assets.Tests;
@@ -251,5 +254,142 @@ public sealed class MapObjectRegistryTests
         Assert.Equal(0, live.Count);
         Assert.Empty(live.Entries);
         Assert.Equal(0, live.BroadcastMessage6(8));
+    }
+
+    public static IEnumerable<object[]> MapOccupancyGoldenRows()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "golden", "map-occupancy.vectors");
+        foreach (var raw in File.ReadLines(path))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            var words = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length != 1 + 12 + 1 + 9 || words[13] != "->")
+                throw new FormatException($"Invalid map-occupancy vector: {line}");
+            yield return new object[]
+            {
+                words[0],
+                Array.ConvertAll(words[1..13], s => int.Parse(s, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture)),
+                Array.ConvertAll(words[14..], s => int.Parse(s, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture)),
+            };
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(MapOccupancyGoldenRows))]
+    public void MapOccupancyRegistry_MatchesOriginalMips(string name, int[] input, int[] expected)
+    {
+        var spawns = new List<(int Id, byte Col, int Bank)>();
+        var registry = new MapObjectRegistry
+        {
+            SpawnFactory = (owner, col, row, _, _, _) =>
+            {
+                spawns.Add((owner?.Id ?? -1, col, row));
+                return 1;
+            },
+        };
+        registry.InitMissionSpawnState();
+        registry.ScreenState = input[0];
+        if (input[1] != 0) registry.FinishLevelLoad(); // drop deferral pool
+
+        if (input[2] != 0 && (input[3] != 0 || input[4] != 0))
+        {
+            var desc = new byte[0x30];
+            desc[0x14] = (byte)input[2];
+            desc[0x18] = (byte)input[3];
+            desc[0x19] = (byte)input[4];
+            Assert.True(registry.SetSlotDescriptorFromChunk(desc));
+            // Allow TrySpawnAtOwner to pass D_800A7040 check for the configured column on both banks.
+            if (input[3] != 0)
+            {
+                registry.SetSpawnCell(0, (byte)input[3], 1);
+                registry.SetSpawnCell(1, (byte)input[3], 1);
+            }
+        }
+
+        if (input[9] != 0)
+        {
+            var rec = new byte[0x50];
+            rec[0x04] = (byte)input[9];
+            rec[0x14] = 10;
+            rec[0x15] = (byte)input[10];
+            BinaryPrimitives.WriteInt32LittleEndian(rec.AsSpan(0x20), input[11]);
+            registry.SpawnTableRow = 0;
+            registry.InstallSpawnRecord(rec);
+            if (input[10] != 0)
+            {
+                var rec2 = new byte[0x50];
+                rec2[0x04] = (byte)input[9];
+                rec2[0x14] = (byte)input[10];
+                rec2[0x15] = 10;
+                BinaryPrimitives.WriteInt32LittleEndian(rec2.AsSpan(0x20), input[11]);
+                registry.InstallSpawnRecord(rec2);
+            }
+        }
+
+        var linked = new MapOccupancySubject { EntityType = (byte)input[8] };
+        var obj1 = new MapOccupancySubject
+        {
+            Id = 101,
+            EntityType = (byte)input[5],
+            TableIndex = (byte)input[2],
+            Flags = unchecked((uint)input[6]),
+            LinkC0 = input[7] == 1 ? linked : null,
+            LinkC8 = input[7] == 2 ? linked : null,
+        };
+        var obj2 = new MapOccupancySubject
+        {
+            Id = 202,
+            EntityType = obj1.EntityType,
+            TableIndex = obj1.TableIndex,
+            Flags = obj1.Flags,
+            LinkC0 = obj1.LinkC0,
+            LinkC8 = obj1.LinkC8,
+        };
+
+        int col = registry.GetSpawnDescColumn(obj1);
+        int destCol = registry.GetDestructionSpawnColumn(obj1);
+        int bank = MapObjectRegistry.GetEntitySpawnBank(obj1);
+
+        registry.QueueOrApplyMapOccupancy(obj1);
+        registry.QueueOrApplyMapOccupancy(obj2);
+
+        int immCount = spawns.Count;
+        int immCol = immCount > 0 ? spawns[0].Col : 0;
+        int immBank = immCount > 0 ? spawns[0].Bank : 0;
+
+        spawns.Clear();
+        registry.FinishLevelLoad();
+
+        int replayCount = spawns.Count;
+        int replayFirstId = replayCount > 0 ? spawns[0].Id : 0;
+        int cellFlag4 = input[9] != 0 && (registry.GetCellFlags(0, 10) & 4) != 0 ? 1 : 0;
+
+        int[] actual = { col, destCol, bank, immCount, immCol, immBank, replayCount, replayFirstId, cellFlag4 };
+        Assert.True(actual.SequenceEqual(expected),
+            $"{name}: expected [{string.Join(", ", expected)}], got [{string.Join(", ", actual)}]");
+    }
+
+    [RetailFact]
+    public void LevelScene_LoadsMissionSlotDescriptorsAndSpawnCellsIntoObjectRegistry()
+    {
+        string path = LevelSceneRetirementTests.FindMission()!;
+        var scene = new LevelScene(path);
+        scene.EnableObjectives();
+
+        var reg = scene.ObjectRegistry;
+        // CONFT.MIS carries 18 Csfx 0x5B descriptors + 7 Cact 0x5B descriptors (25 total, some shared slots).
+        int populatedSlots = Enumerable.Range(0, MapObjectRegistry.SlotTableSize)
+            .Count(s => reg.GetSlotDescriptor((byte)s) is not null);
+        int populatedBank0 = Enumerable.Range(0, MapObjectRegistry.SlotTableSize)
+            .Count(c => reg.GetSpawnCell(0, (byte)c) != 0);
+        int populatedBank1 = Enumerable.Range(0, MapObjectRegistry.SlotTableSize)
+            .Count(c => reg.GetSpawnCell(1, (byte)c) != 0);
+
+        Assert.True(populatedSlots >= 18, $"Expected >= 18 D_800A0C70 descriptors from CONFT.MIS, got {populatedSlots}");
+        Assert.True(populatedBank0 > 0, "Expected populated bank-0 D_800A7040 cells from CONFT.MIS");
+        Assert.True(populatedBank1 > 0, "Expected populated bank-1 D_800A7040 cells from CONFT.MIS");
+        Assert.False(reg.HasDeferralPool);
+        Assert.Equal(MapObjectRegistry.ScreenStateImmediatePlay, reg.ScreenState);
     }
 }

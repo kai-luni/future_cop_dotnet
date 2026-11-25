@@ -206,9 +206,38 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject
 }
 
 /// <summary>
+/// Per-participant spawned unit statistics incremented by <c>gTrySpawnRegisteredUnit</c>
+/// (<c>8006125C.c:4-7,50-73</c>) when <c>gGameSession-&gt;active == 1</c> (<c>+0x5C</c>).
+/// Counters <see cref="Type1"/>..<see cref="Type4"/> correspond to <c>info-&gt;type</c>
+/// (<c>tACT +0x1D</c>, values 1..4).
+/// </summary>
+public sealed class SpawnerUnitStats
+{
+    public ushort Type1 { get; internal set; }
+    public ushort Type2 { get; internal set; }
+    public ushort Type3 { get; internal set; }
+    public ushort Type4 { get; internal set; }
+
+    internal void Increment(int infoType)
+    {
+        switch (infoType)
+        {
+            case 1: Type1++; break;
+            case 2: Type2++; break;
+            case 3: Type3++; break;
+            case 4: Type4++; break;
+        }
+    }
+
+    internal void Clear() => Type1 = Type2 = Type3 = Type4 = 0;
+}
+
+/// <summary>
 /// Retail-keyed unit spawner built from parsed <c>Csac</c> <see cref="EntityRecord"/> entries
 /// (ports func_80060E74 registration, func_8006158C / func_800614BC command dispatch,
-/// func_800616A0 per-frame drain, and func_8006125C gated spawn).
+/// func_800616A0 per-frame drain, and func_8006125C gated spawn + statistics).
+/// Supersedes the non-retail <see cref="BuildOrderSpawner"/> stopgap when paired with
+/// <see cref="PurchasePadSystem"/> and its retail <c>Cfun</c> RPNS timers.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -288,12 +317,36 @@ public sealed class CsacUnitSpawner
     /// </summary>
     public Func<SpawnedCsacUnit, int, int, int, int>? UnitMessageHandler { get; set; }
 
-    /// <summary>Clears all registered spawner slots and tracked spawned units.</summary>
+    /// <summary>gGameSession +0x5C: when 1, <see cref="TrySpawn"/> increments per-participant stats (8006125C.c:50).</summary>
+    public int SessionActive { get; set; }
+
+    /// <summary>Team id of gSinglePlayerEntity (+0x18), or -1 when absent (8006125C.c:52).</summary>
+    public int SinglePlayerTeam { get; set; } = -1;
+
+    /// <summary>Team id of gPlayerEntities[0] (+0x18), or -1 when absent (8006125C.c:54).</summary>
+    public int Player0Team { get; set; } = -1;
+
+    /// <summary>Team id of gPlayerEntities[1] (+0x18), or -1 when absent (8006125C.c:56).</summary>
+    public int Player1Team { get; set; } = -1;
+
+    /// <summary>Spawn statistics for gSinglePlayerEntity (8006125C.c:52-53,61-70).</summary>
+    public SpawnerUnitStats SinglePlayerStats { get; } = new();
+
+    /// <summary>Spawn statistics for gPlayerEntities[0] (8006125C.c:54-55,61-70).</summary>
+    public SpawnerUnitStats Player0Stats { get; } = new();
+
+    /// <summary>Spawn statistics for gPlayerEntities[1] (8006125C.c:56-57,61-70).</summary>
+    public SpawnerUnitStats Player1Stats { get; } = new();
+
+    /// <summary>Clears all registered spawner slots, tracked spawned units, and spawn statistics.</summary>
     public void Reset()
     {
         Array.Clear(_slots);
         _count = 0;
         _spawnedUnits.Clear();
+        SinglePlayerStats.Clear();
+        Player0Stats.Clear();
+        Player1Stats.Clear();
     }
 
     /// <summary>
@@ -465,7 +518,21 @@ public sealed class CsacUnitSpawner
         if (slot.RemainingCount > 0) slot.RemainingCount--;
         slot.TotalSpawned++;
 
+        // 8006125C.c:50-73: update per-participant spawn stats in player-first order when active == 1.
+        if (SessionActive == 1)
+        {
+            int teamId = slot.Record.Team;          // info->id at tACT +0x1C (8006125C.c:8)
+            int infoType = slot.Record.U8(0x1D);    // info->type at tACT +0x1D (8006125C.c:8)
+            if (SinglePlayerTeam >= 0 && SinglePlayerTeam == teamId)
+                SinglePlayerStats.Increment(infoType);
+            else if (Player0Team >= 0 && Player0Team == teamId)
+                Player0Stats.Increment(infoType);
+            else if (Player1Team >= 0 && Player1Team == teamId)
+                Player1Stats.Increment(infoType);
+        }
+
         var unit = new SpawnedCsacUnit(_nextRuntimeId++, slot, spawnMode, UnitMessageHandler);
+        unit.SlotIndex = (byte)slot.Record.U8(0x20); // 8002A5F4.c:127
         unit.RuntimeObject = _registry?.CreateMissionObject(slot.Record, unit.Id);
         unit.SyncRuntimePosition();
         _spawnedUnits.Add(unit);
@@ -473,10 +540,14 @@ public sealed class CsacUnitSpawner
             _registry.LiveObjects.Register(unit);
 
         // 8006125C.c:74-76 calls gSpawnTargetableEntityId before the post-spawn script.
-        // 8004D4F8.c:56-59 adds the initialized entity to the list with the spawned-unit flag.
+        // 8004D4F8.c:56-59 adds the initialized entity to the list with the spawned-unit flag,
+        // and gInitEntityBase ends with gQueueOrApplyMapOccupancy (8002A5F4.c:167).
         // Outposts already have a specialized entity that the scene spawns instead.
         if (unit.DispatchType != CaptureObjective.EntityType)
+        {
             _world?.Spawn(unit, targetable: true);
+            _registry?.QueueOrApplyEntityOccupancy(unit);
+        }
 
         OnPostSpawnScript?.Invoke(slot, unit);
         return unit;
