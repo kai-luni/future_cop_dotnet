@@ -97,8 +97,110 @@ public class CaptureObjectiveTests
     [Fact]
     public void BusyPlayerIsRejected()
     {
-        // :135 requires the player's control block +0x40 to be zero.
+        // 8002D1A0.c:147 requires the player's control block +0x40 (special.phase) to be zero.
         Assert.Equal(0, Outpost().TryCapture(new CaptureCandidate(12, 1, 1, 0, 0, 0, 0, Busy: true)));
+        Assert.False(CaptureCandidate.IsSpecialActionBlocked(WeaponInput.PhasePressed));
+        Assert.True(CaptureCandidate.IsSpecialActionBlocked(WeaponInput.PhaseReleased));
+        Assert.True(CaptureCandidate.IsSpecialActionBlocked(WeaponInput.PhaseIdle));
+        Assert.True(CaptureCandidate.IsSpecialActionBlocked(WeaponInput.PhaseHeld));
+    }
+
+    // ---- 0x12 carrier dereference, 8002D1A0.c:138-152 -----------------------------------------
+
+    [Fact]
+    public void Type12CarrierWithNullCarriedIsRejected()
+    {
+        var outpost = Outpost();
+        var carrier = new CaptureCandidate(99, CaptureCandidate.CarrierType, 1, 0, 0, 0, 0, Carried: null);
+        Assert.Equal(0, outpost.TryCapture(carrier));
+        Assert.Equal(0, outpost.CaptureMode);
+    }
+
+    [Fact]
+    public void Type12CarrierDereferencesToCarriedEntityForDistanceBusyScoreAndScript()
+    {
+        var outpost = new CaptureObjective(112, 0, 0, 0,
+            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 0, reachWord: 0x400,
+            flags: 1u | CaptureObjective.ScriptFlag, childModelId: 32, script: 0x63B);
+        var score = new MatchScore(player0Team: 1);
+        var scriptCalls = new List<(CaptureObjective Obj, int ClaimantId)>();
+        var field = new ObjectiveField(new[] { outpost }, score)
+        {
+            OnPostCaptureScript = (o, id) => scriptCalls.Add((o, id)),
+        };
+
+        // Busy carried player is rejected (8002D1A0.c:141-147).
+        var busyPlayer = new CaptureCandidate(0x800C, 1, 1, 0, 0, 0, 0, Busy: true);
+        var busyCarrier = new CaptureCandidate(99, CaptureCandidate.CarrierType, 1, 999_999, 0, 0, 0, Carried: busyPlayer);
+        Assert.Equal(0, field.Touch(busyCarrier));
+        Assert.Empty(scriptCalls);
+
+        // Carrier itself is far away, but the dereferenced player is inside reach (8002D1A0.c:142, 155).
+        var player = new CaptureCandidate(0x800C, 1, 1, 100, 0, 0, 0, Busy: false);
+        var carrier = new CaptureCandidate(99, CaptureCandidate.CarrierType, 1, 999_999, 0, 0, 0, Carried: player);
+        Assert.Equal(1, field.Touch(carrier));
+        Assert.Equal(new[] { 1, 0 }, score.Score);
+        // Script receives the dereferenced player's id masked to 15 bits (8002D1A0.c:239).
+        Assert.Single(scriptCalls);
+        Assert.Same(outpost, scriptCalls[0].Obj);
+        Assert.Equal(0x000C, scriptCalls[0].ClaimantId);
+    }
+
+    // ---- child-part transfer & message sync, 8002D1A0.c:201-211 / 8002D664.c:150-178 ----------
+
+    [Fact]
+    public void ChildPartMirrorsCaptureDamageAndRetireState()
+    {
+        var outpost = new CaptureObjective(112, 0, 0, 0,
+            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 5, reachWord: 0x400,
+            value92: 10, value93: 2, childModelId: 32);
+        var child = Assert.IsType<ObjectiveChildPart>(outpost.ChildPart);
+        Assert.Equal(ObjectiveChildPart.InitialFlags, child.Flags);
+
+        // 8002D1A0.c:201, 209, 211: capture propagates Team, Value92 and Value93 to unk104.
+        Assert.Equal(2, outpost.TryCapture(new CaptureCandidate(16, 1, 2, 0, 0, 0, 0)));
+        Assert.Equal(2, child.Team);
+        Assert.Equal((byte)(10 + 60 * 2), child.Value92);
+        Assert.Equal((byte)(2 + 5 * 2), child.Value93);
+
+        // 8002D664.c:150-170: messages 9/11/14 mirror bit 0x2000000 and unk1C (health).
+        outpost.SyncChildOnDamageMessage(health: 450, parentFlags: CaptureObjective.DamageSyncFlag);
+        Assert.Equal(450, child.Health);
+        Assert.NotEqual(0u, child.Flags & CaptureObjective.DamageSyncFlag);
+        outpost.SyncChildOnDamageMessage(health: 300, parentFlags: 0);
+        Assert.Equal(300, child.Health);
+        Assert.Equal(0u, child.Flags & CaptureObjective.DamageSyncFlag);
+
+        // 8002D664.c:171-178: message 4 sets bit 8 on unk104.
+        outpost.RetireChildren();
+        Assert.NotEqual(0u, child.Flags & CaptureObjective.ChildRetireFlag);
+    }
+
+    // ---- post-capture script hook, 8002D1A0.c:238-239 -----------------------------------------
+
+    [Fact]
+    public void PostCaptureScriptHookHonorsRetailGuardsAndOrder()
+    {
+        var events = new List<string>();
+        var withScript = new CaptureObjective(112, 0, 0, 0,
+            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 0, reachWord: 0x400,
+            flags: 1u | CaptureObjective.ScriptFlag, script: 0x63B);
+        var noScript = new CaptureObjective(113, 0, 0, 0,
+            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 0, reachWord: 0x400,
+            flags: 1u | CaptureObjective.ScriptFlag, script: 0);
+        var noFlag = new CaptureObjective(114, 0, 0, 0,
+            teamA: 1, teamB: 2, markA: 1, markB: 2, stepA: 60, stepB: 0, reachWord: 0x400,
+            flags: 1u, script: 0x63B);
+
+        var score = new MatchScore(player0Team: 1);
+        var field = new ObjectiveField(new[] { withScript, noScript, noFlag }, score)
+        {
+            // Runs after Score.RecordCapture (8002D1A0.c:213-239), so Score[0] is already 1.
+            OnPostCaptureScript = (o, arg) => events.Add($"{o.Id}:{arg:X}:{score.Score[0]}"),
+        };
+
+        Assert.Equal(3, field.Touch(new CaptureCandidate(0x8123, 1, 1, 0, 0, 0, 0)));
+        Assert.Equal(new[] { "112:123:1" }, events);
     }
 
     [Fact]
@@ -153,21 +255,190 @@ public class CaptureObjectiveTests
         Assert.Equal(0, twoPlayerEmptySlot1.SinglePlayerCaptures);
     }
 
-    // ---- retail records ------------------------------------------------------------------------
+    // ---- outpost message-5 scoring, 8002D664.c:183-223 ------------------------------------------
 
-    private static string? ConftPath()
+    [Theory]
+    [InlineData(1, 2)]
+    [InlineData(2, 1)]
+    public void OutpostMessage5SinglePlayerUsesOpposingTeamAndResetsStateBeforeLookup(int claimantTeam, int kind)
     {
-        string? disc = LevelTerrainTests.FindDisc();
-        string? path = disc == null ? null : ModulePath.Resolve(disc, "conft.mis");
-        if (path == null) Assert.NotEqual("1", Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL"));
-        return path;
+        var outpost = Outpost();
+        Assert.Equal(claimantTeam, outpost.TryCapture(new CaptureCandidate(50, 5, claimantTeam, 0, 0, 0, 0)));
+        var score = new MatchScore(player0Team: kind, singlePlayerTeam: kind, singlePlayerEntityId: 0x123);
+        int timer = 42;
+        var uiModes = new List<int>();
+        score.OnSinglePlayerCapture = () =>
+        {
+            // 8002D664.c:192-197: both words and player 0's +0x10 precede the reset and lookup.
+            Assert.Equal(new[] { 0, 1 }, score.Score);
+            Assert.Equal(new[] { 0, 1 }, score.Total);
+            Assert.Equal(1, score.OutpostCaptures[0]);
+            timer = 0;
+        };
+        score.OnSessionE0Changed = uiModes.Add;
+
+        score.RecordOutpostMessage5(outpost, 0xC0004321u, key =>
+        {
+            Assert.Equal(0x4321, key);                 // 8002D664.c:197: lookup uses obj+0x8C, not the claimant id.
+            Assert.Equal(0, timer);
+            Assert.Empty(uiModes);
+            return 0xC123;                            // 8002D664.c:199: mask the found entity's +0x14.
+        });
+
+        Assert.Equal(new[] { 7 }, uiModes);
+        Assert.Equal(new[] { 0, 1 }, score.Score);      // 8002D664.c:205: skip the player loop even when its team matches.
+        Assert.Equal(new[] { 0, 0 }, score.Captures);  // 8002D1A0.c:231 is claim-side only.
+        Assert.Equal(0, score.SinglePlayerCaptures);   // 8002D1A0.c:220 is claim-side only.
+        Assert.Equal(0, score.OutpostStateCount);
+    }
+
+    [Theory]
+    [InlineData(null, 0x123)]
+    [InlineData(0xC124, 0x123)]
+    [InlineData(0xC123, 0xC123)]
+    public void OutpostMessage5SinglePlayerDoesNotChangeUiWithoutAMatchingFoundId(int? foundId, int stateId)
+    {
+        var score = new MatchScore(player0Team: 2, singlePlayerTeam: 2, singlePlayerEntityId: stateId);
+        var outpost = Outpost();
+        outpost.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0));
+        var uiModes = new List<int>();
+        score.OnSessionE0Changed = uiModes.Add;
+
+        score.RecordOutpostMessage5(outpost, 50, _ => foundId);
+
+        Assert.Equal(new[] { 0, 1 }, score.Score);     // 8002D664.c:192-195: lookup never gates bookkeeping.
+        Assert.Equal(new[] { 1, 0 }, score.OutpostCaptures);
+        Assert.Empty(uiModes);                       // 8002D664.c:198-202: mask only the found id.
+    }
+
+    [Theory]
+    [InlineData(2, 2, 3, 1)]
+    [InlineData(2, 3, 2, 0)]
+    [InlineData(1, 2, 3, 1)]
+    public void OutpostMessage5PlayerLoopUsesScoreIndexAndCreditsExistingState(
+        int playerCount, int team0, int team1, int expectedIndex)
+    {
+        // 8002D664.c:191,208-218: a present but nonmatching 1P state also takes this path.
+        var score = new MatchScore(team0, team1, singlePlayerTeam: playerCount == 1 ? 3 : 2,
+            singlePlayerEntityId: 50, playerCount: playerCount);
+        score.PlayerScoreIndices[0] = 1;
+        score.PlayerScoreIndices[1] = 0;
+        var outpost = Outpost();
+        outpost.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0));
+        var uiModes = new List<int>();
+        score.OnSessionE0Changed = mode =>
+        {
+            Assert.Equal(1, score.OutpostStateCount); // 8002D664.c:217 precedes :218.
+            Assert.Equal(1, score.Total[expectedIndex]);
+            uiModes.Add(mode);
+        };
+
+        score.RecordOutpostMessage5(outpost, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+
+        Assert.Equal(1, score.Score[expectedIndex]);   // 8002D664.c:214-215: +0xC1, not the loop slot.
+        Assert.Equal(0, score.Score[expectedIndex ^ 1]);
+        Assert.Equal(0, score.Total[expectedIndex ^ 1]);
+        Assert.Equal(new[] { 0, 0 }, score.OutpostCaptures);
+        Assert.Equal(new[] { 8 }, uiModes);
+    }
+
+    [Theory]
+    [InlineData(1, 2, 3, 0)]
+    [InlineData(2, 3, 2, 1)]
+    public void OutpostMessage5WithoutStateCreditsOppositePlayerSlot(int playerCount, int team0, int team1, int slot)
+    {
+        var score = new MatchScore(team0, team1, playerCount: playerCount);
+        var outpost = Outpost();
+        outpost.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0));
+        var uiModes = new List<int>();
+        score.OnSessionE0Changed = uiModes.Add;
+
+        score.RecordOutpostMessage5(outpost, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+
+        Assert.Equal(1, score.Score[slot]);
+        Assert.Equal(1, score.Total[slot]);
+        Assert.Equal(0, score.OutpostCaptures[slot]);
+        Assert.Equal(1, score.OutpostCaptures[slot ^ 1]); // 8002D664.c:220: even though the other team did not score.
+        Assert.Equal(0, score.OutpostStateCount);
+        Assert.Empty(uiModes);
+    }
+
+    [Theory]
+    [InlineData(3, 0)]     // Wrong team (8002D664.c:213).
+    [InlineData(-1, 0)]    // No entity (8002D664.c:213).
+    [InlineData(2, null)]  // No score/control block (8002D664.c:213).
+    public void OutpostMessage5SkipsIneligiblePlayers(int team, int? scoreIndex)
+    {
+        var score = new MatchScore(team, player1Team: 3, singlePlayerTeam: 2);
+        score.PlayerScoreIndices[0] = scoreIndex;
+        var outpost = Outpost();
+        outpost.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0));
+        var uiModes = new List<int>();
+        score.OnSessionE0Changed = uiModes.Add;
+
+        score.RecordOutpostMessage5(outpost, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+
+        Assert.Equal(new[] { 0, 0 }, score.Score);
+        Assert.Equal(new[] { 0, 0 }, score.Total);
+        Assert.Equal(new[] { 0, 0 }, score.OutpostCaptures);
+        Assert.Equal(0, score.OutpostStateCount);
+        Assert.Empty(uiModes);
     }
 
     [Fact]
+    public void OutpostMessage5SkipsOpenAndExcludedOutposts()
+    {
+        var score = new MatchScore(player0Team: 2, singlePlayerTeam: 2);
+        var open = Outpost();
+        var excluded = new CaptureObjective(112, 0, 0, 0, 1, 2, 1, 2, 60, 0, 0x400, flags: 0x4000001u);
+        Assert.Equal(1, excluded.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0)));
+
+        // 8002D664.c:183: both uncaptured and flag-excluded outposts skip the scoring pass.
+        score.RecordOutpostMessage5(open, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+        score.RecordOutpostMessage5(excluded, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+
+        Assert.Equal(new[] { 0, 0 }, score.Score);
+        Assert.Equal(new[] { 0, 0 }, score.Total);
+        Assert.Equal(new[] { 0, 0 }, score.OutpostCaptures);
+    }
+
+    [Fact]
+    public void OutpostMessage5CreditsBothMatchingSlotsInOrder()
+    {
+        var score = new MatchScore(2, 2, singlePlayerTeam: 3);
+        var outpost = Outpost();
+        outpost.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0));
+        var updates = new List<(int Mode, int Count, int First, int Second)>();
+        score.OnSessionE0Changed = mode => updates.Add((mode, score.OutpostStateCount, score.Score[0], score.Score[1]));
+
+        score.RecordOutpostMessage5(outpost, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+
+        // 8002D664.c:211-223: each matching slot independently writes mode 8 after incrementing.
+        Assert.Equal(new[] { (8, 1, 1, 0), (8, 2, 1, 1) }, updates);
+        Assert.Equal(new[] { 1, 1 }, score.Total);
+    }
+
+    [Fact]
+    public void OutpostMessage5StillBooksScoreWhenOppositeSlotIsEmpty()
+    {
+        var score = new MatchScore(player0Team: 2);
+        var outpost = Outpost();
+        outpost.TryCapture(new CaptureCandidate(50, 5, 1, 0, 0, 0, 0));
+
+        score.RecordOutpostMessage5(outpost, 50, _ => throw new InvalidOperationException("Unexpected lookup"));
+
+        // 8002D664.c:214-220: the score is booked before touching the opposite slot's counter.
+        Assert.Equal(new[] { 1, 0 }, score.Score);
+        Assert.Equal(new[] { 1, 0 }, score.Total);
+        Assert.Equal(new[] { 0, 0 }, score.OutpostCaptures);
+    }
+
+    // ---- retail records ------------------------------------------------------------------------
+
+    [ConftFact]
     public void ConftCarriesTheEntityRequestsOfBothLoaders()
     {
-        string? path = ConftPath();
-        if (path == null) return;
+        string path = LevelSceneRetirementTests.FindMission()!;
         var records = MissionEntities.Load(new MisFile(path));
         // 263 Cact and 111 Csac request headers, each with the tACT of its data packet.
         Assert.Equal(263, records.Count(r => r.Container == EntityContainer.Cact));
@@ -181,11 +452,10 @@ public class CaptureObjectiveTests
         Assert.Equal((1384448, 964606), (players[1].X, players[1].Z));
     }
 
-    [Fact]
+    [ConftFact]
     public void ConftShipsThirtyTwoNeutralOutposts()
     {
-        string? path = ConftPath();
-        if (path == null) return;
+        string path = LevelSceneRetirementTests.FindMission()!;
         var outposts = MissionEntities.Load(new MisFile(path)).Where(r => r.Type == CaptureObjective.EntityType).ToArray();
         Assert.Equal(32, outposts.Length);
         Assert.All(outposts, r => Assert.Equal(EntityContainer.Csac, r.Container));
@@ -203,11 +473,10 @@ public class CaptureObjectiveTests
         Assert.Equal((0x400 << 4) + 0x4000, o.Limit(0));
     }
 
-    [Fact]
+    [ConftFact]
     public void VictoryZonesWatchTheUnitsOfTheOpposingTeam()
     {
-        string? path = ConftPath();
-        if (path == null) return;
+        string path = LevelSceneRetirementTests.FindMission()!;
         var records = MissionEntities.Load(new MisFile(path));
         var byId = records.ToDictionary(r => r.Id);
         // Type 0x5F zone requests (gLoadMapZone) with script word 0 = RPNS + 0x6C (V[25] = 1) sit at
@@ -227,12 +496,13 @@ public class CaptureObjectiveTests
         }
     }
 
-    [Fact]
+    [ConftFact]
     public void SceneBooksACaptureIntoTheHudScore()
     {
-        string? path = ConftPath();
-        if (path == null) return;
+        string path = LevelSceneRetirementTests.FindMission()!;
         var scene = new LevelScene(path);
+        var fired = new List<(int ObjectiveId, int Script, int ClaimantId)>();
+        scene.OnPostCaptureScript = (o, claimantId) => fired.Add((o.Id, o.Script, claimantId));
         scene.EnableObjectives();
         var field = scene.Objectives!;
         Assert.Equal(32, field.Objectives.Count);
@@ -240,5 +510,7 @@ public class CaptureObjectiveTests
         Assert.Equal(1, field.Touch(new CaptureCandidate(12, 1, 1, target.X, target.Y, target.Z, 0)));
         var session = scene.ScoreSession(new HudSession());
         Assert.Equal((1, 1, 0), (session.Mode, session.Score0, session.Score1));
+        if (target.RunsScriptOnCapture)
+            Assert.Equal(new[] { (target.Id, target.Script, 12) }, fired);
     }
 }

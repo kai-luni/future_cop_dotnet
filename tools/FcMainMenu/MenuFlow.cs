@@ -270,7 +270,7 @@ public sealed class MenuFlow
                 Preview = new WireframeScene(mission, new ViewerOptions(Assembly: true, Textured: true, AutoFire: false));
             else
             {
-                var level = new LevelScene(mission);
+                var level = new LevelScene(mission) { EnableCsacSpawner = _enableLevelMovement };
                 if (_enableLevelMovement) level.EnableMechMovement();
                 if (_enableLevelMovement) level.EnableFiring();
                 Level = level;
@@ -452,7 +452,8 @@ public sealed class MenuFlow
     /// <summary>
     /// Match state of the running level (<c>D_8009FA94</c>) and the HUD globals (<c>D_8009FA00</c>,
     /// <c>D_8009FA0C</c>, <c>D_8009FAA4</c>). The score block appears only with
-    /// <see cref="HudSession.Mode"/> 1; the port has no match scoring yet, so it stays hidden.
+    /// <see cref="HudSession.Mode"/> 1: the running level paints it with the live words of
+    /// <see cref="LevelScene.ScoreSession"/> laid over this base session.
     /// </summary>
     public HudSession Session { get; set; } = new() { Mode = 0 };
 
@@ -475,6 +476,10 @@ public sealed class MenuFlow
         // same two words instead of inventing a third quantity.
         int reciprocal = max > 0 ? 0x600000 / max : 0;
 
+        var radar = Level is not null
+            ? new RadarReference(Level.MechWorld.X, Level.MechWorld.Z, unchecked((short)(walker?.Angle ?? 0)))
+            : (RadarReference?)null;
+
         // func_8006C080 reads the three slot ids at +0x90 and their counters at +0x84/+0x8A straight
         // out of the player control block, so the bar shows the live loadout of the fire path.
         var slots = Level?.Weapons?.Slots;
@@ -484,6 +489,7 @@ public sealed class MenuFlow
             {
                 Health = health,
                 MaxHealth = max,
+                Radar = radar,
                 Player = Player with
                 {
                     Value58 = health,
@@ -491,6 +497,7 @@ public sealed class MenuFlow
                     Value84 = slots.Ammo.ToArray(),
                     Value8A = slots.Reserve.ToArray(),
                     Value90 = slots.SlotIds.Select(id => (int)id).ToArray(),
+                    ValueC1 = walker?.Port ?? Player.ValueC1,
                 },
             };
         }
@@ -499,7 +506,13 @@ public sealed class MenuFlow
         {
             Health = health,
             MaxHealth = max,
-            Player = Player with { Value58 = health, Value5C = reciprocal },
+            Radar = radar,
+            Player = Player with
+            {
+                Value58 = health,
+                Value5C = reciprocal,
+                ValueC1 = walker?.Port ?? Player.ValueC1,
+            },
         };
     }
 
@@ -524,7 +537,7 @@ public sealed class MenuFlow
             if (!Profile)
             {
                 Level.Render(Camera);
-                InGameHud.Paint(Level.Rgb, BuildHud(), Session, Globals, Level.Vram);
+                InGameHud.Paint(Level.Rgb, BuildHud(), Level.ScoreSession(Session), Globals, Level.Vram);
                 FrameBlit.RgbToBgrx(Level.Rgb, LevelScene.Width, LevelScene.Height, bgrx, scale);
                 return;
             }
@@ -537,7 +550,7 @@ public sealed class MenuFlow
             Cells = Level.VisibleCells;
             t = Stopwatch.GetTimestamp();
             a = GC.GetAllocatedBytesForCurrentThread();
-            InGameHud.Paint(Level.Rgb, BuildHud(), Session, Globals, Level.Vram);
+            InGameHud.Paint(Level.Rgb, BuildHud(), Level.ScoreSession(Session), Globals, Level.Vram);
             BytesHud = GC.GetAllocatedBytesForCurrentThread() - a;
             MsHud = Stopwatch.GetElapsedTime(t).TotalMilliseconds;
             t = Stopwatch.GetTimestamp();

@@ -15,6 +15,8 @@
     <Compile Include="../../tools/FcLevelTv/CameraMotion.cs" Link="CameraMotion.cs" />
     <Compile Include="../../tools/FcLevelTv/BitmapHud.cs" Link="BitmapHud.cs" />
     <Compile Include="../../tools/FcMainMenu/MenuFlow.cs" Link="MenuFlow.cs" />
+    <Compile Include="../../tools/FcMainMenu/MenuLabels.cs" Link="MenuLabels.cs" />
+    <Compile Include="../../tools/FcMainMenu/X11PanelLayout.cs" Link="X11PanelLayout.cs" />
     <Compile Include="../../tools/FcMainMenu/FrameBlit.cs" Link="FrameBlit.cs" />
     <Compile Include="../../tools/FcMainMenu.Tizen/BitmapPanel.cs" Link="BitmapPanel.cs" />
     <Compile Include="../../tools/FcMainMenu.Tizen/TvLevelControl.cs" Link="TvLevelControl.cs" />
@@ -55,5 +57,11 @@
     <None Include="../golden/hud-draw.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/hud-draw.vectors" />
     <None Include="../golden/slots-bar.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/slots-bar.vectors" />
     <None Include="../golden/capture-objective.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/capture-objective.vectors" />
+    <None Include="../golden/elevator.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/elevator.vectors" />
+    <None Include="../golden/outpost-message5.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/outpost-message5.vectors" />
+    <None Include="../golden/outpost-retirement.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/outpost-retirement.vectors" />
+    <None Include="../golden/rpns-purchase.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/rpns-purchase.vectors" />
+    <None Include="../golden/map-occupancy.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/map-occupancy.vectors" />
+    <None Include="../golden/csac-spawner.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/csac-spawner.vectors" />
   </ItemGroup>
 </Project>
