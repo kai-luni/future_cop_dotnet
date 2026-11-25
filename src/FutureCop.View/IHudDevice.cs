@@ -33,6 +33,13 @@ public interface IHudDevice
     /// <summary><c>func_8004EDC8</c>: the target markers.</summary>
     void Markers();
 
+    /// <summary>
+    /// <c>func_8004EDC8</c> with the retail game, session, and globals blocks so rasterising devices
+    /// can run <c>func_8005A9C4</c> (<see cref="RadarMarkers.DrawRadarMarkers"/>). Defaults to
+    /// <see cref="Markers()"/> so recording test devices preserve their exact call sequence.
+    /// </summary>
+    void Markers(HudGameBlock game, HudSession session, HudGlobals globals) => Markers();
+
     /// <summary><c>func_8001C214</c>: a translucent tile rectangle in doubled coordinates.</summary>
     void Rect(uint colour, int x, int y, int w, int h, int blend);
 
