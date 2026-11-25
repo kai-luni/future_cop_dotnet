@@ -1,0 +1,177 @@
+using FutureCop.Game;
+using FutureCop.Game.Mech;
+using FutureCop.View;
+using Xunit;
+
+namespace FutureCop.Assets.Tests;
+
+/// <summary>
+/// Scene-level checks for four LevelScene wirings that a mutation run left uncovered (docs/todo 08-11):
+/// shot removal after a contact, the player radius in the capture test, the release of a one-shot
+/// MapZone and the HUD unit counters. All of them drive the real CONFT.MIS scene.
+/// </summary>
+public class LevelSceneGapTests
+{
+    private const uint FirePad = 0x00400000;
+
+    /// <summary>
+    /// todo 08. A shot that touches an entity becomes a ProjectileContact and leaves
+    /// <see cref="LevelWeapons.Shots"/>; retail retires it on the next frame through its own message 11
+    /// (80036624.c:155-156 sets val1c = -1). So every shot damages at most once: the shot that hit
+    /// is gone from the list after the frame of the hit, and the total damage never exceeds one hit
+    /// per fired shot.
+    /// </summary>
+    [ConftFact]
+    public void ShotThatHitsAnOutpostLeavesTheShotListAndDamagesOnlyOnce()
+    {
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!);
+        scene.EnableMechMovement();
+        scene.EnableFiring();
+        var outpost = scene.Objectives!.Objectives.Single(o => o.Id == 113);
+        var walker = scene.Walker!;
+        walker.X = outpost.X;
+        walker.Z = outpost.Z - 0xE000;
+        walker.Angle = 0;
+        var shots = scene.Weapons!.Shots;
+        int startHealth = outpost.Health;
+        var fired = new HashSet<Shot>(ReferenceEqualityComparer.Instance);
+        int perHit = 0, hitFrames = 0;
+        bool released = false;
+
+        for (int frame = 0; frame < 300 && !(released && shots.Count == 0); frame++)
+        {
+            // Hold the trigger until the first hit, then let the shots in flight finish.
+            scene.HeldPadWord = released ? 0u : FirePad;
+            var before = shots.ToArray();
+            int healthBefore = outpost.Health;
+            scene.AdvanceWalker(1, 0, AnalogPad.Digital);
+            foreach (var shot in shots) fired.Add(shot);
+            int lost = healthBefore - outpost.Health;
+            if (lost <= 0) continue;
+
+            hitFrames++;
+            if (perHit == 0) perHit = lost;               // the first contact is a single shot
+            released = true;
+            // The shot that made the contact left the weapon in the same frame.
+            Assert.True(before.Any(s => !shots.Contains(s)),
+                $"frame {frame}: outpost lost {lost} but every shot of the previous frame is still in Shots");
+        }
+
+        Assert.True(perHit > 0, "no shot reached the outpost");
+        Assert.Empty(shots);
+        int totalLost = startHealth - outpost.Health;
+        Assert.True(totalLost <= perHit * fired.Count,
+            $"{fired.Count} shots dealt {totalLost} damage at {perHit} per hit: a shot damaged more than once");
+        Assert.Equal(perHit * hitFrames, totalLost);       // never two contacts of one shot per frame
+        Assert.False(outpost.Freed);
+    }
+
+    /// <summary>
+    /// todo 09. Message 10 of func_8002D664 hands the player to gTryCaptureObjective, whose limit is
+    /// (obj+0xFC &lt;&lt; 4) + other+0x68 + 0x4000 (8002D1A0.c:157, :169-170), other+0x68 being the model
+    /// instance radius (80013AF0.c:83). The player at exactly Limit(0) is therefore inside the real
+    /// limit and must capture; the last inside distance captures, the limit itself does not.
+    /// </summary>
+    [ConftTheory]
+    [InlineData(-1, true)]        // Limit(radius) - 1: inside
+    [InlineData(0, false)]        // Limit(radius): 8002D1A0.c:170 rejects dist - limit >= 0
+    [InlineData(null, true)]      // Limit(0): only inside when the player's radius is used
+    public void SceneCaptureUsesThePlayerModelRadius(int? offsetFromLimit, bool captures)
+    {
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!);
+        scene.EnableMechMovement();
+        scene.EnableObjectives();
+        var target = scene.Objectives!.Objectives.Single(o => o.Id == 61);
+        int radius = CollisionCoord.FromFrameBounds(0, 0, 0, scene.Parts[0].Model.FrameBounds).Radius;
+        Assert.True(radius > 0, "the player model has no radius");
+        int distance = offsetFromLimit is { } off ? target.Limit(radius) + off : target.Limit(0);
+
+        var walker = scene.Walker!;
+        (walker.X, walker.Y, walker.Z) = (target.X + distance, target.Y, target.Z);
+        scene.AdvanceWalker(0, 0, AnalogPad.Digital);
+        // A zero-step update must not move the walker, or the distance above is not the tested one.
+        Assert.Equal((target.X + distance, target.Y, target.Z), (walker.X, walker.Y, walker.Z));
+
+        Assert.Equal(captures ? 1 : 0, target.CaptureMode);
+        Assert.Equal(captures ? 1 : 0, scene.ScoreSession(new HudSession()).Score0);
+    }
+
+    /// <summary>
+    /// todo 10. 80031C74.c:115 returns <c>(flags &amp; 2) == 0</c>; a non-zero return makes
+    /// func_80031DE8 unlink and free the node (80031DE8.c:172-184), so a one-shot MapZone fires once.
+    /// A node with flag 2 returns 0, stays linked and is tested again next frame. CONFT has no one-shot
+    /// zone aimed at the player (its flag-0 zones 235-244, 5 and 9 target Csac ids), so the test
+    /// clears flag 2 on the player's helipad 106 (flags 0x06, cost 1) and compares with the untouched pad.
+    /// </summary>
+    [ConftTheory]
+    [InlineData(true, 4, 1)]      // one-shot: bought once, then the node is gone
+    [InlineData(false, 2, 3)]     // stay: bought on each of the three frames
+    public void OneShotMapZoneFiresOnceAndStayZoneKeepsFiring(bool oneShot, int scoreAfter, int helis)
+    {
+        string path = LevelSceneRetirementTests.FindMission()!;
+        var scene = new LevelScene(path) { EnableCsacSpawner = true };
+        scene.EnableObjectives();
+        var pads = scene.PurchasePads!;
+        var pad = pads.FindPad(106)!;
+        Assert.Equal(PurchasePadKind.MapZone, pad.Kind);
+        Assert.Equal(0x06, pad.Flags);
+        if (oneShot) pad.Flags &= unchecked((byte)~2);
+        scene.AttachWalker(new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 0 });
+        scene.Objectives!.Score.Score[0] = 5;
+
+        for (int frame = 0; frame < 3; frame++)
+            scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+
+        Assert.Equal(scoreAfter, scene.ScoreSession(new HudSession()).Score0);
+        Assert.Equal(helis, pads.VmState.GameSession[RpnsVmState.SessionHelisP1]);
+    }
+
+    /// <summary>
+    /// todo 11. The HUD prints session +0x6C/+0x70 and +0x74/+0x78 as two "aa/bb" lines
+    /// (gDrawInGameHud, HudDraw.cs:268/279) and adds +0x84/+0x88 for the score flash. ScoreSession
+    /// copies them from the RPNS session bank words 27..30 and 33/34. The helipad purchase script
+    /// increments word 28 (P1 helis), which must reach Count2; distinct values in every word pin
+    /// each counter to its own slot.
+    /// </summary>
+    [ConftFact]
+    public void ScoreSessionCarriesTheUnitCountersOfTheSessionBank()
+    {
+        string path = LevelSceneRetirementTests.FindMission()!;
+        var scene = new LevelScene(path) { EnableCsacSpawner = true };
+        scene.EnableObjectives();
+        var pad = scene.PurchasePads!.FindPad(106)!;
+        scene.AttachWalker(new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 0 });
+        scene.Objectives!.Score.Score[0] = 5;
+
+        var start = scene.ScoreSession(new HudSession());
+        Assert.Equal((0, 0, 0, 0), (start.Count1, start.Count2, start.Count3, start.Count4));
+
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);            // the walker buys one heli
+        var bought = scene.ScoreSession(new HudSession());
+        Assert.Equal((0, 1, 0, 0), (bought.Count1, bought.Count2, bought.Count3, bought.Count4));
+        Assert.Equal(4, bought.Score0);
+
+        var words = scene.PurchasePads.VmState.GameSession;
+        words[RpnsVmState.SessionTanksP1] = 19;                         // the < 20 cap edge
+        words[RpnsVmState.SessionHelisP1] = 3;
+        words[RpnsVmState.SessionTanksP2] = 7;
+        words[RpnsVmState.SessionHelisP2] = 11;
+        words[33] = 2;
+        words[34] = 5;
+        var session = scene.ScoreSession(new HudSession { Stage = 4 });
+        Assert.Equal((19, 3, 7, 11), (session.Count1, session.Count2, session.Count3, session.Count4));
+        Assert.Equal((2, 5, 7), (session.Total1, session.Total2, session.TotalSum));
+        Assert.Equal((4, 1), (session.Stage, session.Mode));
+    }
+}
+
+/// <summary>Theory counterpart of <see cref="ConftFactAttribute"/>: skips when CONFT.MIS is absent.</summary>
+public sealed class ConftTheoryAttribute : TheoryAttribute
+{
+    public ConftTheoryAttribute()
+    {
+        if (Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL") != "1" &&
+            LevelSceneRetirementTests.FindMission() is null)
+            Skip = "Retail mission PA/CONFT.MIS is absent.";
+    }
+}
