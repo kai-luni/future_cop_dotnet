@@ -15,6 +15,12 @@ public sealed record HudGameBlock
     public HudPlayerBlock Player { get; init; } = new();
     /// <summary>Game block +0x134; carries the second game block's gauge words.</summary>
     public HudExtraBlock? Extra { get; init; }
+    /// <summary>
+    /// Game block <c>+0x50</c>/<c>+0x58</c>/<c>+0xB0</c> (<see cref="RadarReference"/>): world X/Z and
+    /// signed 16-bit heading read by <c>func_8005A9C4</c> / <c>func_8005A934</c>. Null when the caller
+    /// has no live radar entity (e.g. unit tests exercising only the gauge or score layout).
+    /// </summary>
+    public RadarReference? Radar { get; init; }
 }
 
 /// <summary>
@@ -48,6 +54,11 @@ public sealed record HudPlayerBlock
     public int ValueAe { get; init; }
     /// <summary>Player +0xC1: the player slot, 0 for the first player and 1 for the second.</summary>
     public int ValueC1 { get; init; }
+    /// <summary>
+    /// Player +0x300 (<c>unkAC-&gt;unk300</c>, <c>8005A9C4.c:18</c>): optional radar marker node
+    /// carrying up to 8 point targets for <c>func_8005A9C4</c>.
+    /// </summary>
+    public RadarMarkerNode? RadarMarkers { get; init; }
     /// <summary>
     /// Player +0x326: a countdown timer, not a permanent flag. A pickup sets it to 0x1770 frames
     /// (8002FC90.c:179-181), a hit clears it (80053188.c:176-177) and it counts down per frame
@@ -195,7 +206,7 @@ public static class HudDraw
         DrawPlayerGauge(device, player, game.Health, game.MaxHealth, globals);
 
         device.TargetPass();
-        device.Markers();
+        device.Markers(game, session, globals);
 
         if (player.ValueAe > 0) DrawLabel(device, player, globals);
         if (globals.PlayerCount >= 2 && player.ValueC1 == 0)

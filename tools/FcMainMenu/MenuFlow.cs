@@ -475,6 +475,10 @@ public sealed class MenuFlow
         // same two words instead of inventing a third quantity.
         int reciprocal = max > 0 ? 0x600000 / max : 0;
 
+        var radar = Level is not null
+            ? new RadarReference(Level.MechWorld.X, Level.MechWorld.Z, unchecked((short)(walker?.Angle ?? 0)))
+            : (RadarReference?)null;
+
         // func_8006C080 reads the three slot ids at +0x90 and their counters at +0x84/+0x8A straight
         // out of the player control block, so the bar shows the live loadout of the fire path.
         var slots = Level?.Weapons?.Slots;
@@ -484,6 +488,7 @@ public sealed class MenuFlow
             {
                 Health = health,
                 MaxHealth = max,
+                Radar = radar,
                 Player = Player with
                 {
                     Value58 = health,
@@ -491,6 +496,7 @@ public sealed class MenuFlow
                     Value84 = slots.Ammo.ToArray(),
                     Value8A = slots.Reserve.ToArray(),
                     Value90 = slots.SlotIds.Select(id => (int)id).ToArray(),
+                    ValueC1 = walker?.Port ?? Player.ValueC1,
                 },
             };
         }
@@ -499,7 +505,13 @@ public sealed class MenuFlow
         {
             Health = health,
             MaxHealth = max,
-            Player = Player with { Value58 = health, Value5C = reciprocal },
+            Radar = radar,
+            Player = Player with
+            {
+                Value58 = health,
+                Value5C = reciprocal,
+                ValueC1 = walker?.Port ?? Player.ValueC1,
+            },
         };
     }
 

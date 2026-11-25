@@ -182,6 +182,36 @@ public sealed class InGameHud : IHudDevice
     public void Markers() { }
 
     /// <summary>
+    /// <c>func_8004EDC8</c> -&gt; <c>func_8005A9C4</c> (<see cref="RadarMarkers.DrawRadarMarkers"/>):
+    /// when <see cref="HudGameBlock.Radar"/> is populated, rasterises the player's own heading pointer
+    /// (as a stand-in triangle at <see cref="RadarMarkerDrawResult.HeadingLineAngle"/> until
+    /// <c>func_8005A740</c> is ported) and any active target triangles emitted from
+    /// <see cref="HudPlayerBlock.RadarMarkers"/> via <see cref="DrawRadarTriangle"/>.
+    /// </summary>
+    public void Markers(HudGameBlock game, HudSession session, HudGlobals globals)
+    {
+        if (game.Radar is not { } reference) return;
+
+        var result = RadarMarkers.DrawRadarMarkers(
+            reference,
+            game.Player.ValueC1,
+            globals.FrameTime,
+            game.Player.RadarMarkers,
+            globals.PlayerCount,
+            session.Mode);
+
+        // Stand-in for func_8005A740(origin, -heading - 0x800, 0xF8F8F8) (8005A9C4.c:111-112):
+        // renders the player's own radar heading pointer using the retail D_8009AFB4 triangle shape.
+        DrawRadarTriangle(RadarMarkers.EmitRadarTriangle(
+            result.OriginX,
+            result.HeadingLineAngle,
+            RadarMarkers.PlayerPointerColor));
+
+        for (int i = 0; i < result.Triangles.Count; i++)
+            DrawRadarTriangle(result.Triangles[i]);
+    }
+
+    /// <summary>
     /// Rasterises one flat-shaded <c>POLY_F3</c> packet from <see cref="RadarMarkers.EmitRadarTriangle"/>
     /// (<c>func_8005A828</c>) into the 320x240 RGB frame using <see cref="Put"/>.
     /// </summary>
