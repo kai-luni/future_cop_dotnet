@@ -181,6 +181,41 @@ public sealed class InGameHud : IHudDevice
     /// <inheritdoc/>
     public void Markers() { }
 
+    /// <summary>
+    /// Rasterises one flat-shaded <c>POLY_F3</c> packet from <see cref="RadarMarkers.EmitRadarTriangle"/>
+    /// (<c>func_8005A828</c>) into the 320x240 RGB frame using <see cref="Put"/>.
+    /// </summary>
+    /// <remarks>
+    /// Handles both clockwise and counter-clockwise vertex windings and respects the PS1
+    /// semi-transparency bit (<c>0x02</c>) in <see cref="RadarTrianglePacket.GpuCode"/>.
+    /// </remarks>
+    public void DrawRadarTriangle(RadarTrianglePacket packet)
+    {
+        int x0 = packet.X0, y0 = packet.Y0;
+        int x1 = packet.X1, y1 = packet.Y1;
+        int x2 = packet.X2, y2 = packet.Y2;
+
+        int minX = Math.Max(0, Math.Min(x0, Math.Min(x1, x2)));
+        int maxX = Math.Min(LevelScene.Width - 1, Math.Max(x0, Math.Max(x1, x2)));
+        int minY = Math.Max(0, Math.Min(y0, Math.Min(y1, y2)));
+        int maxY = Math.Min(LevelScene.Height - 1, Math.Max(y0, Math.Max(y1, y2)));
+
+        bool opaque = (packet.GpuCode & 0x02) == 0;
+        int r = packet.R, g = packet.G, b = packet.B;
+
+        for (int y = minY; y <= maxY; y++)
+        {
+            for (int x = minX; x <= maxX; x++)
+            {
+                long e0 = (long)(x1 - x0) * (y - y0) - (long)(y1 - y0) * (x - x0);
+                long e1 = (long)(x2 - x1) * (y - y1) - (long)(y2 - y1) * (x - x1);
+                long e2 = (long)(x0 - x2) * (y - y2) - (long)(y0 - y2) * (x - x2);
+                if ((e0 >= 0 && e1 >= 0 && e2 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0))
+                    Put(x, y, r, g, b, opaque);
+            }
+        }
+    }
+
     /// <inheritdoc/>
     public void Bar(int x, int y, int intensity, int p3, int p4, int p5, int flag)
     {
