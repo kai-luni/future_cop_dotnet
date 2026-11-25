@@ -15,7 +15,7 @@ All claims about PS1 retail behavior reference `future-cop-lapd-ps1/src/game/*.c
   `LevelScene`, treibt den Walker via `Steps` (8-Tick-Akkumulator, `:429`) und
   rendert `InGameHud` mit dem Live-Match-Status aus `Level.ScoreSession(Session)`
   (`MenuFlow.cs:528,541`; Mode `1`, `Score0`/`Score1`, Einheitenzaehler `Count1..4`
-  und Claimed-Outpost-Totals `Total1`/`Total2`). Der Sky-Captain-Tick laeuft mit
+  und kumulierten Helipad-Claims `Total1`/`Total2`). Der Sky-Captain-Tick laeuft mit
   (`Level.AdvanceSkyCaptain(...)`, `MenuFlow.cs:441`).
 - **Level-Szene & Player-Mech**: `src/FutureCop.View/LevelScene.cs` laedt
   Terrain, `MissionEntities`, `ObjectiveField`, `SkyCaptainSystem`, `PickupItems`
@@ -93,13 +93,12 @@ All claims about PS1 retail behavior reference `future-cop-lapd-ps1/src/game/*.c
     Retail-Vorbild (Pads sind im C unsichtbare Trigger-Boxen, `80031C74.c`,
     `8002F8B8.c`). Typ-95-Kaufpads erscheinen gruen, aktive Typ-14-Pads gelb
     mit beiden Diagonalen, deaktivierte (`Flags & 0x10`, `8003151C.c:106`) grau.
-    Aus Sichtpruefung am gerenderten Bild (`CONFT.MIS`) auf Bodenhoehe
-    `LevelGround.Height` gesnappt (analog `800319D4.c:131-132` und
-    `80030DE0.c:150`, da `tACT`-Rohhoehe `0` ist, 18/54 Pads aber auf
-    `GroundY != 0` bis `+/-2560` liegen), auf Walker-Pads (`Flags & 4 != 0`:
-    4 Typ-95 + 24 Typ-14 je PA-Karte) gefiltert (blendet die 26-28 grossen
-    Basis-Perimeter-/Csac-Zonen aus) und auf Solo-Cull-Distanz `0x38000`
-    (`8004DF28.c:142-143`) begrenzt.
+    Trigger und Marker verwenden dieselbe beim Laden mit `LevelGround.Height`
+    ermittelte Hoehe (analog `800319D4.c:131-132` und `80030DE0.c:150`).
+    Der Viewer blendet nur Walker-Pads (`Flags & 4 != 0`) innerhalb von
+    `0x38000` pro Achse ein. Die Zahl stammt aus der Retail-Naeheliste
+    (`8004DF28.c:101,142`), nicht aus einem Retail-Zeichen-Cull. Retirierte
+    Typ-14-Pads und freigegebene One-Shot-Zonen werden nicht gezeichnet.
   - **HUD-Score & Totals (`+0x84`/`+0x88`)**: `LevelScene.ScoreSession` speist
     `InGameHud` mit `Score0`/`Score1`, `Count1..4` (`gGameSession[27..30]`) und
     `Total1`/`Total2` (`gGameSession[33..34]`, `+0x84`/`+0x88`). C-Trace ueber
@@ -108,7 +107,8 @@ All claims about PS1 retail behavior reference `future-cop-lapd-ps1/src/game/*.c
     ist `gInterpretEntityScript` Opcode 21 (`gGameSession[a]++`, `80069D68.c:243-245`)
     in den Slot-2-RPNS-Scripts der Outpost-Helipads (`cmd 0x7A`, `80031004.c:65-78`:
     P1 `151/167/189/211` -> `+0x84`, P2/Sky Captain `153/171/193/215` -> `+0x88`
-    in allen fuenf PA-Karten). Dieselben zwei Woerter lesen `gDrawInGameHud`
+    in allen fuenf PA-Karten). Die Zaehler werden nicht dekrementiert.
+    Dieselben zwei Woerter lesen `gDrawInGameHud`
     (`80047F30.c:41,218-223,257-262`, Blink-Bedingung `total1 + total2 < 4` ab
     `score >= 30`), `gUpdatePlayerEntity` (`800588D4.c:22,251`),
     `gUpdateDroneStrategy` (`800336DC.c:71-72,750,818,822` als `f84`/`f88`) und

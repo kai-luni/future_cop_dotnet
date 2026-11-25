@@ -203,7 +203,8 @@ public sealed class LevelScene
             Player0Team = _playerTeam,
         };
         _csacSpawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(_file.Bytes, r));
-        _purchasePads = PurchasePadSystem.LoadFromMission(_file.Bytes, _csacSpawner, random: _csacSpawner.Random);
+        _purchasePads = PurchasePadSystem.LoadFromMission(_file.Bytes, _csacSpawner, random: _csacSpawner.Random,
+            world: _entities, groundHeight: (x, z) => LevelGround.Height(Map, x, 0x100000, z, out _));
         if (_purchasePads is not null)
         {
             _purchasePads.VmState.GameSession[RpnsVmState.SessionPlayerCount] = 1;
@@ -273,7 +274,6 @@ public sealed class LevelScene
 
     private void RunPostCaptureScript(CaptureObjective objective, int claimantId)
     {
-        // An RPNS op 56 with command 0x7A reaches ApplyPadCommand7A through the VM callback.
         RunEntityScript(objective.Script, arg1: 0, arg2: claimantId);
         _onPostCaptureScript?.Invoke(objective, claimantId);
     }
@@ -298,9 +298,9 @@ public sealed class LevelScene
     private EntityWorld? _entities;
 
     /// <summary>
-    /// The entity list (D_8009FA40) for outposts, their child parts, spawned units and projectile
-    /// contacts, or null until the live level is enabled. <see cref="AdvanceWalker"/> runs its retirement
-    /// stages every frame.
+    /// The entity list (D_8009FA40) for outposts, their child parts, trigger attachments, spawned units
+    /// and projectile contacts, or null until the live level is enabled. <see cref="AdvanceWalker"/>
+    /// runs its retirement stages every frame.
     /// </summary>
     public EntityWorld? Entities => _entities;
 
@@ -418,7 +418,7 @@ public sealed class LevelScene
     /// <summary>
     /// The HUD session with the live score words (D_8009FA94 + 0x64). +0x5C is 1 in a Precinct Assault
     /// match: the match end branches on it (80027D9C.c:78, 80060A0C.c:114). The unit counters
-    /// +0x6C..+0x78 (gGameSession[27..30]) and the claimed-outpost totals +0x84/+0x88
+    /// +0x6C..+0x78 (gGameSession[27..30]) and the cumulative helipad-claim totals +0x84/+0x88
     /// (gGameSession[33..34]) come from the RPNS VM's session bank when the mission has purchase pads.
     /// No C function writes +0x84/+0x88 directly (gInitRuntime zeroes 0..0x38 at 80076EB0.c:82-85);
     /// the retail writer is gInterpretEntityScript op 21 (gGameSession[a]++, 80069D68.c:243-245),
@@ -1114,21 +1114,19 @@ public sealed class LevelScene
     /// trigger box in the C (80031C74.c, 8002F8B8.c) and the visible pad is map geometry, so the
     /// outline shows the x/z box the port tests (<see cref="PurchasePadSystem.IsInsidePad"/>).
     /// Type-95 map zones are a green rectangle; type-14 attachment pads a yellow rectangle with both
-    /// diagonals, grey while flag 0x10 disables them (8003151C.c:106). A one-shot map zone that fired
-    /// and was freed (80031DE8.c:176-184) is no longer drawn.
+    /// diagonals, grey while flag 0x10 disables them (8003151C.c:106). Retired attachments and
+    /// one-shot map zones that were freed (80031DE8.c:176-184) are no longer drawn.
     /// </summary>
     /// <remarks>
     /// Three viewer-usability rules derived from rendered inspection on CONFT.MIS:
-    /// (1) Raw tACT <c>WorldY</c> is 0 for every pad while raised outpost platforms sit at +2560
-    /// (18 of 54 pads in CONFT.MIS have <c>GroundY != 0</c>), so drawing at <c>WorldY</c> shifts
-    /// outpost markers visibly below the floor; snapping to <see cref="LevelGround.Height"/> matches
-    /// the retail load-time surface snap (<c>gLoadMapZone</c> 800319D4.c:131-132,
-    /// <c>gInitTriggerAttachmentEntity</c> 80030DE0.c:150).
+    /// (1) Draw at the snapped trigger centre: raw tACT Y places raised outpost markers below the
+    /// floor (18 of 54 pads in CONFT.MIS have a nonzero snapped height).
     /// (2) Non-walker type-95 zones (<c>Flags &amp; 4 == 0</c>, 26-28 per PA map) are huge base-perimeter
     /// intrusion boxes (98304 x 163840) and Csac scoring zones rather than player buy pads; skipping
     /// them keeps the 4 type-95 and 24 type-14 walker pads readable without lines slicing through walls.
-    /// (3) Pads farther than the retail solo cull range (<c>0x38000</c>, 8004DF28.c:142-143) are
-    /// omitted so un-depth-tested lines from the opposite base do not streak across distant rooftops.
+    /// (3) The viewer omits pads outside a <c>0x38000</c> box per axis to keep un-depth-tested
+    /// lines off distant rooftops. The cutoff borrows the initial range of the retail active-entity
+    /// list (8004DF28.c:101,142), not its octagonal distance, overflow adjustment, or drawing rules.
     /// </remarks>
     private int PadMarkers(Gte.Mat view)
     {
@@ -1138,12 +1136,13 @@ public sealed class LevelScene
         foreach (var pad in pads.Pads)
         {
             if (!pad.RequiresWalkerMode) continue;
+            if (pad.IsRetired) continue;
             bool mapZone = pad.Kind == PurchasePadKind.MapZone;
             if (mapZone && (pad.Flags & 2) == 0 && _retiredMapZonePads.Contains(pad.RecordId)) continue;
             if (Math.Abs(pad.WorldX - MechWorld.X) >= maxPadDist || Math.Abs(pad.WorldZ - MechWorld.Z) >= maxPadDist)
                 continue;
             byte[] colour = mapZone ? PadZoneColour : pad.IsEnabled ? PadAttachmentColour : PadDisabledColour;
-            int y = LevelGround.Height(Map, pad.WorldX, 0x100000, pad.WorldZ, out _);
+            int y = pad.WorldY;
             int x0 = pad.WorldX - pad.ExtentX, x1 = pad.WorldX + pad.ExtentX;
             int z0 = pad.WorldZ - pad.ExtentZ, z1 = pad.WorldZ + pad.ExtentZ;
             var c00 = ProjectWorld(x0, y, z0, view);

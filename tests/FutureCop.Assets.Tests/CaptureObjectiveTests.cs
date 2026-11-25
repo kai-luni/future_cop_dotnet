@@ -435,19 +435,10 @@ public class CaptureObjectiveTests
 
     // ---- retail records ------------------------------------------------------------------------
 
-    private static string? ConftPath()
-    {
-        string? disc = LevelTerrainTests.FindDisc();
-        string? path = disc == null ? null : ModulePath.Resolve(disc, "conft.mis");
-        if (path == null) Assert.NotEqual("1", Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL"));
-        return path;
-    }
-
-    [Fact]
+    [RetailFact]
     public void ConftCarriesTheEntityRequestsOfBothLoaders()
     {
-        string? path = ConftPath();
-        if (path == null) return;
+        string path = LevelSceneRetirementTests.FindMission()!;
         var records = MissionEntities.Load(new MisFile(path));
         // 263 Cact and 111 Csac request headers, each with the tACT of its data packet.
         Assert.Equal(263, records.Count(r => r.Container == EntityContainer.Cact));
@@ -461,11 +452,10 @@ public class CaptureObjectiveTests
         Assert.Equal((1384448, 964606), (players[1].X, players[1].Z));
     }
 
-    [Fact]
+    [RetailFact]
     public void ConftShipsThirtyTwoNeutralOutposts()
     {
-        string? path = ConftPath();
-        if (path == null) return;
+        string path = LevelSceneRetirementTests.FindMission()!;
         var outposts = MissionEntities.Load(new MisFile(path)).Where(r => r.Type == CaptureObjective.EntityType).ToArray();
         Assert.Equal(32, outposts.Length);
         Assert.All(outposts, r => Assert.Equal(EntityContainer.Csac, r.Container));
@@ -483,11 +473,10 @@ public class CaptureObjectiveTests
         Assert.Equal((0x400 << 4) + 0x4000, o.Limit(0));
     }
 
-    [Fact]
+    [RetailFact]
     public void VictoryZonesWatchTheUnitsOfTheOpposingTeam()
     {
-        string? path = ConftPath();
-        if (path == null) return;
+        string path = LevelSceneRetirementTests.FindMission()!;
         var records = MissionEntities.Load(new MisFile(path));
         var byId = records.ToDictionary(r => r.Id);
         // Type 0x5F zone requests (gLoadMapZone) with script word 0 = RPNS + 0x6C (V[25] = 1) sit at
@@ -507,11 +496,10 @@ public class CaptureObjectiveTests
         }
     }
 
-    [Fact]
+    [RetailFact]
     public void SceneBooksACaptureIntoTheHudScore()
     {
-        string? path = ConftPath();
-        if (path == null) return;
+        string path = LevelSceneRetirementTests.FindMission()!;
         var scene = new LevelScene(path);
         var fired = new List<(int ObjectiveId, int Script, int ClaimantId)>();
         scene.OnPostCaptureScript = (o, claimantId) => fired.Add((o.Id, o.Script, claimantId));

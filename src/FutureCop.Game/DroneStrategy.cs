@@ -15,8 +15,10 @@ public static class DroneStrategy
         public int F68;                        // +0x68 credit balance
         public int F74;                        // +0x74 per-turn limit vs 0x14
         public int F78;                        // +0x78 per-turn limit vs 0x14
-        public int F84;                        // +0x84 P1 claimed-outpost total (gGameSession[33], op 21 in 80069D68.c:244; == 4 check at 800336DC.c:822)
-        public int F88;                        // +0x88 P2/Sky-Captain claimed-outpost total (gGameSession[34], op 21 in 80069D68.c:244; == 0 checks at 800336DC.c:750,818)
+        // The four helipad outposts per side increment these counters via RPNS op 21 (80069D68.c:244).
+        // No decrement: these are cumulative claims, not a count of all currently held outposts.
+        public int F84;                        // +0x84 P1, gGameSession[33] (800336DC.c:822 checks == 4)
+        public int F88;                        // +0x88 P2/Sky Captain, gGameSession[34] (800336DC.c:750,818 check == 0)
         public int F9C;                        // +0x9C mode mirror
         public int[] A0 = new int[4];         // +0xA0 slot ownership
         public int FB0;                        // +0xB0 upgrade counter

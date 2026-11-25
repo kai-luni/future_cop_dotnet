@@ -1,8 +1,10 @@
 using System.Globalization;
+using FutureCop.Assets;
 using FutureCop.Game;
 using FutureCop.Game.Mech;
 using FutureCop.View;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace FutureCop.Assets.Tests;
 
@@ -14,6 +16,10 @@ namespace FutureCop.Assets.Tests;
 /// </summary>
 public sealed class PurchasePathTests
 {
+    private readonly ITestOutputHelper _output;
+
+    public PurchasePathTests(ITestOutputHelper output) => _output = output;
+
     private static readonly string[] OutputFields =
     {
         "ret", "s25", "s26", "s27", "s28", "s29", "s30",
@@ -96,13 +102,10 @@ public sealed class PurchasePathTests
         Assert.True(diffs.Length == 0, $"{name}: {string.Join(", ", diffs)}");
     }
 
-    [Fact]
+    [RetailFact]
     public void ConftMis_LoadsPurchasePadsAndSpawnsHeliAndTankAndDreadnought()
     {
-        string? conft = FindConftMis();
-        if (conft is null) return; // disc image absent on CI
-
-        byte[] bytes = File.ReadAllBytes(conft);
+        byte[] bytes = File.ReadAllBytes(LevelSceneRetirementTests.FindMission()!);
         var records = MissionEntities.Parse(bytes);
         var registry = new MapObjectRegistry();
         registry.InitMissionSpawnState();
@@ -251,23 +254,184 @@ public sealed class PurchasePathTests
     }
 
     [RetailFact]
-    public void ScenePostCaptureScriptDispatchesPadEnableCommand()
+    public void PadMarkersExcludeNonWalkerZones()
     {
-        string path = LevelSceneRetirementTests.FindMission()!;
-        var scene = new LevelScene(path);
+        var (scene, zone) = SceneWithOnlyThisPadMarked(235);
+        var camera = new LevelCamera(0.0, 20.0, 0x6000);
+        Assert.Equal(PurchasePadKind.MapZone, zone.Kind);
+        Assert.False(zone.RequiresWalkerMode);
+        scene.Render(camera);
+        Assert.Equal(0, scene.PadMarkerLines);
+
+        zone.Flags |= 4;
+        scene.Render(camera);
+        Assert.Equal(4, scene.PadMarkerLines);
+    }
+
+    [RetailFact]
+    public void PadMarkersCullAtTheHorizontalDistanceLimit()
+    {
+        var (scene, pad) = SceneWithOnlyThisPadMarked(152);
+        var camera = new LevelCamera(0.0, 70.0, 0x6000);
+        foreach (var (dx, dz) in new[] { (1, 0), (0, 1) })
+        {
+            var walker = scene.Walker!;
+            walker.X = pad.WorldX + dx * 0x37FFF;
+            walker.Z = pad.WorldZ + dz * 0x37FFF;
+            scene.AttachWalker(walker);
+            scene.Render(camera);
+            Assert.Equal(6, scene.PadMarkerLines);
+
+            for (int distance = 0x38000; distance <= 0x38001; distance++)
+            {
+                walker.X = pad.WorldX + dx * distance;
+                walker.Z = pad.WorldZ + dz * distance;
+                scene.AttachWalker(walker);
+                scene.Render(camera);
+                Assert.Equal(0, scene.PadMarkerLines);
+            }
+        }
+    }
+
+    [RetailFact]
+    public void RaisedPadMarkerDrawsAtThePlatformHeight()
+    {
+        var (scene, _) = SceneWithOnlyThisPadMarked(152);
+        var camera = new LevelCamera(0.0, 20.0, 0x1200);
+        scene.Render(camera);
+        Assert.Equal(6, scene.PadMarkerLines);
+
+        // The extent of the yellow outline with this camera on CONFT's raised platform.
+        byte[] markerColour = { 0xFF, 0xD0, 0x20 };
+        var yellow = Enumerable.Range(0, LevelScene.Width * LevelScene.Height)
+            .Where(i => scene.Rgb.AsSpan(i * 3, 3).SequenceEqual(markerColour))
+            .ToArray();
+        Assert.NotEmpty(yellow);
+        Assert.Equal((124, 178), (yellow.First() / LevelScene.Width, yellow.Last() / LevelScene.Width));
+    }
+
+    [RetailFact]
+    public void RaisedPadTriggerUsesThePlatformHeight()
+    {
+        var (scene, pad) = SceneWithOnlyThisPadMarked(152);
+        int ground = LevelGround.Height(scene.Map, pad.WorldX, 0x100000, pad.WorldZ, out _);
+        Assert.True(ground > 0);
+        Assert.True(PurchasePadSystem.IsInsidePad(pad, pad.WorldX, ground + pad.ExtentY - 1, pad.WorldZ, 0));
+        Assert.False(PurchasePadSystem.IsInsidePad(pad, pad.WorldX, ground + pad.ExtentY, pad.WorldZ, 0));
+    }
+
+    [RetailFact]
+    public void RetiredClaimPadDisappearsFromMarkers()
+    {
+        var (scene, _) = SceneWithOnlyThisPadMarked(152);
+        scene.Objectives!.Score.Score[0] = 100;
+        var camera = new LevelCamera(0.0, 20.0, 0x1200);
+        scene.Render(camera);
+        Assert.Equal(6, scene.PadMarkerLines);
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.Equal(70, scene.ScoreSession(new HudSession()).Score0);
+        scene.Render(camera);
+        Assert.Equal(0, scene.PadMarkerLines);
+    }
+
+    private static (LevelScene Scene, PurchasePad Pad) SceneWithOnlyThisPadMarked(int tag)
+    {
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!) { EnableCsacSpawner = true };
+        scene.EnableObjectives();
+        var pad = scene.PurchasePads!.FindPad(tag)!;
+        foreach (var other in scene.PurchasePads.Pads)
+            if (other != pad) other.Flags &= unchecked((byte)~4);
+        int ground = LevelGround.Height(scene.Map, pad.WorldX, 0x100000, pad.WorldZ, out _);
+        scene.AttachWalker(new MechBody { X = pad.WorldX, Y = ground, Z = pad.WorldZ, Form = 0 });
+        return (scene, pad);
+    }
+
+    [RetailFact]
+    public void ScenePostCaptureRunsTheRealOutpostScriptBeforeNotifyingObservers()
+    {
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!);
         scene.EnableObjectives();
         var field = scene.Objectives!;
+        var objective = field.Objectives.Single(o => o.Id == 41);
+        Assert.Equal(1595, objective.Script);
         field.Score.Score[0] = 35;
-        int observedScore = -1;
-        scene.OnPostCaptureScript = (_, _) => observedScore = field.Score.Score[0];
 
-        // Exercise the capture hook with the retail RPNS command at offset 337:
-        // push tag 150, push command 0x7A, push 1, op 56 (80069D68.c:379-385).
-        var objective = new CaptureObjective(0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 0,
-            flags: CaptureObjective.ScriptFlag, script: 337);
-        Assert.Equal(1, field.Offer(objective, new CaptureCandidate(12, 1, 1, 0, 0, 0, 0)));
-        Assert.Equal(6, field.Score.Score[0]); // 35 + capture point - pad 150 slot-2 cost of 30
-        Assert.Equal(6, observedScore);
+        // RPNS at 1595 is BF 83 1E 00: store 63 in pointer-bank word 3.
+        var vm = scene.PurchasePads!.VmState;
+        Assert.Equal(0, vm.SessionPointerBank[3]);
+        var observed = new List<(int ObjectiveId, int ClaimantId, int Score, int ScriptValue)>();
+        scene.OnPostCaptureScript = (o, claimantId) =>
+            observed.Add((o.Id, claimantId, field.Score.Score[0], vm.SessionPointerBank[3]));
+
+        Assert.Equal(1, field.Offer(objective,
+            new CaptureCandidate(12, 1, 1, objective.X, objective.Y, objective.Z, 0)));
+        Assert.Equal(36, field.Score.Score[0]);
+        Assert.Equal(new[] { (41, 12, 36, 63) }, observed);
+    }
+
+    [RetailFact]
+    public void SceneWalkerClaimsHelipadOnlyOnceAcrossSixFrames()
+    {
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!) { EnableCsacSpawner = true };
+        scene.EnableObjectives();
+        var claim = scene.PurchasePads!.FindPad(152)!;
+        var tankPad = scene.PurchasePads.FindPad(150)!;
+        var helipad = scene.PurchasePads.FindPad(151)!;
+        Assert.False(tankPad.IsEnabled);
+        Assert.False(helipad.IsEnabled);
+        var entity = Assert.Single(scene.Entities!.Units.Where(e => e.RecordId == claim.RecordId));
+        Assert.NotEqual(0, entity.RuntimeId);
+        scene.AttachWalker(new MechBody { X = claim.WorldX, Y = claim.WorldY, Z = claim.WorldZ, Form = 0 });
+        scene.Objectives!.Score.Score[0] = 100;
+
+        var frames = new List<(int Score, int Total1, int Total2)>();
+        for (int frame = 0; frame <= 6; frame++)
+        {
+            if (frame > 0) scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+            var session = scene.ScoreSession(new HudSession());
+            frames.Add((session.Score0, session.Total1, session.Total2));
+            _output.WriteLine($"Frame {frame}: Score0={session.Score0} Total1={session.Total1}");
+        }
+
+        Assert.True(tankPad.IsEnabled);
+        Assert.True(helipad.IsEnabled);
+        Assert.Equal(new[] { (100, 0, 0) }.Concat(Enumerable.Repeat((70, 1, 0), 6)), frames);
+        Assert.Equal(0, entity.RuntimeId);
+        Assert.Equal(LiveEntity.ResetFlag, entity.Flags & (LiveEntity.ResetFlag | LiveEntity.NoRetireScriptFlag));
+
+        scene.EnableMechMovement();
+        scene.AdvanceWalker(1, 0, AnalogPad.Digital);
+        Assert.DoesNotContain(entity, scene.Entities.Units);
+    }
+
+    [RetailFact]
+    public void TaggedRetirementWithArgOneSetsBothEntityFlags()
+    {
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!);
+        scene.EnableObjectives();
+        var entity = Assert.Single(scene.Entities!.Units.Where(e => e.RecordId == 152));
+        scene.PurchasePads!.VmState.OnCommandByTag!(152, 0x3D, 1);
+
+        Assert.Equal(0, entity.RuntimeId);
+        const uint mask = LiveEntity.ResetFlag | LiveEntity.NoRetireScriptFlag;
+        Assert.Equal(mask, entity.Flags & mask);
+    }
+
+    [RetailFact]
+    public void EastHelipadClaimIncrementsOnlyTotal2()
+    {
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!);
+        scene.EnableObjectives();
+        var pads = scene.PurchasePads!;
+        var helipad = pads.FindPad(153)!;
+        Assert.False(helipad.IsEnabled);
+        pads.VmState.GameSession[RpnsVmState.SessionScoreP2] = 100;
+
+        // Exercise the east-side branch of 152 -> 149 -> 153 with the retail P2 tag.
+        Assert.True(pads.TryTriggerPad(pads.FindPad(152)!, playerEntityId: 16, isHoverMode: false).Triggered);
+        Assert.True(helipad.IsEnabled);
+        var session = scene.ScoreSession(new HudSession());
+        Assert.Equal((0, 1), (session.Total1, session.Total2));
     }
 
     [Fact]
@@ -435,17 +599,5 @@ public sealed class PurchasePathTests
         bw.Write(timerBytecode);
         for (int i = timerBytecode.Length; i < paddedText; i++) bw.Write((byte)0);
         return ms.ToArray();
-    }
-
-    private static string? FindConftMis()
-    {
-        string[] roots =
-        {
-            "/home/kai-luni/git/future-cop-lapd-ps1/build/disc/files/PA/CONFT.MIS",
-            "/home/kai-luni/git/future_cop_dotnet/build/disc/files/PA/CONFT.MIS",
-        };
-        foreach (var r in roots)
-            if (File.Exists(r)) return r;
-        return null;
     }
 }

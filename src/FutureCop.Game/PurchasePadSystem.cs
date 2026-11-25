@@ -34,7 +34,7 @@ public sealed class PurchasePad
     /// <summary>Whether this pad is a type-95 map zone or a type-14 trigger attachment.</summary>
     public PurchasePadKind Kind { get; }
 
-    /// <summary>World-space centre (tACT +0x08..+0x13).</summary>
+    /// <summary>World-space centre (tACT +0x08..+0x13), with Y snapped when a surface is available.</summary>
     public int WorldX { get; }
     public int WorldY { get; }
     public int WorldZ { get; }
@@ -72,11 +72,36 @@ public sealed class PurchasePad
     /// <summary>Last frame stamp on which this type-14 pad fired (<c>self-&gt;unkA4</c>, <c>8003151C.c:115</c>).</summary>
     public int LastTriggerFrame { get; set; } = -1;
 
-    /// <summary>True when this pad is currently active (bit 0x10 clear, <c>8003151C.c:106</c>).</summary>
+    /// <summary>True when this pad's enable bit is clear (bit 0x10 clear, <c>8003151C.c:106</c>).</summary>
     public bool IsEnabled => (Flags & 0x10) == 0;
 
     /// <summary>True when this pad rejects hover-mode players (bit 0x04 set, <c>80031C74.c:102</c>, <c>8002F8B8.c:122</c>).</summary>
     public bool RequiresWalkerMode => (Flags & 0x04) != 0;
+
+    internal LiveEntity? Attachment { get; private set; }
+
+    /// <summary>Type-14 attachments stop triggering as soon as gRetireEntity clears their id.</summary>
+    public bool IsRetired => Attachment is { RuntimeId: 0 };
+
+    internal void SpawnAttachment(EntityWorld world) =>
+        Attachment = world.Spawn(new AttachmentEntity(this));
+
+    // Type 95 is a map-zone node, not an entity. Type 14 uses the shared entity lifecycle;
+    // keep the obj+0x24 flag word separate from the pad's +0xA0 trigger flags.
+    // The PA type-14 records have empty slot-1 retire scripts.
+    private sealed class AttachmentEntity : LiveEntity
+    {
+        private readonly PurchasePad _pad;
+
+        public AttachmentEntity(PurchasePad pad) => _pad = pad;
+
+        public override int RecordId => _pad.RecordId;
+        public override int DispatchType => (int)PurchasePadKind.TriggerAttachment;
+        public override (int X, int Z) GroundPosition => (_pad.WorldX, _pad.WorldZ);
+
+        public override int HandleMessage(int message, EntityWorld world, object? data) =>
+            BaseHandler(message, this, world, data);
+    }
 
     public PurchasePad(
         int recordId,
@@ -182,7 +207,8 @@ public sealed class PurchasePadSystem
         CsacUnitSpawner? spawner = null,
         IEnumerable<PurchasePad>? pads = null,
         IEnumerable<ScriptTimerEntry>? timers = null,
-        byte[]? timerBytecode = null)
+        byte[]? timerBytecode = null,
+        EntityWorld? world = null)
     {
         ArgumentNullException.ThrowIfNull(pool);
         Pool = pool;
@@ -190,12 +216,15 @@ public sealed class PurchasePadSystem
         _spawner = spawner;
         _timerBytecode = timerBytecode ?? Array.Empty<byte>();
 
+        var entityWorld = world ?? new EntityWorld();
         if (pads is not null)
         {
             foreach (var pad in pads)
             {
                 _pads.Add(pad);
                 _padsById[pad.RecordId] = pad;
+                if (pad.Kind == PurchasePadKind.TriggerAttachment)
+                    pad.SpawnAttachment(entityWorld);
             }
         }
         if (timers is not null)
@@ -225,12 +254,22 @@ public sealed class PurchasePadSystem
             prevSpawnerGroup?.Invoke(group, cmd, arg2);
         };
 
-        // Wire op 56 (func_8004DC64 -> func_80031004 case 0x7A) -> enable/disable type-14 pads
+        // RPNS op 56 (func_8004DC64) dispatches 0x7A to the pad handler (80031004.c)
+        // and 0x3D to the common entity command handler (8004CECC.c:106-110).
         var prevTag = VmState.OnCommandByTag;
         VmState.OnCommandByTag = (tag, op, arg) =>
         {
-            if (op == 0x7A && _padsById.TryGetValue(tag, out var pad))
-                ApplyPadCommand7A(pad, arg);
+            if (_padsById.TryGetValue(tag, out var pad))
+            {
+                if (op == 0x7A)
+                    ApplyPadCommand7A(pad, arg);
+                else if (op == 0x3D && pad.Attachment is { RuntimeId: not 0 } entity)
+                {
+                    entity.Flags |= LiveEntity.ResetFlag;
+                    if (arg == 1) entity.Flags |= LiveEntity.NoRetireScriptFlag;
+                    LiveEntity.Retire(entity, entityWorld);
+                }
+            }
             prevTag?.Invoke(tag, op, arg);
         };
     }
@@ -243,7 +282,9 @@ public sealed class PurchasePadSystem
         ReadOnlySpan<byte> missionBytes,
         CsacUnitSpawner? spawner = null,
         RpnsVmState? vmState = null,
-        RetailRandom? random = null)
+        RetailRandom? random = null,
+        EntityWorld? world = null,
+        Func<int, int, int>? groundHeight = null)
     {
         var pool = RpnsPool.Extract(missionBytes);
         if (pool is null)
@@ -367,8 +408,10 @@ public sealed class PurchasePadSystem
                     break;
 
                 int wx = BinaryPrimitives.ReadInt32LittleEndian(src[8..]);
-                int wy = BinaryPrimitives.ReadInt32LittleEndian(src[12..]);
                 int wz = BinaryPrimitives.ReadInt32LittleEndian(src[16..]);
+                // Snap once so the trigger box and its viewer outline share a centre
+                // (800319D4.c:131-132, 80030DE0.c:150).
+                int wy = groundHeight?.Invoke(wx, wz) ?? BinaryPrimitives.ReadInt32LittleEndian(src[12..]);
 
                 if (entityType == 95 && src.Length >= 0x1E)
                 {
@@ -404,7 +447,7 @@ public sealed class PurchasePadSystem
             }
         }
 
-        return new PurchasePadSystem(pool, vmState, spawner, pads, timers, timerBytecode);
+        return new PurchasePadSystem(pool, vmState, spawner, pads, timers, timerBytecode, world);
     }
 
     /// <summary>Looks up a loaded purchase pad by its <c>Cact</c> record id.</summary>
@@ -504,6 +547,7 @@ public sealed class PurchasePadSystem
     public void ApplyPadCommand7A(PurchasePad pad, int arg)
     {
         ArgumentNullException.ThrowIfNull(pad);
+        if (pad.IsRetired) return;
         if (arg != 0)
         {
             byte oldFlags = pad.Flags;
@@ -540,7 +584,7 @@ public sealed class PurchasePadSystem
         ArgumentNullException.ThrowIfNull(pad);
         int before = VmState.GameSession[scoreSlot];
 
-        if (!pad.IsEnabled)
+        if (pad.IsRetired || !pad.IsEnabled)
             return new PurchaseResult(false, false, 0, before, before);
 
         // Retail walker-mode gate: both type-95 (80031C74.c:102) and type-14 (8002F8B8.c:122)

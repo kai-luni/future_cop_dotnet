@@ -24,14 +24,6 @@ public sealed class CsacUnitSpawnerTests
             scripts ?? new[] { 0x10, 0x20, 0x30 },
             new[] { new ResourceReference("Cobj", modelId) });
 
-    private static string? ConftPath()
-    {
-        string? disc = LevelTerrainTests.FindDisc();
-        string? path = disc == null ? null : ModulePath.Resolve(disc, "conft.mis");
-        if (path == null) Assert.NotEqual("1", Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL"));
-        return path;
-    }
-
     [Fact]
     public void Register_Enforces0x80Capacity_IgnoresCact_AndScalesRespawnDelay()
     {
@@ -160,11 +152,10 @@ public sealed class CsacUnitSpawnerTests
         Assert.Single(spawner.SpawnedUnits);
     }
 
-    [Fact]
+    [RetailFact]
     public void LevelScene_WiresObjectRegistryAndCsacSpawner_WhenRetailConftPresent()
     {
-        string? path = ConftPath();
-        if (path == null) return;
+        string path = LevelSceneRetirementTests.FindMission()!;
 
         var scene = new LevelScene(path);
         Assert.False(scene.EnableCsacSpawner);
@@ -175,13 +166,18 @@ public sealed class CsacUnitSpawnerTests
         Assert.True(scene.ObjectRegistry.LiveObjects.IsAllocated);
         Assert.False(scene.ObjectRegistry.HasDeferralPool); // FinishLevelLoad ran
 
-        // Disabled by default: AdvanceSkyCaptain does not drain CsacSpawner.
+        // Disabled by default: AdvanceSkyCaptain does not drain the queued helicopter.
+        Assert.True(scene.CsacSpawner.ApplyCommandById(34, CsacUnitSpawner.CommandQueueBurst, 0));
         scene.AdvanceSkyCaptain(RetailClock.LocomotionTicks);
         Assert.Empty(scene.CsacSpawner.SpawnedUnits);
 
-        // Opt in: enabling drains CsacSpawner and broadcasts message 6 without throwing.
+        // Opt in: the burst drains, and the new unit receives message 6 on the following tick.
         scene.EnableCsacSpawner = true;
         scene.AdvanceSkyCaptain(RetailClock.LocomotionTicks);
+        var unit = Assert.Single(scene.CsacSpawner.SpawnedUnits.Where(u => u.SourceSlot.Record.Id == 34));
+        scene.AdvanceSkyCaptain(RetailClock.LocomotionTicks);
+        Assert.Equal(1, unit.Message6Count);
+        Assert.Equal(RetailClock.LocomotionTicks, unit.LastDelta);
     }
 
     public static IEnumerable<object[]> CsacSpawnerGoldenRows()
@@ -257,7 +253,7 @@ public sealed class CsacUnitSpawnerTests
     [RetailFact]
     public void SkyCaptainBuildOrders_DrainThroughRetailCfunTimersIntoCsacUnitSpawnerAndRender()
     {
-        string path = ConftPath()!;
+        string path = LevelSceneRetirementTests.FindMission()!;
         var scene = new LevelScene(path) { EnableCsacSpawner = true };
         scene.EnableMechMovement();
         scene.EnableFiring();
