@@ -358,6 +358,34 @@ public class MenuFlowTests
         Assert.Equal(stopped, level.MechWorld);
     }
 
+    /// <summary>
+    /// D_8009FAA4 (gFrameTime) is a monotonically growing s32 clock in retail (8002703C.c:15,71),
+    /// and the radar marker blink gates on bits 0x180 of it (8005A9C4.c:125). Advancing the scene
+    /// must therefore carry <see cref="MenuFlow.Globals"/>.FrameTime past the byte range so the
+    /// 0x100 blink phase is reachable; an 8-bit counter would wrap at 0xFF and never see it.
+    /// </summary>
+    [RetailFact]
+    public void SceneAdvancingGrowsTheFrameClockIntoBothRadarBlinkPhases()
+    {
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+
+        // Advance adds min(seconds * RetailClock.TicksPerSecond, 0x3C) ticks per call - nine at
+        // 0.033 s - so the clock crosses 0xFF within a few dozen calls.
+        int mask = 0;
+        for (int i = 0; i < 60; i++)
+        {
+            flow.Advance(0.033);
+            if (flow.Globals.FrameTime >= 0x100)
+                mask |= flow.Globals.FrameTime & 0x180;
+        }
+        Assert.True(flow.Globals.FrameTime >= 0x100,
+            $"frame clock stopped at {flow.Globals.FrameTime}, never passed 0xFF");
+        Assert.True(mask is 0x100 or 0x180,
+            $"radar blink mask after the clock passed the byte range: {mask:X3}");
+    }
+
     [Fact]
     public void WalkerStartsAtTheFirstRetailPlayerActor()
     {
