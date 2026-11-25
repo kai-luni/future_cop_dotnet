@@ -1,5 +1,7 @@
 using System.Globalization;
 using FutureCop.Game;
+using FutureCop.Game.Mech;
+using FutureCop.View;
 using Xunit;
 
 namespace FutureCop.Assets.Tests;
@@ -190,6 +192,47 @@ public sealed class PurchasePathTests
         Assert.True(res.Accepted);
         Assert.Equal(2, score.Score[0]);
         Assert.Equal(7, score.Score[1]);
+    }
+
+    [RetailFact]
+    public void SceneWalkerPurchaseSpawnsHelicopterInTheSameTick()
+    {
+        string path = LevelSceneRetirementTests.FindMission()!;
+        var scene = new LevelScene(path) { EnableCsacSpawner = true };
+        scene.EnableObjectives();
+        var pad = PurchasePadSystem.LoadFromMission(File.ReadAllBytes(path))!.FindPad(106)!;
+        var walker = new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 1 };
+        scene.AttachWalker(walker);
+        scene.Objectives!.Score.Score[0] = 5;
+
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.Equal(5, scene.ScoreSession(new HudSession()).Score0);
+        Assert.DoesNotContain(scene.CsacSpawner!.SpawnedUnits, u => u.SourceSlot.Record.Id == 34);
+
+        walker.Form = 0;
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.Equal(4, scene.ScoreSession(new HudSession()).Score0);
+        Assert.Single(scene.CsacSpawner.SpawnedUnits.Where(u => u.SourceSlot.Record.Id == 34));
+    }
+
+    [RetailFact]
+    public void ScenePostCaptureScriptDispatchesPadEnableCommand()
+    {
+        string path = LevelSceneRetirementTests.FindMission()!;
+        var scene = new LevelScene(path);
+        scene.EnableObjectives();
+        var field = scene.Objectives!;
+        field.Score.Score[0] = 35;
+        int observedScore = -1;
+        scene.OnPostCaptureScript = (_, _) => observedScore = field.Score.Score[0];
+
+        // Exercise the capture hook with the retail RPNS command at offset 337:
+        // push tag 150, push command 0x7A, push 1, op 56 (80069D68.c:379-385).
+        var objective = new CaptureObjective(0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 0,
+            flags: CaptureObjective.ScriptFlag, script: 337);
+        Assert.Equal(1, field.Offer(objective, new CaptureCandidate(12, 1, 1, 0, 0, 0, 0)));
+        Assert.Equal(6, field.Score.Score[0]); // 35 + capture point - pad 150 slot-2 cost of 30
+        Assert.Equal(6, observedScore);
     }
 
     private static string? FindConftMis()

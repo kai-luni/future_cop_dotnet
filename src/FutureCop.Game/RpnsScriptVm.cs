@@ -128,6 +128,12 @@ public sealed class RpnsVmState
     /// <summary>gVmCountdowns (D_8009F9A4) bank; stored pre-multiplied by 5 (<c>80069D68.c:226,238</c>).</summary>
     public int[] Countdowns { get; }
 
+    /// <summary>gOpcodeTable (D_8009F9F8) 32-entry table indexed by op 11 for non-negative operands (<c>80069D68.c:298-300</c>).</summary>
+    public int[] OpcodeTable { get; }
+
+    /// <summary>Optional PRNG source for op 11 with negative operands (<c>func_80019668</c>, <c>80069D68.c:302-305</c>).</summary>
+    public Func<int>? RandomSource { get; set; }
+
     /// <summary>gScriptVmDisabled (D_8009F840): when true, scripts return 0 immediately (<c>80069D68.c:166</c>).</summary>
     public bool Disabled { get; set; }
 
@@ -152,6 +158,7 @@ public sealed class RpnsVmState
         SessionPointerBank = new int[pointerBankSize];
         ScriptVars = new int[varsSize];
         Countdowns = new int[countdownsSize];
+        OpcodeTable = new int[32];
         Array.Fill(Countdowns, -10); // func_80069B58 default
     }
 }
@@ -242,6 +249,22 @@ public static class RpnsScriptVm
                 // Unary logic (80069D68.c:291-293)
                 case 9: a = a == 0 ? 1 : 0; push = true; break;
 
+                // Random / gOpcodeTable lookup (80069D68.c:297-307)
+                case 11:
+                    if (a >= 0)
+                    {
+                        a = state.OpcodeTable[a % state.OpcodeTable.Length];
+                    }
+                    else
+                    {
+                        int r = state.RandomSource?.Invoke() ?? 0;
+                        int sign = r >> 31;
+                        int mag = (sign + r) ^ sign;
+                        a = mag % (-a);
+                    }
+                    push = true;
+                    break;
+
                 // Engine events (80069D68.c:317-319)
                 case 12: state.OnAppendEvent?.Invoke(a); break;
 
@@ -294,7 +317,7 @@ public static class RpnsScriptVm
                 case 60: state.OnSpawnerCommandById?.Invoke(c, b, a); break;
 
                 // Opcodes intentionally omitted (not reached on purchase/queue/outpost paths):
-                // 10 (gRandomTable), 11 (RNG/gOpcodeTable), 13 (gQueueScriptEvent),
+                // 10 (gRandomTable), 13 (gQueueScriptEvent),
                 // 14/15 (gQueueEntityStreamRequest), 22/23/26/27/49/50/53/54 (ptr/cd arithmetic),
                 // 47 (entity/tag query msg 0xC), 58 (cmd by team), 59 (path block),
                 // 61 (spawner cmd by group), 62 (scene node cmd).
@@ -307,7 +330,9 @@ public static class RpnsScriptVm
         }
         while (pc < script.Length && script[pc] != 0);
 
-        depth--;
-        return stack[depth]; // 80069D68.c:414-415
+        // 80069D68.c:414-415 decrements depth and returns gOperandStack[depth] without a bounds
+        // check (reading the word before D_800A3320 on underflow). Return 0 if an unmodelled
+        // opcode or malformed script ever empties the operand stack.
+        return depth > 0 ? stack[depth - 1] : 0;
     }
 }

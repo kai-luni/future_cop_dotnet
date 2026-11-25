@@ -120,18 +120,13 @@ public sealed class LevelScene
 
     /// <summary>
     /// Hook for the post-capture script call at 8002D1A0.c:238-239
-    /// (<c>gInterpretEntityScript(self-&gt;unk9C, 0, other-&gt;unk14 &amp; 0x7FFF)</c>). Forwarded to
-    /// <see cref="ObjectiveField.OnPostCaptureScript"/> when <see cref="EnableObjectives"/> runs or
-    /// when updated afterwards. Modeled as a hook because the RPNS bytecode VM is not ported.
+    /// (<c>gInterpretEntityScript(self-&gt;unk9C, 0, other-&gt;unk14 &amp; 0x7FFF)</c>).
+    /// Runs after the scene's RPNS handler and can be set before or after <see cref="EnableObjectives"/>.
     /// </summary>
     public Action<CaptureObjective, int>? OnPostCaptureScript
     {
         get => _onPostCaptureScript;
-        set
-        {
-            _onPostCaptureScript = value;
-            if (_objectives is not null) _objectives.OnPostCaptureScript = value;
-        }
+        set => _onPostCaptureScript = value;
     }
 
     /// <summary>
@@ -159,7 +154,7 @@ public sealed class LevelScene
         _skyCaptain.BindScore(score);
         _objectives = new ObjectiveField(objectives, score)
         {
-            OnPostCaptureScript = _onPostCaptureScript,
+            OnPostCaptureScript = RunPostCaptureScript,
         };
 
         // The outposts and their child parts join the entity list that carries damage to message 5.
@@ -167,25 +162,72 @@ public sealed class LevelScene
         _entities = new EntityWorld
         {
             HasSlotDescriptor = slot => ObjectRegistry.GetSlotDescriptor(slot) is not null,
+            OnRetireFootprint = (entity, _, mask) => ObjectRegistry.SpawnEntitySlotTypes(entity, mask, mode: 2),
+            OnRefreshSlotSpawns = (entity, mask) => ObjectRegistry.RefreshEntitySlotSpawns(entity, mask),
         };
         for (int i = 0; i < objectives.Count; i++)
         {
-            var objective = objectives[i];
-            objective.Coord = CoordOf(objective.ModelId, objective.X, objective.Y, objective.Z);
-            if (objective.ChildPart is { } child)
-                child.Coord = CoordOf(child.ModelId, objective.X, objective.Y, objective.Z);
-            _entities.SpawnObjective(objective, targetable: outpostRecords[i].Container == EntityContainer.Csac);
+            SpawnObjective(objectives[i], outpostRecords[i].Container == EntityContainer.Csac);
         }
 
         ObjectRegistry.InitMissionSpawnState();
         ObjectRegistry.LiveObjects.Allocate();
         _csacSpawner = new CsacUnitSpawner(ObjectRegistry);
         _csacSpawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(_file.Bytes, r));
+        _purchasePads = PurchasePadSystem.LoadFromMission(_file.Bytes, _csacSpawner);
+        if (_purchasePads is not null)
+            _purchasePads.VmState.GameSession[RpnsVmState.SessionPlayerCount] = 1;
+        _entities.OnSpawnedUnitRetired = _csacSpawner.RecordSpawnedUnitRetirement;
+
+        // The scene already placed these outposts. Account for their first spawn (8006125C.c:48-49)
+        // so the interval only starts ticking once a retail max-concurrent slot is free.
+        foreach (var slot in _csacSpawner.Slots.Where(s => s.Record.Type == CaptureObjective.EntityType))
+        {
+            slot.TotalSpawned++;
+            if (slot.RemainingCount > 0) slot.RemainingCount--;
+        }
+        _csacSpawner.OnPostSpawnScript = (slot, unit) =>
+        {
+            if (slot.Record.Type != CaptureObjective.EntityType) return;
+            var record = slot.Record;
+            var objective = CaptureObjective.FromRecord(record, LevelGround.Height(Map, record.X, 0x100000, record.Z, out _));
+            _objectives.Add(objective);
+            SpawnObjective(objective, targetable: true);
+            // Outposts are driven by EntityWorld, not the generic registry wrapper.
+            ObjectRegistry.LiveObjects.Unregister(unit);
+        };
         ObjectRegistry.FinishLevelLoad();
+    }
+
+    private void SpawnObjective(CaptureObjective objective, bool targetable)
+    {
+        objective.Coord = CoordOf(objective.ModelId, objective.X, objective.Y, objective.Z);
+        if (objective.ChildPart is { } child)
+            child.Coord = CoordOf(child.ModelId, objective.X, objective.Y, objective.Z);
+        _entities!.SpawnObjective(objective, targetable);
+    }
+
+    private void RunPostCaptureScript(CaptureObjective objective, int claimantId)
+    {
+        if (_purchasePads is { } pads)
+        {
+            var script = pads.Pool.Slice(objective.Script);
+            if (!script.IsEmpty && script[0] != 0)
+            {
+                var score = _objectives!.Score;
+                pads.SyncFromMatchScore(score);
+                // An RPNS op 56 with command 0x7A reaches ApplyPadCommand7A through the VM callback.
+                RpnsScriptVm.Execute(script, pads.VmState, arg1: 0, arg2: claimantId);
+                pads.SyncToMatchScore(score);
+            }
+        }
+        _onPostCaptureScript?.Invoke(objective, claimantId);
     }
 
     private SkyCaptainSystem? _skyCaptain;
     private CsacUnitSpawner? _csacSpawner;
+    private PurchasePadSystem? _purchasePads;
+    private int _purchaseFrameTime;
     private EntityWorld? _entities;
 
     /// <summary>
@@ -207,9 +249,8 @@ public sealed class LevelScene
     public CsacUnitSpawner? CsacSpawner => _csacSpawner;
 
     /// <summary>
-    /// Opt-in flag to drain <see cref="CsacSpawner"/> and broadcast message 6 over
-    /// <see cref="ObjectRegistry"/> during <see cref="AdvanceSkyCaptain"/>. Off by default so
-    /// existing scene behaviour is unchanged until callers opt in.
+    /// Opt-in flag to advance purchase pads, drain <see cref="CsacSpawner"/> and broadcast
+    /// message 6 over <see cref="ObjectRegistry"/> during <see cref="AdvanceSkyCaptain"/>.
     /// </summary>
     public bool EnableCsacSpawner { get; set; }
 
@@ -223,8 +264,28 @@ public sealed class LevelScene
         if (EnableCsacSpawner && _csacSpawner is not null)
         {
             ObjectRegistry.BroadcastMessage6(dt);
+            AdvancePurchasePads(dt);
             _csacSpawner.Drain(dt);
         }
+    }
+
+    private void AdvancePurchasePads(int dt)
+    {
+        if (_purchasePads is not { } pads || _objectives is not { } objectives) return;
+        _purchaseFrameTime = unchecked(_purchaseFrameTime + dt);
+        pads.SyncFromMatchScore(objectives.Score);
+        pads.TickTimers(dt);
+        if (_walker is { } walker)
+        {
+            // Zone tests use obj+0x50/54/58 with the model instance radius at +0x68 (80031C74.c).
+            var position = CoordOf(_parts[0].Model.Id, walker.X, walker.Y, walker.Z);
+            foreach (var pad in pads.Pads)
+            {
+                if (PurchasePadSystem.IsInsidePad(pad, position.X, position.Y, position.Z, position.Radius))
+                    pads.TryTriggerPad(pad, Actor.Id, isHoverMode: walker.Form != 0, frameTime: _purchaseFrameTime);
+            }
+        }
+        pads.SyncToMatchScore(objectives.Score);
     }
 
     /// <summary>Faces and marker lines the last <see cref="Render"/> drew for the Sky Captain.</summary>

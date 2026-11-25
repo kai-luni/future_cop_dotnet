@@ -16,7 +16,7 @@ public class LevelSceneRetirementTests
 {
     private const uint FirePad = 0x00400000;
 
-    private static string? FindMission()
+    internal static string? FindMission()
     {
         var dir = AppContext.BaseDirectory;
         for (int i = 0; i < 10 && dir is not null; i++)
@@ -86,13 +86,15 @@ public class LevelSceneRetirementTests
     }
 
     [RetailFact]
-    public void ShootingAnOpenOutpostRetiresItWithoutScore()
+    public void ShootingAnOpenOutpostRetiresItWithoutScoreAndItRespawns()
     {
-        var scene = new LevelScene(FindMission()!);
+        var scene = new LevelScene(FindMission()!) { EnableCsacSpawner = true };
         scene.EnableMechMovement();
         scene.EnableFiring();
         var field = scene.Objectives!;
         var outpost = field.Objectives.Single(o => o.Id == 113);
+        var slot = scene.CsacSpawner!.Slots.Single(s => s.Record.Id == outpost.Id);
+        Assert.Equal(1, slot.TotalSpawned);
         var walker = scene.Walker!;
         walker.X = outpost.X;
         walker.Z = outpost.Z - 0xE000;
@@ -105,5 +107,48 @@ public class LevelSceneRetirementTests
         Assert.True(outpost.Freed);
         Assert.Equal(0, outpost.CaptureMode);
         Assert.Equal(new[] { 0, 0 }, field.Score.Score);                    // 8002D664.c:183 unkFE == 0
+        Assert.Equal(0, slot.TotalSpawned);
+
+        scene.AdvanceSkyCaptain(slot.Timer);
+        Assert.DoesNotContain(field.Objectives, o => o.Id == outpost.Id);
+        scene.AdvanceSkyCaptain(1);
+        var replacement = Assert.Single(field.Objectives, o => o.Id == outpost.Id);
+        Assert.NotSame(outpost, replacement);
+        Assert.Equal(0, replacement.CaptureMode);
+        Assert.Equal(outpost.MaxHealth, replacement.Health);
+        Assert.Contains(replacement, scene.Entities!.Units);
+        Assert.Contains(replacement.ChildPart!, scene.Entities.Units);
+        Assert.Equal(1, slot.TotalSpawned);
+    }
+
+    [RetailFact]
+    public void SceneDispatchesQuartileRefreshAndRetirementFootprintToRegistry()
+    {
+        var scene = new LevelScene(FindMission()!);
+        scene.EnableObjectives();
+        var registry = scene.ObjectRegistry;
+        var world = scene.Entities!;
+        var outpost = scene.Objectives!.Objectives.Single(o => o.Id == 113);
+        var columns = new List<byte>();
+
+        outpost.SlotIndex = 4;
+        outpost.Flags19 = 0x10; // (Flags19 >> 3) & 0x1E selects slot 1
+        // Health 250 of 500 is quartile 2 (8003B65C.c:35 uses strict < range >> 1), so
+        // gGetSlotSpawnByte (8003B5AC.c:54,64) reads Unk1 on refresh; retire mode 2 reads Unk0.
+        registry.SetSlotDescriptor(4, new SlotSpawnDescriptor(0, 0, 1, 0,
+            new[] { default, new SlotSpawnItem(0x21, 0x72, 0, 0) }));
+        registry.SetSpawnCell(0, 0x21, 1);
+        registry.SetSpawnCell(0, 0x72, 1);
+        registry.SpawnFactory = (_, column, _, _, _, _) => { columns.Add(column); return 1; };
+
+        world.CullActive(outpost.X, outpost.Z);
+        outpost.Health = 250;
+        LiveEntity.FlagQuartileChange(outpost, world, outpost.MaxHealth);
+        world.ProcessDeferredUpdates();
+        Assert.Equal(new byte[] { 0x72 }, columns);
+
+        outpost.Health = -1;
+        world.ProcessDeferredUpdates();
+        Assert.Equal(new byte[] { 0x72, 0x21 }, columns);
     }
 }

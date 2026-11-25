@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using FutureCop.Assets;
 using FutureCop.Game;
 using FutureCop.Game.Mech;
@@ -36,7 +37,7 @@ public sealed class ElevatorTests
         }
 
         Step(10);
-        Step(10, new ElevatorRider(lift, 0));
+        Step(10, null, new ElevatorRider(lift, 0));
         Step(2000);
         Step(100);
         Step(350);
@@ -44,17 +45,17 @@ public sealed class ElevatorTests
         Step(1);
         Step(1, null, new ElevatorRider(lift, 0));
 
-        Assert.Equal(new[]
+        string[] names = { "no-rider", "second-rider", "top-snap", "dwell", "dwell-expiry",
+            "bottom-snap", "wait-at-bottom", "second-rider-at-bottom" };
+        var vectors = File.ReadLines(Path.Combine(AppContext.BaseDirectory, "golden", "elevator.vectors"))
+            .Select(line => line.Split(' '))
+            .ToDictionary(fields => fields[0]);
+        Assert.Equal(names.Select(name =>
         {
-            (1396, 0, 0, 1, 1),
-            (1496, -1, 0, 1, 1),
-            (14836, 450, 1, 0, 2),
-            (14836, 350, 1, 0, 2),
-            (7486, -1, 1, 0, 2),
-            (1396, 0, 0, 1, 1),
-            (1396, 0, 0, 1, 1),
-            (1406, -1, 0, 1, 1),
-        }, stages);
+            int[] fields = vectors[name].Skip(1).Take(5)
+                .Select(value => int.Parse(value, CultureInfo.InvariantCulture)).ToArray();
+            return (fields[0], fields[1], fields[2], fields[3], fields[4]);
+        }), stages);
     }
 
     [Theory]

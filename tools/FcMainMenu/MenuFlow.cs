@@ -270,7 +270,7 @@ public sealed class MenuFlow
                 Preview = new WireframeScene(mission, new ViewerOptions(Assembly: true, Textured: true, AutoFire: false));
             else
             {
-                var level = new LevelScene(mission);
+                var level = new LevelScene(mission) { EnableCsacSpawner = _enableLevelMovement };
                 if (_enableLevelMovement) level.EnableMechMovement();
                 if (_enableLevelMovement) level.EnableFiring();
                 Level = level;

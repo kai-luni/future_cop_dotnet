@@ -618,8 +618,7 @@ public sealed class ObjectiveField
     /// (8002D1A0.c:238-239), invoked at claim time right after scoring when
     /// <see cref="CaptureObjective.Script"/> is non-zero and
     /// <see cref="CaptureObjective.ScriptFlag"/> (<c>0x100000</c>) is set on
-    /// <see cref="CaptureObjective.Flags"/>. Modeled as a hook because the RPNS bytecode VM
-    /// (<c>func_80069D68</c>) is not ported; the <c>*self-&gt;unk9C != 0</c> first-byte check
+    /// <see cref="CaptureObjective.Flags"/>. The <c>*self-&gt;unk9C != 0</c> first-byte check
     /// requires the RPNS bytecode buffer and is left to the wired handler.
     /// </summary>
     public Action<CaptureObjective, int>? OnPostCaptureScript { get; set; }
@@ -673,6 +672,13 @@ public sealed class ObjectiveField
             OnPostCaptureScript?.Invoke(objective, claimant.Id & 0x7FFF);
         _recent.Add((objective, mode));
         return mode;
+    }
+
+    /// <summary>Attaches a spawned outpost to the field for capture and retirement bookkeeping.</summary>
+    public void Add(CaptureObjective objective)
+    {
+        objective.Field = this;
+        _objectives.Add(objective);
     }
 
     /// <summary>Removes an outpost the retirement sweep freed (8004D598.c:66); it is no longer touched or drawn.</summary>
