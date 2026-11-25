@@ -23,7 +23,7 @@ public sealed class MountedTurretCarrierTests
         {
             Assert.Same(carrier, self);
             Assert.Equal((message, 123, -456), (msg, a2, a3));
-            self.Health = 40000;
+            self.Health = unchecked((short)40000);
             self.Flags |= 0x02000000;
             calls.Add("class5");
             return 99;
@@ -35,9 +35,47 @@ public sealed class MountedTurretCarrierTests
             Assert.Equal(0x02008000u, part.Flags);
             calls.Add("quartile");
         };
-
         Assert.Equal(0, child.OnMessage(message, 123, -456));
         Assert.Equal(new[] { "class5", "quartile" }, calls);
+    }
+
+    [Fact]
+    public void MessageTenVetoesOnlyThePairsOwnCarrier()
+    {
+        // 80039298.c:80 `return obj->child != data`: the pair test passes the other side of the
+        // pair as `data`; 0 means "this one is my own carrier, do not collide us".
+        var carrier = new MountedTurretCarrier(Record());
+        var child = carrier.AttachChild();
+        Assert.Equal(0, child.OnMessage(10, carrier, 0, 0));
+        Assert.Equal(1, child.OnMessage(10, new object(), 0, 0));
+        Assert.Equal(1, child.OnMessage(10, null, 0, 0));
+        // The base handler answers 10 with 1 when no partner object is supplied (8002AD58.c:103-105).
+        Assert.Equal(1, child.OnMessage(10, 0, 0));
+    }
+
+    [Fact]
+    public void RetirementClearsTheCarrierHealthWordToMinusOne()
+    {
+        // 800395A8.c:101-103 (carrier side): message 5 writes the +0x158 child health to -1.
+        // 80039298.c:89-113 (mounted part side): message 5 clears the child-array link and
+        // writes the carrier's own +0x1C word (s16, struct Child unk1C) to -1 unless flag 1
+        // is set - so the carrier health is a signed word and -1, not 0xFFFF.
+        var carrier = new MountedTurretCarrier(Record()) { Health = 1234 };
+        var child = carrier.AttachChild();
+        child.Health = 500;
+        child.OnMessage(5, 0, 0);
+        Assert.Equal(-1, carrier.Health);
+        Assert.Equal(500, child.Health);
+        Assert.Null(carrier.Child);
+
+        // The carrier side pushes the -1 to the child while it is still attached; its own health
+        // word is untouched by 800395A8.c:101-103 (only the part's handler writes the carrier word).
+        var carrier2 = new MountedTurretCarrier(Record()) { Health = 1234 };
+        var child2 = carrier2.AttachChild();
+        child2.Health = 500;
+        carrier2.OnMessage(5, 0, 0);
+        Assert.Equal(1234, carrier2.Health);
+        Assert.Equal(-1, child2.Health);
     }
 
     [Fact]

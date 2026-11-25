@@ -17,7 +17,7 @@ public sealed class MountedTurretCarrier : IRegisteredMapObject
         if (record.Type != EntityType) throw new ArgumentException("Expected type 20.", nameof(record));
         Record = record;
         Id = runtimeId ?? record.Id;
-        Health = (ushort)record.Health;
+        Health = (short)record.Health;
         Flags = record.Flags & ~0x400000u;
         if ((Flags & 0x80) != 0) Flags |= 0x01000000;
         Position = new Vec3(record.X, record.Y, record.Z);
@@ -31,8 +31,8 @@ public sealed class MountedTurretCarrier : IRegisteredMapObject
     public Vec3 Position { get; set; }
     /// <summary>Class-5 matrix (+0x2C), in the engine's 16.16 convention.</summary>
     public int[] Basis { get; } = Gte.Mat.Identity(0, 0, 0).W;
-    /// <summary>Carrier health word (+0x1C).</summary>
-    public ushort Health { get; set; }
+    /// <summary>Carrier health word (+0x1C), written -1 by the message-5 path (80039298.c:113).</summary>
+    public short Health { get; set; }
     /// <summary>Common flags (+0x24).</summary>
     public uint Flags { get; set; }
     /// <summary>Class-5 word at +0x08; the child tick requires a positive value.</summary>
@@ -210,10 +210,21 @@ public sealed class MountedTurret : IRegisteredMapObject
     /// <summary>Host func_8005F6E8: fire the scheduled attack after the animation.</summary>
     public Action<MountedTurret>? FireAttack { get; set; }
 
+    /// <summary>
+    /// Message 10 with the pair partner as an object, as func_800623FC passes it: the veto of
+    /// 80039298.c:80 (<c>return obj-&gt;child != data</c>), 0 when <paramref name="data"/> is this
+    /// part's own carrier, 1 for any other object. The plain <see cref="OnMessage(int,int,int)"/>
+    /// carries no identity for <c>data</c>, so this overload is the faithful minimal shape and
+    /// delegates every other message to it.
+    /// </summary>
+    public int OnMessage(int message, object? data, int arg2, int arg3) =>
+        message == 10 ? (ReferenceEquals(data, Carrier) ? 0 : 1) : OnMessage(message, arg2, arg3);
+
     /// <inheritdoc/>
     public int OnMessage(int message, int arg2, int arg3)
     {
-        // 80039298.c:71–138. The type-28 branch is not part of this type-20 child.
+        // 80039298.c:71–138. The type-28 branch is not part of this type-20 child. Message 10
+        // (the pair veto of :80) needs the partner's identity and lives on the object overload.
         switch (message)
         {
             case 1: return 0xF0;
@@ -221,13 +232,16 @@ public sealed class MountedTurret : IRegisteredMapObject
                 InitializePose();
                 return 0;
             case 3 or 6: return 0;
+            // The pair veto itself needs the partner's identity and lives on the object overload;
+            // through the int dispatch the base handler's constant answer applies (8002AD58.c:103-105).
+            case 10 or 16: return 1;
             case 9 when (TurretFlags & 1) == 0: return 0;
             case 11 or 14 when (TurretFlags & 1) == 0:
                 Carrier.OnMessage(message, arg2, arg3);
                 return 0;
             case 5:
                 Carrier.DetachChild(this);
-                if ((TurretFlags & 1) == 0) Carrier.Health = ushort.MaxValue;
+                if ((TurretFlags & 1) == 0) Carrier.Health = -1;
                 break;
         }
         return BaseHandler?.Invoke(this, message, arg2, arg3) ?? 0;

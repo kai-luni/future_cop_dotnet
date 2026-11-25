@@ -248,6 +248,9 @@ public sealed class LevelScene
     /// <summary>Retail-keyed Csac spawner registered from the mission's Csac records, or null until enabled.</summary>
     public CsacUnitSpawner? CsacSpawner => _csacSpawner;
 
+    /// <summary>The purchase-pad system the mission loaded, with the shared RPNS VM state.</summary>
+    public PurchasePadSystem? PurchasePads => _purchasePads;
+
     /// <summary>
     /// Opt-in flag to advance purchase pads, drain <see cref="CsacSpawner"/> and broadcast
     /// message 6 over <see cref="ObjectRegistry"/> during <see cref="AdvanceSkyCaptain"/>.
@@ -269,6 +272,11 @@ public sealed class LevelScene
         }
     }
 
+    // 80031DE8.c:176-184 + 80031C74.c:115: a type-95 node whose flags carry bit 2 is a "stay"
+    // trigger (the box test returns 0 to the caller); every other node is unlinked and freed the
+    // first time its box test fires, so a one-shot pad never triggers twice.
+    private readonly HashSet<int> _retiredMapZonePads = new();
+
     private void AdvancePurchasePads(int dt)
     {
         if (_purchasePads is not { } pads || _objectives is not { } objectives) return;
@@ -281,8 +289,25 @@ public sealed class LevelScene
             var position = CoordOf(_parts[0].Model.Id, walker.X, walker.Y, walker.Z);
             foreach (var pad in pads.Pads)
             {
-                if (PurchasePadSystem.IsInsidePad(pad, position.X, position.Y, position.Z, position.Radius))
-                    pads.TryTriggerPad(pad, Actor.Id, isHoverMode: walker.Form != 0, frameTime: _purchaseFrameTime);
+                // Not the retail list walk of 80031DE8.c: what is missing is not a pad cooldown but
+                // the target-selection iteration of func_80031DE8. There, the cached target is
+                // re-tested every frame while it still exists (the +0x258+rand&0x3F node timer only
+                // defers re-selection, 80031DE8.c:119-159); the selection scan over the candidate
+                // table (D_800A8F90) picks the nearest entity on the same node id, skipping ids
+                // <= 0 and types 0x15 and 0x12 (:121-144). The port instead gates on the record's
+                // TargetId (the node id match, 800319D4.c:122 node->f8 = the record tag) and feeds
+                // the player entity directly, so re-selection is not modelled.
+                if ((pad.Flags & 2) == 0 && _retiredMapZonePads.Contains(pad.RecordId))
+                    continue; // one-shot node already fired and was freed
+                if (PurchasePadSystem.IsInsidePad(pad, position.X, position.Y, position.Z, position.Radius)
+                    && pads.TryTriggerPad(pad, Actor.Id, isHoverMode: walker.Form != 0,
+                        frameTime: _purchaseFrameTime).Triggered
+                    && (pad.Flags & 2) == 0)
+                {
+                    // 80031C74.c:115 returns 1 (release) for a node without flag 2, so the fired
+                    // node is unlinked and freed by 80031DE8.c:176-184 and never fires again.
+                    _retiredMapZonePads.Add(pad.RecordId);
+                }
             }
         }
         pads.SyncToMatchScore(objectives.Score);
@@ -406,22 +431,44 @@ public sealed class LevelScene
             var shotCoord = CollisionCoord.FromFrameBounds(shot.X, shot.Y, shot.Z, shot.Model.FrameBounds);
             var projectile = new ProjectileContact(Actor.Id, unchecked((short)shot.Definition.ObjWord00),
                 (byte)shot.Definition.ObjWord0E, shot.X, shot.Z);
-            bool spawned = false;
-            foreach (var entity in world.Active.ToArray())
+            DeliverShotContact(world, projectile, shotCoord);
+            // A contact that was spawned into the list touched an entity: the shot left the weapon.
+            if (projectile.RuntimeId != 0) weapons.Shots.Remove(shot);
+        }
+    }
+
+    /// <summary>
+    /// One projectile's region-pass pair loop (800623FC.c / 800620D8.c:99-100): the message-11
+    /// delivery against every active entity, gated by each side's message-10 veto and the pair
+    /// distance. A shot that reaches an entity is spawned once (unless it already carries a
+    /// runtime id, like the golden harness's pre-spawned contact) and the pair exchange message 11.
+    /// </summary>
+    /// <remarks>
+    /// Port assumptions: the projectile's pair flags are not ported, so the combined word is taken to
+    /// carry 0x200 (800620D8.c:75; without it no projectile ever hits); the projectile's own message 10
+    /// (80036624.c:127-142) only vetoes its owner, its carrier and same-kind projectiles, none of which
+    /// is an outpost or child part; the per-cell bucketing of 80062614.c is not modelled because
+    /// 800620D8.c:59 rejects pairs that far apart anyway. The per-part hit test of func_80061CAC is
+    /// stubbed: <see cref="EntityPairCollision.ReachesPartTest"/> reports a hit for the whole
+    /// part, because every Precinct Assault model carries the per-part bit (0x8000000, 8002A5F4.c:133-138).
+    /// </remarks>
+    public static void DeliverShotContact(EntityWorld world, ProjectileContact projectile, CollisionCoord shotCoord)
+    {
+        bool spawned = false;
+        foreach (var entity in world.Active.ToArray())
+        {
+            if (entity is ProjectileContact) continue;
+            if (entity.RuntimeId <= 0 || (entity.Flags & 4) != 0 || entity.Coord is not { } coord) continue;
+            if ((entity.Flags & LiveEntity.PairGateFlag) != 0 && entity.HandleMessage(10, world, projectile) == 0)
+                continue;
+            if (!EntityPairCollision.ReachesPartTest(coord, shotCoord)) continue;
+            if (!spawned && projectile.RuntimeId == 0)
             {
-                if (entity.RuntimeId <= 0 || (entity.Flags & 4) != 0 || entity.Coord is not { } coord) continue;
-                if ((entity.Flags & LiveEntity.PairGateFlag) != 0 && entity.HandleMessage(10, world, projectile) == 0)
-                    continue;
-                if (!EntityPairCollision.ReachesPartTest(coord, shotCoord)) continue;
-                if (!spawned)
-                {
-                    world.Spawn(projectile);
-                    spawned = true;
-                }
-                entity.HandleMessage(11, world, projectile);
-                projectile.HandleMessage(11, world, entity);
+                world.Spawn(projectile);
+                spawned = true;
             }
-            if (spawned) weapons.Shots.Remove(shot);
+            entity.HandleMessage(11, world, projectile);
+            projectile.HandleMessage(11, world, entity);
         }
     }
 

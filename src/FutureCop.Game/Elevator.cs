@@ -126,6 +126,12 @@ public sealed class Elevator : IRegisteredMapObject, IGroundSurface
     /// <summary>Optional notification when the reference vertex is refreshed.</summary>
     public Action<Elevator>? RefreshFrame { get; set; }
 
+    /// <summary>
+    /// The four packed command slots (+0xD0): the (opcode, argument) pairs the golden vectors dump
+    /// after the motion columns (tests/host/elevator/harness.c tick(), commands[0..7]).
+    /// </summary>
+    public IReadOnlyList<(byte Op, byte Arg)> CommandSlots => _commands;
+
     internal Func<int, ElevatorRider?>? ReadRider { get; set; }
     internal Action<Elevator>? Remove { get; set; }
 

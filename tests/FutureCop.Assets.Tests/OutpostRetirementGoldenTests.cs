@@ -1,5 +1,6 @@
 using System.Globalization;
 using FutureCop.Game;
+using FutureCop.View;
 using Xunit;
 
 namespace FutureCop.Assets.Tests;
@@ -125,16 +126,12 @@ public sealed class OutpostRetirementGoldenTests
             world.ProcessDeferredUpdates();
             if (shot is not null)
             {
-                foreach (var entity in world.Active.ToArray())
-                {
-                    if (entity is ProjectileContact) continue;
-                    if (entity.RuntimeId <= 0 || (entity.Flags & 4) != 0 || entity.Coord is not { } coord) continue;
-                    if ((entity.Flags & LiveEntity.PairGateFlag) != 0 && entity.HandleMessage(10, world, shot) == 0)
-                        continue;
-                    if (!EntityPairCollision.ReachesPartTest(coord, shot.Coord!.Value)) continue;
-                    entity.HandleMessage(11, world, shot);
-                    shot.HandleMessage(11, world, entity);
-                }
+                // The real region-pass pair loop of the scene (800623FC.c / 800620D8.c:99-100).
+                // Limitation: func_80061CAC (the per-part hit test) is stubbed by
+                // EntityPairCollision.ReachesPartTest, which reports a hit for the whole part -
+                // every Precinct Assault model carries the per-part bit (0x8000000), so no
+                // vector distinguishes part-level hits.
+                LevelScene.DeliverShotContact(world, shot, shot.Coord!.Value);
             }
             world.SweepRetired();
         }

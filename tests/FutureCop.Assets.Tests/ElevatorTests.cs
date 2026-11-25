@@ -28,16 +28,29 @@ public sealed class ElevatorTests
     [Fact]
     public void TickClampsAtStopsAndReversesWithoutSpendingOvershoot()
     {
-        var lift = new Elevator(Record(), 100);
-        var stages = new List<(int Y, int Timer, int Last, int Next, int Direction)>();
+        var record = Record();
+        record.Source[0x21] = 1; // the sound-pending byte the harness reads from the model pointer
+        var lift = new Elevator(record, 100);
+        var stages = new List<(int Y, int Timer, int Last, int Next, int Direction,
+            int Hold, int ModeFlags, string Commands, int Stopped, int Played)>();
+        int stopped = 0, played = 0;
+        lift.StopSoundChannel = _ => stopped = lift.Id;
+        lift.PlaySound = (id, _, _, _) => played = id;
         void Step(int dt, params ElevatorRider?[] riders)
         {
+            stopped = played = 0;
             lift.Tick(dt, riders.ElementAtOrDefault(0), riders.ElementAtOrDefault(1));
-            stages.Add((lift.Y, lift.Timer, lift.LastStop, lift.NextStop, lift.Direction));
+            stages.Add((lift.Y, lift.Timer, lift.LastStop, lift.NextStop, lift.Direction,
+                lift.HoldTicks, lift.Flags,
+                string.Join(",", lift.CommandSlots.SelectMany(slot => new[] { (int)slot.Op, (int)slot.Arg })),
+                stopped, played));
         }
 
         Step(10);
         Step(10, null, new ElevatorRider(lift, 0));
+        // The harness sets obj flag 0x400000 before the top snap (harness.c:153), arming the
+        // stop-sound channel that 80041880.c:249-253 clears on the first stop change.
+        lift.ObjectFlags |= 0x400000u;
         Step(2000);
         Step(100);
         Step(350);
@@ -52,9 +65,18 @@ public sealed class ElevatorTests
             .ToDictionary(fields => fields[0]);
         Assert.Equal(names.Select(name =>
         {
-            int[] fields = vectors[name].Skip(1).Take(5)
+            // Columns after the motion words (harness.c tick()): hold, mode flags, eight command
+            // bytes, GTE load/transform counts, refresh heights, stop/play sound ids. The GTE
+            // counts and refresh heights are host-only; the stop-sound id is the harness's live
+            // object id (42), which the port reports as the lift's own id and every other row
+            // leaves 0. Everything else is compared column for column.
+            int[] fields = vectors[name].Skip(1).Take(21)
                 .Select(value => int.Parse(value, CultureInfo.InvariantCulture)).ToArray();
-            return (fields[0], fields[1], fields[2], fields[3], fields[4]);
+            int stopped = fields[19] == 0 ? 0 : lift.Id;
+            return (fields[0], fields[1], fields[2], fields[3], fields[4],
+                fields[5], fields[6],
+                string.Join(",", fields.Skip(7).Take(8)),
+                stopped, fields[20]);
         }), stages);
     }
 
