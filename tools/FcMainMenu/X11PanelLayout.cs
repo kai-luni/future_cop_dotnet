@@ -2,6 +2,24 @@ namespace FcMainMenu;
 
 internal static class X11PanelLayout
 {
+    public static IEnumerable<string> FileNotice(string? path, int width, Func<string, int> measure)
+    {
+        if (path == null) yield break;
+
+        yield return "Missing or unreadable game file:";
+        // Paths can exceed the width of the window, even with a fixed-width font.
+        int maxWidth = width - 24;
+        while (path.Length > 0)
+        {
+            int length = path.Length;
+            while (length > 1 && measure(path[..length]) > maxWidth) length--;
+            yield return path[..length];
+            path = path[length..];
+        }
+        yield return "From the project directory, extract the disc:";
+        yield return "python3 scripts/fc_extract.py \"<disc>.bin\" build/disc/files";
+    }
+
     private const string Marker = "> ";
 
     public static IEnumerable<(string Text, int X, int Y, ulong Color)> Rows(

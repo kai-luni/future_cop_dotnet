@@ -47,6 +47,50 @@ public class MenuFlowTests
         new MenuFlow(fe, kind, TextWriter.Null, TextWriter.Null, enableLevelMovement: true);
 
     [RetailFact]
+    public void DefaultArchiveFromForeignDirectoryDrivesLabelsAudioAndScene()
+    {
+        string sourceArchive = FrontEndPath()!;
+        string root = Path.Combine(Path.GetTempPath(), "fc-menu-launch-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string program = Path.Combine(root, "tools", "FcMainMenu", "bin");
+            string launch = Path.Combine(root, "elsewhere");
+            string disc = Path.Combine(root, "build", "disc", "files");
+            Directory.CreateDirectory(program);
+            Directory.CreateDirectory(launch);
+            Directory.CreateDirectory(Path.Combine(disc, "CW"));
+            Directory.CreateDirectory(Path.Combine(disc, "PA"));
+            string archive = Path.Combine(disc, "CW", "FE.MIS");
+            string mission = Path.Combine(disc, "PA", "CONFT.MIS");
+            string sourceMission = Path.Combine(LevelTerrainTests.FindDisc()!, "PA", "CONFT.MIS");
+            File.Copy(sourceArchive, archive);
+            File.Copy(sourceMission, mission);
+
+            using var errors = new StringWriter();
+            var labels = MenuLabels.Load(null, program, errors, workingDirectory: launch);
+
+            Assert.Equal(archive, labels.ArchivePath);
+            Assert.Null(labels.UnavailablePath);
+            Assert.Equal("", errors.ToString());
+            // Retail looks up the selected loadout text by id (8007D7CC.c:211-212) and
+            // plays 0x48 on menu confirmation (80078DD0.c:235-238). Use the retail data.
+            Assert.NotEqual("fallback", labels.Lookup(0x2710, "fallback"));
+            Assert.Contains((byte)0x48, SoundBank.FromMisFile(labels.ArchivePath).HighTable.Keys);
+            Assert.NotEmpty(MenuMusic.Decode(File.ReadAllBytes(labels.ArchivePath)));
+
+            var flow = NewFlow(labels.ArchivePath);
+            ToLoadout(flow);
+            flow.HandleKey(Enter);
+            Assert.Equal(MenuScreen.Scene, flow.Screen);
+            Assert.Equal(mission, flow.Level?.MissionPath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [RetailFact]
     public void SceneStartConfirmIsIssuedAfterLevelLoading()
     {
         // Accept triggers sound 0x48 (80078DD0.c:235-238); keep it after synchronous loading.
@@ -610,7 +654,9 @@ public class MenuFlowTests
         Assert.Null(flow.Level);
         Assert.Equal(0, entered);
         Assert.Equal("Cannot load SLIM.MIS.", flow.LastLoadError);
-        Assert.Contains($"Cannot load mission {Path.Combine(root, "PA", "SLIM.MIS")}", err.ToString());
+        string missingMission = Path.Combine(root, "PA", "SLIM.MIS");
+        Assert.Equal(missingMission, flow.LastLoadErrorPath);
+        Assert.Contains($"Cannot load mission {missingMission}", err.ToString());
 
         flow.HandleKey(Escape);
         Assert.Equal(MenuScreen.Hub, flow.Screen);

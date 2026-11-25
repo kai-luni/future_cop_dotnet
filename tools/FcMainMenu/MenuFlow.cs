@@ -63,7 +63,10 @@ public sealed class MenuFlow
     /// <summary>The running level when <see cref="SceneKind.Level"/> was chosen.</summary>
     public LevelScene? Level { get; private set; }
     /// <summary>Short diagnostic from the last failed mission load, cleared on menu change or load start.</summary>
-    public string? LastLoadError { get; private set; }
+    public string? LastLoadError => LastLoadErrorPath == null ? null : $"Cannot load {Path.GetFileName(LastLoadErrorPath)}.";
+
+    /// <summary>Full path for the desktop extraction notice.</summary>
+    public string? LastLoadErrorPath { get; private set; }
 
     /// <summary>Retail front-end menu SE ids (80078DD0.c:238-294, 8007C80C.c:59-74, FE.MIS D_800A18D0).</summary>
     public const byte MenuSoundMove = 0x46;
@@ -207,11 +210,11 @@ public sealed class MenuFlow
                 }
                 break;
             case MenuScreen.Loadout:
-                if (back) { MenuSoundTriggered?.Invoke(MenuSoundBack); LastLoadError = null; Screen = MenuScreen.Hub; pa.ActiveMenu = PrecinctAssaultMenus.Hub1P; pa.MenuDepth[0] = 1; Selected = 0; }
-                else if (vertical != 0) { LastLoadError = null; Selected = (Selected + vertical + 4) % 4; MenuSoundTriggered?.Invoke(MenuSoundMove); }
+                if (back) { MenuSoundTriggered?.Invoke(MenuSoundBack); LastLoadErrorPath = null; Screen = MenuScreen.Hub; pa.ActiveMenu = PrecinctAssaultMenus.Hub1P; pa.MenuDepth[0] = 1; Selected = 0; }
+                else if (vertical != 0) { LastLoadErrorPath = null; Selected = (Selected + vertical + 4) % 4; MenuSoundTriggered?.Invoke(MenuSoundMove); }
                 else if (horizontal != 0 && Selected > 0)
                 {
-                    LastLoadError = null;
+                    LastLoadErrorPath = null;
                     int col = Selected - 1; var c = pa.LoadoutTable[col];
                     int value = pa.LoadoutSelection[col, 0] + horizontal;
                     if (value < c.Min) value = c.Count - 1; else if (value >= c.Count) value = c.Min;
@@ -252,7 +255,7 @@ public sealed class MenuFlow
         if (Screen != MenuScreen.Scene) return;
         ClearHeldKeys();
         _suppressedUntilRelease.Clear();
-        LastLoadError = null;
+        LastLoadErrorPath = null;
         Screen = MenuScreen.Loadout;
         FrontEnd.ScreenState = 0;
         Preview = null;
@@ -262,7 +265,7 @@ public sealed class MenuFlow
 
     private void StartScene(uint? confirmKey = null)
     {
-        LastLoadError = null;
+        LastLoadErrorPath = null;
         string mission = Path.Combine(_missionDir, FrontEnd.ModuleName.ToUpperInvariant() + ".MIS");
         try
         {
@@ -290,7 +293,7 @@ public sealed class MenuFlow
         }
         catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException)
         {
-            LastLoadError = $"Cannot load {Path.GetFileName(mission)}.";
+            LastLoadErrorPath = Path.GetFullPath(mission);
             _err.WriteLine($"Cannot load mission {mission}: {ex.Message}"); FrontEnd.ScreenState = 0;
         }
     }
