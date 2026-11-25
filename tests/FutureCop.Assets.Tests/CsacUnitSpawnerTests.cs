@@ -152,7 +152,7 @@ public sealed class CsacUnitSpawnerTests
         Assert.Single(spawner.SpawnedUnits);
     }
 
-    [RetailFact]
+    [ConftFact]
     public void LevelScene_WiresObjectRegistryAndCsacSpawner_WhenRetailConftPresent()
     {
         string path = LevelSceneRetirementTests.FindMission()!;
@@ -250,7 +250,7 @@ public sealed class CsacUnitSpawnerTests
             $"{name}: expected [{string.Join(", ", expected)}], got [{string.Join(", ", actual)}]");
     }
 
-    [RetailFact]
+    [ConftFact]
     public void SkyCaptainBuildOrders_DrainThroughRetailCfunTimersIntoCsacUnitSpawnerAndRender()
     {
         string path = LevelSceneRetirementTests.FindMission()!;

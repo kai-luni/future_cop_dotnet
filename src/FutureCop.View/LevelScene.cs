@@ -204,7 +204,7 @@ public sealed class LevelScene
         };
         _csacSpawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(_file.Bytes, r));
         _purchasePads = PurchasePadSystem.LoadFromMission(_file.Bytes, _csacSpawner, random: _csacSpawner.Random,
-            world: _entities, groundHeight: (x, z) => LevelGround.Height(Map, x, 0x100000, z, out _));
+            world: _entities, groundHeight: (x, z, rank) => LevelGround.PlacementHeight(Map, x, z, rank) ?? 0);
         if (_purchasePads is not null)
         {
             _purchasePads.VmState.GameSession[RpnsVmState.SessionPlayerCount] = 1;

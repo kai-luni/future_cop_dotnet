@@ -435,7 +435,7 @@ public class CaptureObjectiveTests
 
     // ---- retail records ------------------------------------------------------------------------
 
-    [RetailFact]
+    [ConftFact]
     public void ConftCarriesTheEntityRequestsOfBothLoaders()
     {
         string path = LevelSceneRetirementTests.FindMission()!;
@@ -452,7 +452,7 @@ public class CaptureObjectiveTests
         Assert.Equal((1384448, 964606), (players[1].X, players[1].Z));
     }
 
-    [RetailFact]
+    [ConftFact]
     public void ConftShipsThirtyTwoNeutralOutposts()
     {
         string path = LevelSceneRetirementTests.FindMission()!;
@@ -473,7 +473,7 @@ public class CaptureObjectiveTests
         Assert.Equal((0x400 << 4) + 0x4000, o.Limit(0));
     }
 
-    [RetailFact]
+    [ConftFact]
     public void VictoryZonesWatchTheUnitsOfTheOpposingTeam()
     {
         string path = LevelSceneRetirementTests.FindMission()!;
@@ -496,7 +496,7 @@ public class CaptureObjectiveTests
         }
     }
 
-    [RetailFact]
+    [ConftFact]
     public void SceneBooksACaptureIntoTheHudScore()
     {
         string path = LevelSceneRetirementTests.FindMission()!;

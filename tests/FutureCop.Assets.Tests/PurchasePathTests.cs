@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Globalization;
 using FutureCop.Assets;
 using FutureCop.Game;
@@ -320,6 +321,44 @@ public sealed class PurchasePathTests
         Assert.False(PurchasePadSystem.IsInsidePad(pad, pad.WorldX, ground + pad.ExtentY, pad.WorldZ, 0));
     }
 
+    [ConftFact]
+    public void LoadSnapsBothPadTypesToTheSelectedLowerSurface()
+    {
+        byte[] mission = File.ReadAllBytes(LevelSceneRetirementTests.FindMission()!);
+        var map = LevelMap.FromBytes(mission);
+        var layeredTile = (
+            from x in Enumerable.Range(0, (map.Header.Height - 1) * 16).Select(i => (i << 13) + 0x1000)
+            from z in Enumerable.Range(0, (map.Header.Width - 1) * 16).Select(i => (i << 13) + 0x1000)
+            let lower = LevelGround.PlacementHeight(map, x, z, -2)
+            where lower.HasValue && lower < LevelGround.Height(map, x, 0x100000, z, out _)
+            select (X: x, Z: z, Y: lower.Value)).First();
+
+        foreach (var record in MissionEntities.Parse(mission).Where(r => r.Id is 106 or 152))
+        {
+            var source = mission.AsSpan(record.ChunkOffset + 8);
+            BinaryPrimitives.WriteInt32LittleEndian(source[8..], layeredTile.X);
+            BinaryPrimitives.WriteInt32LittleEndian(source[16..], layeredTile.Z);
+            if (record.Type == 95)
+                source[0x1A] = 1;
+            else
+                BinaryPrimitives.WriteInt16LittleEndian(source[0x26..], 1);
+        }
+
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, mission);
+            var scene = new LevelScene(path);
+            scene.EnableObjectives();
+            Assert.Equal(layeredTile.Y, scene.PurchasePads!.FindPad(106)!.WorldY);
+            Assert.Equal(layeredTile.Y, scene.PurchasePads.FindPad(152)!.WorldY);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [RetailFact]
     public void RetiredClaimPadDisappearsFromMarkers()
     {
@@ -404,17 +443,86 @@ public sealed class PurchasePathTests
         Assert.DoesNotContain(entity, scene.Entities.Units);
     }
 
-    [RetailFact]
+    [ConftFact]
+    public void ConftWalkerClaimRetiresEveryTaggedEntity()
+    {
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!) { EnableCsacSpawner = true };
+        scene.EnableObjectives();
+        scene.EnableMechMovement();
+        var pads = scene.PurchasePads!;
+        var claim = pads.FindPad(152)!;
+        var world = scene.Entities!;
+        var field = scene.Objectives!;
+        var walker = scene.Walker!;
+        (walker.X, walker.Y, walker.Z) = (claim.WorldX, claim.WorldY, claim.WorldZ);
+        Assert.Equal(0, walker.Form);
+        field.Score.Score[0] = 100;
+
+        int[] outpostTags = { 113, 119 };
+        Assert.All(outpostTags, tag =>
+        {
+            Assert.Equal(2, world.Units.Count(e => e.RecordId == tag && e.RuntimeId != 0));
+            Assert.Single(field.Objectives.Where(o => o.Id == tag));
+        });
+        var retireTags = new HashSet<int>();
+        var dispatch = pads.VmState.OnCommandByTag;
+        pads.VmState.OnCommandByTag = (tag, op, arg) =>
+        {
+            if (op == 0x3D) retireTags.Add(tag);
+            dispatch?.Invoke(tag, op, arg);
+        };
+
+        var liveAfterClaim = Array.Empty<LiveEntity>();
+        for (int frame = 0; frame <= 6; frame++)
+        {
+            if (frame > 0)
+            {
+                if (frame > 1) scene.AdvanceWalker(1, 0, AnalogPad.Digital);
+                scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+                if (frame == 1)
+                    liveAfterClaim = world.Units.Where(e => e.RuntimeId != 0 && retireTags.Contains(e.RecordId)).ToArray();
+            }
+            _output.WriteLine($"Frame {frame}: score={field.Score.Score[0]}, pad152.IsRetired={claim.IsRetired}, " +
+                string.Join("; ", outpostTags.Select(tag =>
+                    $"tag={tag} units={world.Units.Count(e => e.RecordId == tag)} " +
+                    $"live={world.Units.Count(e => e.RecordId == tag && e.RuntimeId != 0)} " +
+                    $"objectives={field.Objectives.Count(o => o.Id == tag)}")));
+        }
+
+        Assert.Equal(70, field.Score.Score[0]);
+        Assert.True(claim.IsRetired);
+        Assert.Contains(claim.RecordId, retireTags);
+        Assert.All(outpostTags, tag => Assert.Contains(tag, retireTags));
+        Assert.Empty(liveAfterClaim);
+        Assert.DoesNotContain(world.Units, e => retireTags.Contains(e.RecordId));
+        Assert.DoesNotContain(field.Objectives, o => retireTags.Contains(o.Id));
+    }
+
+    [ConftFact]
     public void TaggedRetirementWithArgOneSetsBothEntityFlags()
     {
-        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!);
-        scene.EnableObjectives();
-        var entity = Assert.Single(scene.Entities!.Units.Where(e => e.RecordId == 152));
-        scene.PurchasePads!.VmState.OnCommandByTag!(152, 0x3D, 1);
+        byte[] mission = File.ReadAllBytes(LevelSceneRetirementTests.FindMission()!);
+        const int retireScript = 1595; // CONFT RPNS: store 63 in pointer-bank word 3.
+        foreach (var record in MissionEntities.Parse(mission).Where(r => r.Id is 151 or 152))
+            BinaryPrimitives.WriteInt32LittleEndian(mission.AsSpan(record.HeaderOffset + 0x28), retireScript);
+
+        var world = new EntityWorld();
+        var pads = PurchasePadSystem.LoadFromMission(mission, world: world)!;
+        var vm = pads.VmState;
+        world.OnScript = (_, offset, arg1, arg2) =>
+            RpnsScriptVm.Execute(pads.Pool.Slice(offset), vm, arg1, arg2);
+        var entity = Assert.Single(world.Units.Where(e => e.RecordId == 152));
+        Assert.Equal(retireScript, entity.RetireScript);
+        vm.OnCommandByTag!(152, 0x3D, 1);
 
         Assert.Equal(0, entity.RuntimeId);
         const uint mask = LiveEntity.ResetFlag | LiveEntity.NoRetireScriptFlag;
         Assert.Equal(mask, entity.Flags & mask);
+        Assert.Equal(0, vm.SessionPointerBank[3]);
+
+        // The same slot-1 script runs if 0x3D does not set the skip flag.
+        vm.OnCommandByTag!(151, 0x3D, 0);
+        Assert.Equal(63, vm.SessionPointerBank[3]);
     }
 
     [RetailFact]

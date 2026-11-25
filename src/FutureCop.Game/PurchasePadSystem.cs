@@ -78,26 +78,25 @@ public sealed class PurchasePad
     /// <summary>True when this pad rejects hover-mode players (bit 0x04 set, <c>80031C74.c:102</c>, <c>8002F8B8.c:122</c>).</summary>
     public bool RequiresWalkerMode => (Flags & 0x04) != 0;
 
-    internal LiveEntity? Attachment { get; private set; }
+    private readonly int _retireScriptOffset;
+    private LiveEntity? _attachment;
 
     /// <summary>Type-14 attachments stop triggering as soon as gRetireEntity clears their id.</summary>
-    public bool IsRetired => Attachment is { RuntimeId: 0 };
+    public bool IsRetired => _attachment is { RuntimeId: 0 };
 
     internal void SpawnAttachment(EntityWorld world) =>
-        Attachment = world.Spawn(new AttachmentEntity(this));
+        _attachment = world.Spawn(new AttachmentEntity(this) { RetireScript = _retireScriptOffset });
 
     // Type 95 is a map-zone node, not an entity. Type 14 uses the shared entity lifecycle;
     // keep the obj+0x24 flag word separate from the pad's +0xA0 trigger flags.
-    // The PA type-14 records have empty slot-1 retire scripts.
-    private sealed class AttachmentEntity : LiveEntity
+    internal sealed class AttachmentEntity : LiveEntity
     {
-        private readonly PurchasePad _pad;
+        public AttachmentEntity(PurchasePad pad) => Pad = pad;
 
-        public AttachmentEntity(PurchasePad pad) => _pad = pad;
-
-        public override int RecordId => _pad.RecordId;
+        public PurchasePad Pad { get; }
+        public override int RecordId => Pad.RecordId;
         public override int DispatchType => (int)PurchasePadKind.TriggerAttachment;
-        public override (int X, int Z) GroundPosition => (_pad.WorldX, _pad.WorldZ);
+        public override (int X, int Z) GroundPosition => (Pad.WorldX, Pad.WorldZ);
 
         public override int HandleMessage(int message, EntityWorld world, object? data) =>
             BaseHandler(message, this, world, data);
@@ -112,7 +111,8 @@ public sealed class PurchasePad
         short targetId,
         byte matchSelector,
         int script0Offset,
-        int script2Offset)
+        int script2Offset,
+        int retireScriptOffset = 0)
     {
         RecordId = recordId;
         Kind = kind;
@@ -127,6 +127,7 @@ public sealed class PurchasePad
         MatchSelector = matchSelector;
         Script0Offset = script0Offset;
         Script2Offset = script2Offset;
+        _retireScriptOffset = retireScriptOffset;
     }
 }
 
@@ -254,20 +255,28 @@ public sealed class PurchasePadSystem
             prevSpawnerGroup?.Invoke(group, cmd, arg2);
         };
 
-        // RPNS op 56 (func_8004DC64) dispatches 0x7A to the pad handler (80031004.c)
-        // and 0x3D to the common entity command handler (8004CECC.c:106-110).
+        // RPNS op 56 (8004DC64.c:46-62): map zones, timers and the no-op bypass the entity list.
         var prevTag = VmState.OnCommandByTag;
         VmState.OnCommandByTag = (tag, op, arg) =>
         {
-            if (_padsById.TryGetValue(tag, out var pad))
+            if (op is not (0x7C or 0x7E or 0x69))
             {
-                if (op == 0x7A)
-                    ApplyPadCommand7A(pad, arg);
-                else if (op == 0x3D && pad.Attachment is { RuntimeId: not 0 } entity)
+                // Scripts can run during dispatch; keep the iteration stable across callbacks.
+                foreach (var entity in entityWorld.Units.ToArray())
                 {
-                    entity.Flags |= LiveEntity.ResetFlag;
-                    if (arg == 1) entity.Flags |= LiveEntity.NoRetireScriptFlag;
-                    LiveEntity.Retire(entity, entityWorld);
+                    if (entity.RuntimeId == 0 || entity.RecordId != tag) continue;
+
+                    switch (op)
+                    {
+                        case 0x7A when entity is PurchasePad.AttachmentEntity attachment:
+                            ApplyPadCommand7A(attachment.Pad, arg); // 80031004.c:65-78
+                            break;
+                        case 0x3D:
+                            entity.Flags |= LiveEntity.ResetFlag; // 8004CECC.c:106-110
+                            if (arg == 1) entity.Flags |= LiveEntity.NoRetireScriptFlag;
+                            LiveEntity.Retire(entity, entityWorld);
+                            break;
+                    }
                 }
             }
             prevTag?.Invoke(tag, op, arg);
@@ -284,7 +293,7 @@ public sealed class PurchasePadSystem
         RpnsVmState? vmState = null,
         RetailRandom? random = null,
         EntityWorld? world = null,
-        Func<int, int, int>? groundHeight = null)
+        Func<int, int, int, int>? groundHeight = null)
     {
         var pool = RpnsPool.Extract(missionBytes);
         if (pool is null)
@@ -387,6 +396,7 @@ public sealed class PurchasePadSystem
 
             // Cact header: script offsets at +0x24, +0x28, +0x2C
             int s0 = (int)BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(off + 0x24)..]);
+            int s1 = (int)BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(off + 0x28)..]);
             int s2 = (int)BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(off + 0x2C)..]);
             for (int q = pkt + 20; q + 12 <= pktEnd; q += 4)
             {
@@ -409,12 +419,12 @@ public sealed class PurchasePadSystem
 
                 int wx = BinaryPrimitives.ReadInt32LittleEndian(src[8..]);
                 int wz = BinaryPrimitives.ReadInt32LittleEndian(src[16..]);
-                // Snap once so the trigger box and its viewer outline share a centre
-                // (800319D4.c:131-132, 80030DE0.c:150).
-                int wy = groundHeight?.Invoke(wx, wz) ?? BinaryPrimitives.ReadInt32LittleEndian(src[12..]);
+                int sourceY = BinaryPrimitives.ReadInt32LittleEndian(src[12..]);
 
                 if (entityType == 95 && src.Length >= 0x1E)
                 {
+                    int rank = SurfaceRank(unchecked((sbyte)src[0x1A]));
+                    int wy = groundHeight?.Invoke(wx, wz, rank) ?? sourceY;
                     // 800319D4.c:134-138: extents halved, then << 4 in 80031C74.c:86,92,98
                     short rawZ = BinaryPrimitives.ReadInt16LittleEndian(src[0x14..]);
                     short rawX = BinaryPrimitives.ReadInt16LittleEndian(src[0x16..]);
@@ -430,6 +440,8 @@ public sealed class PurchasePadSystem
                 }
                 else if (entityType == 14 && src.Length >= 0x2C)
                 {
+                    int rank = SurfaceRank(BinaryPrimitives.ReadInt16LittleEndian(src[0x26..]));
+                    int wy = groundHeight?.Invoke(wx, wz, rank) ?? sourceY;
                     // 80030DE0.c:111-115: radius = unk24 << 4, flags = unk28, sel = unk29, val = unk2A
                     short rawRadius = BinaryPrimitives.ReadInt16LittleEndian(src[0x24..]);
                     int radius = rawRadius << 4;
@@ -441,7 +453,7 @@ public sealed class PurchasePadSystem
                         wx, wy, wz,
                         radius, radius, radius,
                         flags, matchVal, selector,
-                        s0, s2));
+                        s0, s2, retireScriptOffset: s1));
                 }
                 break;
             }
@@ -449,6 +461,9 @@ public sealed class PurchasePadSystem
 
         return new PurchasePadSystem(pool, vmState, spawner, pads, timers, timerBytecode, world);
     }
+
+    // Both loaders select the same gQuerySurfaceHeight mode (800319D4.c:121-132, 80030DE0.c:139-150).
+    private static int SurfaceRank(int surfaceType) => surfaceType switch { 0 => -1, 1 => -2, _ => surfaceType - 2 };
 
     /// <summary>Looks up a loaded purchase pad by its <c>Cact</c> record id.</summary>
     public PurchasePad? FindPad(int recordId) =>

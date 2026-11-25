@@ -18,14 +18,27 @@ public class LevelSceneRetirementTests
 
     internal static string? FindMission()
     {
-        var dir = AppContext.BaseDirectory;
-        for (int i = 0; i < 10 && dir is not null; i++)
+        string? fromEnv = Environment.GetEnvironmentVariable("FC_RETAIL_MIS");
+        if (File.Exists(fromEnv))
         {
-            var candidate = Path.Combine(dir, "build", "disc", "files", "PA", "CONFT.MIS");
-            if (File.Exists(candidate)) return candidate;
-            dir = Path.GetDirectoryName(dir);
+            string mission = Path.GetFullPath(fromEnv!);
+            if (Path.GetFileName(mission).Equals("CONFT.MIS", StringComparison.OrdinalIgnoreCase))
+                return mission;
+
+            // FC_RETAIL_MIS normally points to CW/M1A1.MIS on the same extracted disc.
+            var disc = Directory.GetParent(Path.GetDirectoryName(mission)!)?.FullName;
+            if (ConftOnDisc(disc) is { } sibling)
+                return sibling;
         }
-        return null;
+
+        return ConftOnDisc(LevelTerrainTests.FindDisc());
+
+        static string? ConftOnDisc(string? disc)
+        {
+            if (disc is null) return null;
+            string candidate = Path.Combine(disc, "PA", "CONFT.MIS");
+            return File.Exists(candidate) ? candidate : null;
+        }
     }
 
     [RetailFact]
@@ -150,5 +163,16 @@ public class LevelSceneRetirementTests
         outpost.Health = -1;
         world.ProcessDeferredUpdates();
         Assert.Equal(new byte[] { 0x72, 0x21 }, columns);
+    }
+}
+
+/// <summary>Skips tests that need CONFT.MIS when that mission is absent.</summary>
+public sealed class ConftFactAttribute : FactAttribute
+{
+    public ConftFactAttribute()
+    {
+        if (Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL") != "1" &&
+            LevelSceneRetirementTests.FindMission() is null)
+            Skip = "Retail mission PA/CONFT.MIS is absent.";
     }
 }
