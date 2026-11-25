@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using FutureCop.Game.Mech;
 
 namespace FutureCop.Game;
 
@@ -208,6 +209,22 @@ public sealed class PurchasePadSystem
             prevSpawner?.Invoke(id, cmd, arg2);
         };
 
+        // Wire op 61 (gSendSpawnerCommandByGroup, 80061600.c:55-61 -> func_800614BC):
+        // compares each registered spawner's tACT +0x08 +0x1D group byte (80060E74.c:144).
+        var prevSpawnerGroup = VmState.OnSpawnerCommandByGroup;
+        VmState.OnSpawnerCommandByGroup = (group, cmd, arg2) =>
+        {
+            if (_spawner is not null)
+            {
+                foreach (var slot in _spawner.Slots)
+                {
+                    if (slot.Record.U8(0x1D) == group)
+                        CsacUnitSpawner.ApplyCommand(slot, cmd, arg2);
+                }
+            }
+            prevSpawnerGroup?.Invoke(group, cmd, arg2);
+        };
+
         // Wire op 56 (func_8004DC64 -> func_80031004 case 0x7A) -> enable/disable type-14 pads
         var prevTag = VmState.OnCommandByTag;
         VmState.OnCommandByTag = (tag, op, arg) =>
@@ -225,11 +242,19 @@ public sealed class PurchasePadSystem
     public static PurchasePadSystem? LoadFromMission(
         ReadOnlySpan<byte> missionBytes,
         CsacUnitSpawner? spawner = null,
-        RpnsVmState? vmState = null)
+        RpnsVmState? vmState = null,
+        RetailRandom? random = null)
     {
         var pool = RpnsPool.Extract(missionBytes);
         if (pool is null)
             return null;
+
+        var rng = random ?? spawner?.Random ?? new RetailRandom();
+        if (vmState is null)
+        {
+            vmState = new RpnsVmState();
+            vmState.InitRetailRandomState(rng); // 80069B58.c:47-54
+        }
 
         var pads = new List<PurchasePad>();
         var timers = new List<ScriptTimerEntry>();
@@ -285,12 +310,35 @@ public sealed class PurchasePadSystem
                     {
                         int e = tfun + 12 + i * 20;
                         if (e + 20 > missionBytes.Length) break;
-                        timers.Add(new ScriptTimerEntry(
-                            BinaryPrimitives.ReadInt32LittleEndian(missionBytes[e..]),
-                            BinaryPrimitives.ReadInt32LittleEndian(missionBytes[(e + 4)..]),
-                            BinaryPrimitives.ReadInt32LittleEndian(missionBytes[(e + 8)..]),
-                            BinaryPrimitives.ReadInt32LittleEndian(missionBytes[(e + 12)..]),
-                            BinaryPrimitives.ReadInt32LittleEndian(missionBytes[(e + 16)..])));
+                        int entryCount = BinaryPrimitives.ReadInt32LittleEndian(missionBytes[e..]);
+                        int rawPeriod = BinaryPrimitives.ReadInt32LittleEndian(missionBytes[(e + 4)..]);
+                        // gLoadScriptTimers (80049420.c:85-92): multiply raw period by 5;
+                        // negative product sets period = remaining = |t|, non-negative sets
+                        // remaining = (uint)func_80019668() % (uint)period (overwriting raw +0x08).
+                        int scaled = rawPeriod * 5;
+                        int period;
+                        int remaining;
+                        if (scaled < 0)
+                        {
+                            period = -scaled;
+                            remaining = -scaled;
+                        }
+                        else if (scaled > 0)
+                        {
+                            period = scaled;
+                            remaining = (int)((uint)rng.Next() % (uint)period);
+                        }
+                        else
+                        {
+                            period = 0;
+                            remaining = 0;
+                        }
+                        // 80049420.c:77,93-94 & 80019C38.c:60: retail adds r2 (tEXT payload base = text + 12)
+                        // to trigger/action offsets to form RAM pointers. Since _timerBytecode starts at
+                        // text + 12, these raw offsets already index _timerBytecode directly.
+                        int triggerOffset = BinaryPrimitives.ReadInt32LittleEndian(missionBytes[(e + 12)..]);
+                        int actionOffset = BinaryPrimitives.ReadInt32LittleEndian(missionBytes[(e + 16)..]);
+                        timers.Add(new ScriptTimerEntry(entryCount, period, remaining, triggerOffset, actionOffset));
                     }
                 }
                 continue;
@@ -495,7 +543,7 @@ public sealed class PurchasePadSystem
             if (timer.Count == 0)
                 continue;
             timer.Remaining -= elapsedTicks;
-            if (timer.Remaining > 0)
+            if (timer.Remaining >= 0) // 80049564.c:51: fires only when remaining < 0
                 continue;
             timer.Remaining += timer.Period;
             if (RpnsScriptVm.Execute(_timerBytecode.AsSpan(timer.TriggerOffset), VmState) != 0)

@@ -174,7 +174,7 @@ public sealed class LevelScene
         ObjectRegistry.LiveObjects.Allocate();
         _csacSpawner = new CsacUnitSpawner(ObjectRegistry);
         _csacSpawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(_file.Bytes, r));
-        _purchasePads = PurchasePadSystem.LoadFromMission(_file.Bytes, _csacSpawner);
+        _purchasePads = PurchasePadSystem.LoadFromMission(_file.Bytes, _csacSpawner, random: _csacSpawner.Random);
         if (_purchasePads is not null)
             _purchasePads.VmState.GameSession[RpnsVmState.SessionPlayerCount] = 1;
         _entities.OnSpawnedUnitRetired = _csacSpawner.RecordSpawnedUnitRetirement;

@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using FutureCop.Game.Mech;
 
 namespace FutureCop.Game;
 
@@ -140,14 +141,27 @@ public sealed class RpnsVmState
     /// <summary>Invoked by op 60 (<c>func_8006158C</c>, <c>80069D68.c:395-397</c>): (spawnerId, cmd, arg2).</summary>
     public Action<int, int, int>? OnSpawnerCommandById { get; set; }
 
-    /// <summary>Invoked by op 56 (<c>func_8004DC64</c>, <c>80069D68.c:379-385</c>): (tag, op, arg).</summary>
+    /// <summary>Invoked by op 61 (<c>gSendSpawnerCommandByGroup</c>, <c>func_80061600</c>, <c>80069D68.c:398-400</c>): (group, cmd, arg2).</summary>
+    public Action<int, int, int>? OnSpawnerCommandByGroup { get; set; }
+
+    /// <summary>
+    /// Invoked by op 56 when <c>c == 0</c> (<c>gSendEntityCommand(ent, b, a, 1)</c>,
+    /// <c>80069D68.c:380-381</c>, <c>8004DA84.c:45-93</c>): (op, arg).
+    /// Distinct from <see cref="OnCommandByTag"/> (<c>c != 0</c>, <c>func_8004DC64</c>).
+    /// </summary>
+    public Action<int, int>? OnSelfEntityCommand { get; set; }
+
+    /// <summary>Invoked by op 56 when <c>c != 0</c> (<c>func_8004DC64</c>, <c>80069D68.c:382-384</c>): (tag, op, arg).</summary>
     public Action<int, int, int>? OnCommandByTag { get; set; }
 
     /// <summary>Invoked by op 57 (<c>func_8004DD68</c>, <c>80069D68.c:389-391</c>): (group, op, arg).</summary>
     public Action<int, int, int>? OnCommandByGroup { get; set; }
 
-    /// <summary>Invoked by op 12 (<c>func_800298EC</c>, <c>80069D68.c:317-319</c>): (eventId).</summary>
+    /// <summary>Invoked by op 12 (<c>gAppendScriptEvent</c>, <c>func_800298EC</c>, <c>80069D68.c:317-319</c>): (eventId).</summary>
     public Action<int>? OnAppendEvent { get; set; }
+
+    /// <summary>Invoked by op 13 (<c>gQueueScriptEvent</c>, <c>func_80029974</c>, <c>80069D68.c:314-316</c>): (eventId).</summary>
+    public Action<int>? OnQueueEvent { get; set; }
 
     /// <summary>Invoked by op 30 (<c>80069D68.c:234-236</c>): (slot, value).</summary>
     public Action<int, int>? OnSessionPointerWrite { get; set; }
@@ -160,6 +174,26 @@ public sealed class RpnsVmState
         Countdowns = new int[countdownsSize];
         OpcodeTable = new int[32];
         Array.Fill(Countdowns, -10); // func_80069B58 default
+    }
+
+    /// <summary>
+    /// Populates <see cref="GameSession"/>[6..9] (<c>+0x18..+0x24</c>) and <see cref="OpcodeTable"/>[0..31]
+    /// with <c>(uint)func_80019668() % 1000</c> and binds <see cref="RandomSource"/> to
+    /// <paramref name="random"/>, mirroring <c>gInitScriptVmState</c> (<c>80069B58.c:47-54</c>).
+    /// </summary>
+    public void InitRetailRandomState(RetailRandom random)
+    {
+        ArgumentNullException.ThrowIfNull(random);
+        if (GameSession.Length >= 10)
+        {
+            GameSession[6] = (int)((uint)random.Next() % 1000u); // 80069B58.c:47 (unk18)
+            GameSession[7] = (int)((uint)random.Next() % 1000u); // 80069B58.c:48 (unk1C)
+            GameSession[8] = (int)((uint)random.Next() % 1000u); // 80069B58.c:49 (unk20)
+            GameSession[9] = (int)((uint)random.Next() % 1000u); // 80069B58.c:50 (unk24)
+        }
+        for (int i = 0; i < OpcodeTable.Length; i++)
+            OpcodeTable[i] = (int)((uint)random.Next() % 1000u); // 80069B58.c:52-54
+        RandomSource = random.Next;
     }
 }
 
@@ -265,8 +299,9 @@ public static class RpnsScriptVm
                     push = true;
                     break;
 
-                // Engine events (80069D68.c:317-319)
-                case 12: state.OnAppendEvent?.Invoke(a); break;
+                // Engine events (80069D68.c:314-319)
+                case 12: state.OnAppendEvent?.Invoke(a); break; // gAppendScriptEvent (func_800298EC)
+                case 13: state.OnQueueEvent?.Invoke(a); break;  // gQueueScriptEvent (func_80029974)
 
                 // Variable loads (80069D68.c:219-230)
                 case 16: a = state.GameSession[a]; push = true; break;
@@ -306,21 +341,30 @@ public static class RpnsScriptVm
                 case 39: a = a + b; push = true; break;
                 case 40: a = b - a; push = true; break;
                 case 41: a = a * b; push = true; break;
+                // 80069D68.c:355-360: MIPS retail executes signed div/rem with a compiler-emitted
+                // `break 7` trap on divisor 0. This managed port guards a != 0 and yields 0 instead
+                // of throwing DivideByZeroException.
                 case 42: a = a != 0 ? b / a : 0; push = true; break;
                 case 43: a = a != 0 ? b % a : 0; push = true; break;
                 case 44: a = (b != 0 && a != 0) ? 1 : 0; push = true; break;
                 case 45: a = (b != 0 || a != 0) ? 1 : 0; push = true; break;
 
-                // Three-operand engine commands on the purchase/outpost path (80069D68.c:379-397)
-                case 56: state.OnCommandByTag?.Invoke(c, b, a); break;
+                // Three-operand engine commands (80069D68.c:379-400)
+                case 56:
+                    if (c == 0)
+                        state.OnSelfEntityCommand?.Invoke(b, a); // 80069D68.c:380-381: gSendEntityCommand(ent, b, a, 1)
+                    else
+                        state.OnCommandByTag?.Invoke(c, b, a);   // 80069D68.c:382-384: gSendCommandByTag(c, b, a)
+                    break;
                 case 57: state.OnCommandByGroup?.Invoke(c, b, a); break;
                 case 60: state.OnSpawnerCommandById?.Invoke(c, b, a); break;
+                case 61: state.OnSpawnerCommandByGroup?.Invoke(c, b, a); break; // 80069D68.c:398-400: gSendSpawnerCommandByGroup
 
-                // Opcodes intentionally omitted (not reached on purchase/queue/outpost paths):
-                // 10 (gRandomTable), 13 (gQueueScriptEvent),
-                // 14/15 (gQueueEntityStreamRequest), 22/23/26/27/49/50/53/54 (ptr/cd arithmetic),
+                // Remaining unimplemented opcodes (not wired to a managed subsystem yet):
+                // 10 (gRandomTable), 14/15 (gQueueEntityStreamRequest),
+                // 22/23/26/27/49/50/53/54 (ptr/cd arithmetic),
                 // 47 (entity/tag query msg 0xC), 58 (cmd by team), 59 (path block),
-                // 61 (spawner cmd by group), 62 (scene node cmd).
+                // 62 (scene node cmd).
                 default:
                     break;
             }

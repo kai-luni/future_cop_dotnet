@@ -137,13 +137,22 @@ public sealed class PurchasePathTests
         Assert.Equal(1, spawner.Drain(1));
         Assert.Equal(34, spawner.SpawnedUnits[^1].SourceSlot.Record.Id);
 
-        // Main-base P1 tankpad (Cact 107, type 95, cost 1 -> ScriptVars[11]++ -> Cfun timer -> Csac 75)
+        // Main-base P1 tankpad (Cact 107, type 95, cost 1 -> ScriptVars[11]++ -> Cfun T18 -> Csac 75)
+        // T18 has raw period 202 -> scaled 202 * 5 = 1010 (80049420.c:85-92), fires only at remaining < 0 (80049564.c:51).
         var tankPad = purchase.FindPad(107)!;
         var tankRes = purchase.TryTriggerPad(tankPad, playerEntityId: 12, isHoverMode: false);
         Assert.True(tankRes.Accepted);
         Assert.Equal(3, tankRes.ScoreAfter);
         Assert.Equal(1, purchase.VmState.ScriptVars[11]);
-        purchase.TickTimers(205);
+        var t18 = purchase.Timers[18];
+        Assert.Equal(1010, t18.Period);
+        Assert.InRange(t18.Remaining, 0, 1009);
+        int remToZero = t18.Remaining;
+        purchase.TickTimers(remToZero); // remaining == 0 must NOT fire (80049564.c:51)
+        Assert.Equal(0, t18.Remaining);
+        Assert.Equal(1, purchase.VmState.ScriptVars[11]);
+        purchase.TickTimers(1); // remaining == -1 < 0 fires and wraps to 1009
+        Assert.Equal(1009, t18.Remaining);
         Assert.Equal(0, purchase.VmState.ScriptVars[11]);
         Assert.True(spawner.Drain(1) >= 1);
         Assert.Contains(spawner.SpawnedUnits, u => u.SourceSlot.Record.Id == 75);
@@ -233,6 +242,173 @@ public sealed class PurchasePathTests
         Assert.Equal(1, field.Offer(objective, new CaptureCandidate(12, 1, 1, 0, 0, 0, 0)));
         Assert.Equal(6, field.Score.Score[0]); // 35 + capture point - pad 150 slot-2 cost of 30
         Assert.Equal(6, observedScore);
+    }
+
+    [Fact]
+    public void CfunTimer_LoadScalingStartPhaseAndStrictlyNegativeFireThreshold()
+    {
+        // Build a minimal mission with an empty RPNS block and a Cfun block with two timers:
+        // T0: rawPeriod = -40 (negative -> period=200, remaining=200, 80049420.c:87-89)
+        // T1: rawPeriod = +60 (positive -> period=300, remaining=rand%300, 80049420.c:91)
+        // Bytecode: trig=0 (push 1, end), act0=2 (ScriptVars[0]++), act1=5 (ScriptVars[1]++)
+        byte[] mission = BuildSyntheticCfunMission(new (int count, int period, int rawRem, int trig, int act)[]
+        {
+            (-1, -40, 999, 0, 2),
+            (-1, 60, 999, 0, 5),
+        }, new byte[] { 0x81, 0x00, 0x80, 0x18, 0x00, 0x81, 0x18, 0x00 });
+
+        var refRng = new RetailRandom(0x457);
+        var refVm = new RpnsVmState();
+        refVm.InitRetailRandomState(refRng);
+        int expectedT1Rem = (int)((uint)refRng.Next() % 300u);
+
+        var sys = PurchasePadSystem.LoadFromMission(mission, random: new RetailRandom(0x457))!;
+        Assert.Equal(2, sys.Timers.Count);
+        Assert.Equal(200, sys.Timers[0].Period);
+        Assert.Equal(200, sys.Timers[0].Remaining);
+        Assert.Equal(300, sys.Timers[1].Period);
+        Assert.Equal(expectedT1Rem, sys.Timers[1].Remaining);
+
+        // T0: ticking exactly 200 reaches Remaining == 0, which must NOT fire (80049564.c:51)
+        sys.TickTimers(200);
+        Assert.Equal(0, sys.Timers[0].Remaining);
+        Assert.Equal(0, sys.VmState.ScriptVars[0]);
+        // 1 more tick drops to -1 < 0 -> fires and wraps to 199
+        sys.TickTimers(1);
+        Assert.Equal(199, sys.Timers[0].Remaining);
+        Assert.Equal(1, sys.VmState.ScriptVars[0]);
+    }
+
+    [Fact]
+    public void RpnsScriptVm_Op13_Op61_Op56Self_Op11Random_AndDivZero()
+    {
+        int queued = -1, appended = -1;
+        (int grp, int cmd, int arg2) spwGrp = (-1, -1, -1);
+        (int op, int arg) selfCmd = (-1, -1);
+        (int tag, int op, int arg) tagCmd = (-1, -1, -1);
+
+        var state = new RpnsVmState
+        {
+            OnQueueEvent = id => queued = id,
+            OnAppendEvent = id => appended = id,
+            OnSpawnerCommandByGroup = (g, c, a) => spwGrp = (g, c, a),
+            OnSelfEntityCommand = (op, arg) => selfCmd = (op, arg),
+            OnCommandByTag = (t, op, arg) => tagCmd = (t, op, arg),
+        };
+        var rng = new RetailRandom(0x457);
+        state.InitRetailRandomState(rng);
+
+        // Op 13: push 25, op13 (0x0D) -> OnQueueEvent(25), not OnAppendEvent
+        RpnsScriptVm.Execute(new byte[] { 0x99, 0x0D, 0x00 }, state);
+        Assert.Equal(25, queued);
+        Assert.Equal(-1, appended);
+
+        // Op 61: push 50, push 71 (0x47), push 0, op61 (0x3D) -> OnSpawnerCommandByGroup(50, 71, 0)
+        RpnsScriptVm.Execute(new byte[] { 0xB2, 0xC7, 0x80, 0x3D, 0x00 }, state);
+        Assert.Equal((50, 71, 0), spwGrp);
+
+        // Op 56 with c == 0 -> OnSelfEntityCommand(7, 3), not OnCommandByTag (80069D68.c:380-381)
+        RpnsScriptVm.Execute(new byte[] { 0x80, 0x87, 0x83, 0x38, 0x00 }, state);
+        Assert.Equal((7, 3), selfCmd);
+        Assert.Equal((-1, -1, -1), tagCmd);
+
+        // Op 56 with c != 0 -> OnCommandByTag(15, 7, 3) (80069D68.c:382-384)
+        selfCmd = (-1, -1);
+        RpnsScriptVm.Execute(new byte[] { 0x8F, 0x87, 0x83, 0x38, 0x00 }, state);
+        Assert.Equal((-1, -1), selfCmd);
+        Assert.Equal((15, 7, 3), tagCmd);
+
+        // Op 11 non-negative lookup reads OpcodeTable filled by InitRetailRandomState (80069B58.c:52-54)
+        int lutVal = RpnsScriptVm.Execute(new byte[] { 0x85, 0x0B, 0x00 }, state);
+        Assert.Equal(state.OpcodeTable[5], lutVal);
+        Assert.InRange(lutVal, 0, 999);
+
+        // Op 11 negative draw (0 10 op40 op11) uses RandomSource and varies across draws
+        var draws = new HashSet<int>();
+        for (int i = 0; i < 16; i++)
+        {
+            int d = RpnsScriptVm.Execute(new byte[] { 0x80, 0x8A, 0x28, 0x0B, 0x00 }, state);
+            Assert.InRange(d, 0, 9);
+            draws.Add(d);
+        }
+        Assert.True(draws.Count > 1);
+
+        // Op 42 / 43 divide-by-zero yields 0 in the managed port (documented deviation from MIPS break 7)
+        Assert.Equal(0, RpnsScriptVm.Execute(new byte[] { 0x85, 0x80, 0x2A, 0x00 }, state));
+        Assert.Equal(0, RpnsScriptVm.Execute(new byte[] { 0x85, 0x80, 0x2B, 0x00 }, state));
+    }
+
+    [RetailFact]
+    public void ConftMis_TimerT56Geometry_Op61Group50Burst_AndOp11RandomState()
+    {
+        string path = LevelSceneRetirementTests.FindMission()!;
+        byte[] bytes = File.ReadAllBytes(path);
+        var records = MissionEntities.Parse(bytes);
+        var registry = new MapObjectRegistry();
+        registry.InitMissionSpawnState();
+        registry.LiveObjects.Allocate();
+        var spawner = new CsacUnitSpawner(registry, new RetailRandom(0x457));
+        spawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(bytes, r));
+
+        var purchase = PurchasePadSystem.LoadFromMission(bytes, spawner, random: new RetailRandom(0x457))!;
+
+        // T56 geometry: rawPeriod = 300 -> scaled 1500, remaining in [0, 1499] (80049420.c:85-92)
+        var t56 = purchase.Timers[56];
+        Assert.Equal(1500, t56.Period);
+        Assert.InRange(t56.Remaining, 0, 1499);
+
+        // OpcodeTable and RandomSource initialized per 80069B58.c:47-54
+        Assert.NotNull(purchase.VmState.RandomSource);
+        Assert.Contains(purchase.VmState.OpcodeTable, v => v != 0);
+        Assert.All(purchase.VmState.OpcodeTable, v => Assert.InRange(v, 0, 999));
+
+        // T29: count=1, rawPeriod=5 -> period=25, action = 50 71 0 op61 (group-50 burst spawn)
+        // Trigger is Countdowns[6]/5 == 0; set Countdowns[6] = 0 so T29 fires on expiry.
+        var t29 = purchase.Timers[29];
+        Assert.Equal(25, t29.Period);
+        int group50Count = spawner.Slots.Count(s => s.Record.U8(0x1D) == 50);
+        Assert.Equal(32, group50Count);
+        purchase.VmState.Countdowns[6] = 0;
+        int t29Rem = t29.Remaining;
+        purchase.TickTimers(t29Rem);
+        Assert.Equal(1, t29.Count); // remaining == 0 must not fire
+        purchase.TickTimers(1);
+        Assert.Equal(0, t29.Count); // fired once and decremented count
+        int spawned = spawner.Drain(1);
+        Assert.True(spawned >= group50Count, $"Expected >= {group50Count} group-50 spawns, got {spawned}");
+    }
+
+    private static byte[] BuildSyntheticCfunMission(
+        (int count, int period, int rawRem, int trig, int act)[] timers,
+        byte[] timerBytecode)
+    {
+        using var ms = new MemoryStream();
+        using var bw = new BinaryWriter(ms);
+        // RPNS SHDR (0x20) + SDAT (20 + 4)
+        bw.Write(0x53484F43u); bw.Write(0x20u); bw.Write(0u); bw.Write(0u);
+        bw.Write(0x53484452u); bw.Write(0u); bw.Write(0x52504E53u); bw.Write(1u);
+        bw.Write(0x53484F43u); bw.Write(24u); bw.Write(0u); bw.Write(0u);
+        bw.Write(0x53444154u); bw.Write(0u);
+        // Cfun SHDR (0x30) + SDAT (20 + tFUN + tEXT)
+        int tfunSize = 12 + timers.Length * 20;
+        int paddedText = (timerBytecode.Length + 3) & ~3;
+        int textSize = 12 + paddedText;
+        bw.Write(0x53484F43u); bw.Write(0x30u); bw.Write(0u); bw.Write(0u);
+        bw.Write(0x53484452u); bw.Write(0u); bw.Write(0x4366756Eu); bw.Write(42u);
+        bw.Write(0u); bw.Write(0u); bw.Write(0u); bw.Write(0u);
+        bw.Write(0x53484F43u); bw.Write((uint)(20 + tfunSize + textSize)); bw.Write(0u); bw.Write(0u);
+        bw.Write(0x53444154u);
+        // tFUN chunk
+        bw.Write(0x7446554Eu); bw.Write((uint)tfunSize); bw.Write(42u);
+        foreach (var t in timers)
+        {
+            bw.Write(t.count); bw.Write(t.period); bw.Write(t.rawRem); bw.Write(t.trig); bw.Write(t.act);
+        }
+        // tEXT chunk
+        bw.Write(0x74455854u); bw.Write((uint)textSize); bw.Write(42u);
+        bw.Write(timerBytecode);
+        for (int i = timerBytecode.Length; i < paddedText; i++) bw.Write((byte)0);
+        return ms.ToArray();
     }
 
     private static string? FindConftMis()
