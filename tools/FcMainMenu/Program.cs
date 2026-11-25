@@ -5,14 +5,14 @@ using FutureCop.View;
 using FcMainMenu;
 
 const int width = 640, height = 480;
-string path = args.Length > 0 ? args[0] : "build/disc/files/CW/FE.MIS";
+var labels = MenuLabels.Load(args.FirstOrDefault(), AppContext.BaseDirectory, Console.Error);
+string path = labels.ArchivePath;
 var flow = new MenuFlow(path, MenuFlow.SceneKindFrom(Environment.GetEnvironmentVariable("FC_MENU_SCENE")),
     Console.Out, Console.Error, enableLevelMovement: true);
 var menu = flow.Menu;
-var label = MenuLabels.Load(path, AppContext.BaseDirectory, Console.Error);
 using var window = MenuWindow.Open(width, height);
 if (window == null) { Console.Error.WriteLine("Cannot open X11 display."); return; }
-MenuAudio? audio = MenuAudio.TryStart(path);
+MenuAudio? audio = labels.UnavailablePath == null ? MenuAudio.TryStart(path) : null;
 SoundMixer? frontEndMixer = audio?.Mixer;
 LevelAudio? levelAudio = null;
 flow.SceneEntered += () => {
@@ -23,7 +23,7 @@ flow.SceneEntered += () => {
 };
 flow.SceneLeft += () => {
     levelAudio?.Dispose(); levelAudio = null;
-    audio = MenuAudio.TryStart(path);
+    audio = labels.UnavailablePath == null ? MenuAudio.TryStart(path) : null;
     frontEndMixer = audio?.Mixer ?? frontEndMixer;
 };
 flow.MenuSoundTriggered += id => audio?.PlayMenuSound(id);
@@ -53,7 +53,7 @@ while (true) {
     var screen = flow.Screen;
     if (screen == MenuScreen.Quit) break;
     double drawMs = 0;
-    if (screen == MenuScreen.Main) window.Draw(menu);
+    if (screen == MenuScreen.Main) window.Draw(menu, labels.UnavailablePath);
     else if (screen == MenuScreen.Scene) {
         if (ReferenceEquals(priorLevel, flow.Level) && ReferenceEquals(priorPreview, flow.Preview))
             flow.Advance(Stopwatch.GetElapsedTime(lastFrame, now).TotalSeconds);
@@ -61,7 +61,7 @@ while (true) {
         window.DrawScene(flow);
         drawMs = Stopwatch.GetElapsedTime(drawStart).TotalMilliseconds;
     }
-    else if (flow.Panel(label) is { } panel) window.DrawPanel(panel.Heading, panel.Entries, panel.Selected, panel.Hint, flow.LastLoadError);
+    else if (flow.Panel(labels.Lookup) is { } panel) window.DrawPanel(panel, labels.UnavailablePath, flow.LastLoadErrorPath);
     if (frameLog != null) {
         frameLog.WriteLine($"{frameIndex},{periodMs:F2},{drawMs:F2},{MenuWindow.LastSceneRenderMs:F2},{MenuWindow.LastScenePresentMs:F2},{MenuFlow.MsLevel:F2},{MenuFlow.MsHud:F2},{MenuFlow.MsBlit:F2},{MenuFlow.BytesLevel / 1024.0:F1},{MenuFlow.BytesHud / 1024.0:F1},{MenuFlow.BytesBlit / 1024.0:F1},{MenuFlow.Packets},{MenuFlow.Cells},{GC.GetTotalAllocatedBytes(false) / 1048576.0:F3},{GC.CollectionCount(0)},{GC.CollectionCount(2)},{screen}");
         if ((++frameIndex % 60) == 0) frameLog.Flush();
@@ -470,7 +470,16 @@ sealed class MenuWindow : IDisposable
         XSetForeground(display, DrawGc, color);
         XDrawString(display, Target, DrawGc, x, y * 2 + 14, text, text.Length);
     }
-    public void Draw(MainMenu menu) {
+    private void DrawFileNotice(string? path, int y)
+    {
+        foreach (string line in X11PanelLayout.FileNotice(path, width, MeasureText))
+        {
+            Text(line, y, 0xff8080);
+            y += 8;
+        }
+    }
+
+    public void Draw(MainMenu menu, string? unavailableArchive) {
         XSetForeground(display, DrawGc, 0x10182e); XFillRectangle(display, Target, DrawGc, 0, 0, (uint)width, (uint)height);
         Text("CRIME WAR", 56, 0x73c5ff); Text("PRECINCT ASSAULT", 108, 0x73c5ff); Text("MEMORY CARD", 160, 0x73c5ff);
         int[] pulse = { 0x14, 0x18, 0x1c, 0x1f, 0x1c, 0x18, 0x14, 0x10 };
@@ -480,15 +489,17 @@ sealed class MenuWindow : IDisposable
             var e = menu.Entries[i]; if (e.Enabled) Text(e.Text, e.Y, i == menu.SelectedIndex ? selected : 0xffffff);
         }
         Text("UP / DOWN: SCROLL      ENTER: ACCEPT", 218, 0xc0c0c0);
+        DrawFileNotice(unavailableArchive, 4);
         Present();
     }
-    public void DrawPanel(string heading, IReadOnlyList<string> entries, int selection, string hint, string? error = null) {
+    public void DrawPanel(MenuPanel panel, string? unavailableArchive, string? failedMission) {
         XSetForeground(display, DrawGc, 0x10182e); XFillRectangle(display, Target, DrawGc, 0, 0, (uint)width, (uint)height);
-        Text(heading, 50, 0x73c5ff);
-        foreach (var row in X11PanelLayout.Rows(entries, selection, width, MeasureText))
+        Text(panel.Heading, 50, 0x73c5ff);
+        foreach (var row in X11PanelLayout.Rows(panel.Entries, panel.Selected, width, MeasureText))
             TextAt(row.Text, row.X, row.Y, row.Color);
-        Text(hint, 218, 0xc0c0c0);
-        if (error != null) Text(error, 232, 0xff8080);
+        Text(panel.Hint, 218, 0xc0c0c0);
+        DrawFileNotice(unavailableArchive, 4);
+        DrawFileNotice(failedMission, 155);
         Present();
     }
     public void DrawScene(MenuFlow flow) {

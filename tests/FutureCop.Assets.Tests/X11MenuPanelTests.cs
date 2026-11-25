@@ -46,12 +46,45 @@ public class X11MenuPanelTests
             string mission = Path.Combine(launch, "CONFT.MIS");
             File.WriteAllBytes(mission, Array.Empty<byte>());
             using var errors = new StringWriter();
-            var label = MenuLabels.Load(mission, program, errors);
+            var labels = MenuLabels.Load(mission, program, errors);
+            var label = labels.Lookup;
+            Assert.Empty(X11PanelLayout.FileNotice(labels.UnavailablePath, 640, text => text.Length * 9));
 
             Assert.Equal("SELECT ZONE", label(0x0bb8, "Select Zone"));
             Assert.Equal("Urban Jungle", label(0x0d48, "conft"));
             Assert.Equal("No entry", label(0xffff, "No\nentry"));
             Assert.Equal("", errors.ToString());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UnavailableFrontEndArchiveProducesVisibleExtractionNotice(bool corrupt)
+    {
+        string root = Path.Combine(Path.GetTempPath(), "fc-menu-unavailable-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string archive = Path.Combine(root, "build", "disc", "files", "CW", "FE.MIS");
+            if (corrupt)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(archive)!);
+                File.WriteAllText(archive, "not a MIS archive");
+            }
+
+            string launch = Directory.CreateDirectory(Path.Combine(root, "elsewhere")).FullName;
+            var labels = MenuLabels.Load(corrupt ? null : archive, root, TextWriter.Null, workingDirectory: launch);
+            Assert.Equal("Weapon: id 0x41", labels.Lookup(0x271a, "Weapon: id 0x41"));
+            var lines = X11PanelLayout.FileNotice(labels.UnavailablePath, 640, text => text.Length * 9).ToArray();
+            Assert.NotEmpty(lines);
+            Assert.Contains(archive, string.Concat(lines));
+            Assert.Contains("python3 scripts/fc_extract.py \"<disc>.bin\" build/disc/files", lines);
+            Assert.All(lines, line => Assert.InRange(line.Length * 9, 1, 640 - 24));
         }
         finally
         {
