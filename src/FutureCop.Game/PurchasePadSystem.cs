@@ -412,25 +412,29 @@ public sealed class PurchasePadSystem
         _padsById.TryGetValue(recordId, out var pad) ? pad : null;
 
     /// <summary>
-    /// Copies the live score words from <see cref="MatchScore"/> into
-    /// <c>gGameSession[25/26]</c> (<c>8002D664.c:192,214</c>).
+    /// Copies the live score and total words from <see cref="MatchScore"/> into the VM's session bank.
+    /// Both are updated directly on capture in retail (<c>8002D1A0.c:213-230</c>).
     /// </summary>
     public void SyncFromMatchScore(MatchScore score)
     {
         ArgumentNullException.ThrowIfNull(score);
         VmState.GameSession[RpnsVmState.SessionScoreP1] = score.Score[0];
         VmState.GameSession[RpnsVmState.SessionScoreP2] = score.Score[1];
+        VmState.GameSession[31] = score.Total[0];
+        VmState.GameSession[32] = score.Total[1];
     }
 
     /// <summary>
-    /// Copies <c>gGameSession[25/26]</c> back into <see cref="MatchScore.Score"/> after
-    /// script execution.
+    /// Copies scores (<c>gGameSession[25/26]</c>, +0x64) and totals (<c>gGameSession[31/32]</c>,
+    /// +0x7C) back into <see cref="MatchScore"/> after script execution (<c>8002D1A0.c:218-230</c>).
     /// </summary>
     public void SyncToMatchScore(MatchScore score)
     {
         ArgumentNullException.ThrowIfNull(score);
         score.Score[0] = VmState.GameSession[RpnsVmState.SessionScoreP1];
         score.Score[1] = VmState.GameSession[RpnsVmState.SessionScoreP2];
+        score.Total[0] = VmState.GameSession[31];
+        score.Total[1] = VmState.GameSession[32];
     }
 
     /// <summary>

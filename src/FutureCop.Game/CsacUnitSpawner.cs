@@ -79,9 +79,10 @@ public sealed class CsacSpawnerSlot
 
 /// <summary>
 /// One live unit instance emitted by <see cref="CsacUnitSpawner"/> and registered into
-/// <see cref="MapObjectRegistry.LiveObjects"/> so it participates in per-frame message-6 broadcasts.
+/// <see cref="MapObjectRegistry.LiveObjects"/> for message-6 broadcasts and, when attached,
+/// <see cref="EntityWorld"/> for damage and retirement.
 /// </summary>
-public sealed class SpawnedCsacUnit : IRegisteredMapObject
+public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject
 {
     public SpawnedCsacUnit(
         int id,
@@ -100,7 +101,29 @@ public sealed class SpawnedCsacUnit : IRegisteredMapObject
         Z = sourceSlot.Record.Z;
         SpawnMode = spawnMode;
         MessageHandler = messageHandler;
+
+        var record = sourceSlot.Record;
+        // gInitEntityBase copies the script offsets (8002A5F4.c:108-109), health and flags
+        // (8002A5F4.c:130-138) from the spawn definition.
+        DamageScript = record.Scripts.ElementAtOrDefault(0);
+        RetireScript = record.Scripts.ElementAtOrDefault(1);
+        Health = MaxHealth = unchecked((short)record.Health);
+        Flags = record.Flags & 0xFFBFFFFFu;
+        if ((Flags & IgnoreHitsFlag) != 0) Flags |= RetiredFlag;
     }
+
+    /// <inheritdoc/>
+    public override int RecordId => SourceSlot.Record.Id;
+
+    /// <inheritdoc/>
+    public override int DispatchType => EntityType;
+
+    /// <inheritdoc/>
+    public override (int X, int Z) GroundPosition => (X, Z);
+
+    /// <inheritdoc/>
+    public override int HandleMessage(int message, EntityWorld world, object? data) =>
+        BaseHandler(message, this, world, data);
 
     public int Id { get; }
     public CsacSpawnerSlot SourceSlot { get; }
@@ -144,6 +167,8 @@ public sealed class SpawnedCsacUnit : IRegisteredMapObject
         {
             (X, Y, Z) = (carrier.Position.X, carrier.Position.Y, carrier.Position.Z);
         }
+        if (Coord is { } coord)
+            Coord = coord with { X = X, Y = Y, Z = Z };
     }
 }
 
@@ -178,12 +203,15 @@ public sealed class CsacUnitSpawner
     private readonly CsacSpawnerSlot?[] _slots = new CsacSpawnerSlot?[Capacity];
     private readonly List<SpawnedCsacUnit> _spawnedUnits = new();
     private readonly MapObjectRegistry? _registry;
+    private readonly EntityWorld? _world;
     private int _count;
     private int _nextRuntimeId = 20000;
 
-    public CsacUnitSpawner(MapObjectRegistry? registry = null, RetailRandom? random = null)
+    /// <summary>Creates a spawner with optional map-object and entity-world registration.</summary>
+    public CsacUnitSpawner(MapObjectRegistry? registry = null, RetailRandom? random = null, EntityWorld? world = null)
     {
         _registry = registry;
+        _world = world;
         Random = random ?? new RetailRandom();
     }
 
@@ -393,7 +421,8 @@ public sealed class CsacUnitSpawner
     /// <summary>
     /// Port of func_8006125C (gTrySpawnRegisteredUnit): evaluates <see cref="GatePredicate"/>,
     /// updates counters, creates a <see cref="SpawnedCsacUnit"/>, registers it into the attached
-    /// <see cref="MapObjectRegistry"/> (when allocated), and invokes <see cref="OnPostSpawnScript"/>.
+    /// <see cref="MapObjectRegistry"/> (when allocated) and <see cref="EntityWorld"/>, and invokes
+    /// <see cref="OnPostSpawnScript"/>.
     /// </summary>
     public SpawnedCsacUnit? TrySpawn(CsacSpawnerSlot slot, int spawnMode)
     {
@@ -409,6 +438,12 @@ public sealed class CsacUnitSpawner
         _spawnedUnits.Add(unit);
         if (_registry is { LiveObjects.IsAllocated: true })
             _registry.LiveObjects.Register(unit);
+
+        // 8006125C.c:74-76 calls gSpawnTargetableEntityId before the post-spawn script.
+        // 8004D4F8.c:56-59 adds the initialized entity to the list with the spawned-unit flag.
+        // Outposts already have a specialized entity that the scene spawns instead.
+        if (unit.DispatchType != CaptureObjective.EntityType)
+            _world?.Spawn(unit, targetable: true);
 
         OnPostSpawnScript?.Invoke(slot, unit);
         return unit;
@@ -432,6 +467,10 @@ public sealed class CsacUnitSpawner
     public void RecordSpawnedUnitRetirement(LiveEntity entity)
     {
         ArgumentNullException.ThrowIfNull(entity);
+        // The sweep unlinks and frees the same instance (8004D598.c:54-66); stop its broadcasts too.
+        if (entity is SpawnedCsacUnit unit)
+            _registry?.LiveObjects.Unregister(unit);
+
         int targetId = entity.RecordId;
         for (int i = 0; i < _count; i++)
         {

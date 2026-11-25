@@ -161,6 +161,8 @@ public sealed class LevelScene
         // A Csac record is spawned by gSpawnTargetableEntityId, which adds 0x10000000 (8004D4F8.c:59).
         _entities = new EntityWorld
         {
+            // 8002AA1C.c:128-130 and 8004D958.c:53-55 run the entity's damage and retire scripts.
+            OnScript = (_, script, arg1, arg2) => RunEntityScript(script, arg1, arg2),
             HasSlotDescriptor = slot => ObjectRegistry.GetSlotDescriptor(slot) is not null,
             OnRetireFootprint = (entity, _, mask) => ObjectRegistry.SpawnEntitySlotTypes(entity, mask, mode: 2),
             OnRefreshSlotSpawns = (entity, mask) => ObjectRegistry.RefreshEntitySlotSpawns(entity, mask),
@@ -172,7 +174,7 @@ public sealed class LevelScene
 
         ObjectRegistry.InitMissionSpawnState();
         ObjectRegistry.LiveObjects.Allocate();
-        _csacSpawner = new CsacUnitSpawner(ObjectRegistry);
+        _csacSpawner = new CsacUnitSpawner(ObjectRegistry, world: _entities);
         _csacSpawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(_file.Bytes, r));
         _purchasePads = PurchasePadSystem.LoadFromMission(_file.Bytes, _csacSpawner, random: _csacSpawner.Random);
         if (_purchasePads is not null)
@@ -188,7 +190,12 @@ public sealed class LevelScene
         }
         _csacSpawner.OnPostSpawnScript = (slot, unit) =>
         {
-            if (slot.Record.Type != CaptureObjective.EntityType) return;
+            if (slot.Record.Type != CaptureObjective.EntityType)
+            {
+                // As for the outposts, use model bounds for the 800620D8.c:58-94 pair test.
+                unit.Coord = CoordOf(unit.ModelId, unit.X, unit.Y, unit.Z);
+                return;
+            }
             var record = slot.Record;
             var objective = CaptureObjective.FromRecord(record, LevelGround.Height(Map, record.X, 0x100000, record.Z, out _));
             _objectives.Add(objective);
@@ -209,19 +216,20 @@ public sealed class LevelScene
 
     private void RunPostCaptureScript(CaptureObjective objective, int claimantId)
     {
-        if (_purchasePads is { } pads)
-        {
-            var script = pads.Pool.Slice(objective.Script);
-            if (!script.IsEmpty && script[0] != 0)
-            {
-                var score = _objectives!.Score;
-                pads.SyncFromMatchScore(score);
-                // An RPNS op 56 with command 0x7A reaches ApplyPadCommand7A through the VM callback.
-                RpnsScriptVm.Execute(script, pads.VmState, arg1: 0, arg2: claimantId);
-                pads.SyncToMatchScore(score);
-            }
-        }
+        // An RPNS op 56 with command 0x7A reaches ApplyPadCommand7A through the VM callback.
+        RunEntityScript(objective.Script, arg1: 0, arg2: claimantId);
         _onPostCaptureScript?.Invoke(objective, claimantId);
+    }
+
+    private void RunEntityScript(int offset, int arg1, int arg2)
+    {
+        if (_purchasePads is not { } pads || _objectives is not { } objectives) return;
+        var script = pads.Pool.Slice(offset);
+        if (script.IsEmpty || script[0] == 0) return; // 80069D68.c:163-165
+
+        pads.SyncFromMatchScore(objectives.Score);
+        RpnsScriptVm.Execute(script, pads.VmState, arg1, arg2);
+        pads.SyncToMatchScore(objectives.Score);
     }
 
     private SkyCaptainSystem? _skyCaptain;
@@ -231,8 +239,8 @@ public sealed class LevelScene
     private EntityWorld? _entities;
 
     /// <summary>
-    /// The entity list (D_8009FA40) of the outposts, their child parts and the projectiles that hit
-    /// them, or null until the live level is enabled. <see cref="AdvanceWalker"/> runs its retirement
+    /// The entity list (D_8009FA40) for outposts, their child parts, spawned units and projectile
+    /// contacts, or null until the live level is enabled. <see cref="AdvanceWalker"/> runs its retirement
     /// stages every frame.
     /// </summary>
     public EntityWorld? Entities => _entities;

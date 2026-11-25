@@ -6,103 +6,72 @@ using Xunit;
 namespace FutureCop.Assets.Tests;
 
 /// <summary>
-/// The kill scoring of a destructively retired CONFT unit: the retire script is RPNS bytecode that
-/// writes the score and the session total in parallel (<c>p(5) p(25) op48 p(5) p(31) op48</c> at pool
-/// offset 0x6bf, i.e. session[25]/[31] for player 1 and session[26]/[32] for player 2) and also
-/// decrements the active-unit counter of the unit's column (session[27..30]). The chain under test is
-/// the lethal damage of 8002AA1C.c:114-121, the message-4 retire of 8004CE04.c:59-60 and the retire
-/// script notification of 8004D958.c:53-55.
+/// A CONFT purchase enters the scene's targetable entity list (8006125C.c:74-76, 8004D4F8.c:56-59).
+/// A lethal hit retires the unit on the next frame (8002AA1C.c:114-121, 8004CE04.c:59-60), runs its
+/// RPNS script (8004D958.c:53-55) and removes it from the list (8004D598.c:46-54).
 /// </summary>
 public class EntityScriptScoringTests
 {
-    /// <summary>Session slot +0x80: the P1 total the CONFT scripts write in parallel with score[25].</summary>
-    private const int SessionTotalP1 = 31;
-
-    /// <summary>A minimal live entity whose message handler is gEntityBaseHandler (8002AD58.c).</summary>
-    private sealed class ScriptedUnit : LiveEntity
-    {
-        public ScriptedUnit(int id, int health, int retireScript)
-        {
-            RecordId = id;
-            Health = unchecked((short)health);
-            MaxHealth = unchecked((short)health);
-            RetireScript = retireScript;
-        }
-
-        public override int RecordId { get; }
-
-        public override int DispatchType => 9; // the CONFT gun emplacement type
-
-        public override (int X, int Z) GroundPosition => (0, 0);
-
-        public override int HandleMessage(int message, EntityWorld world, object? data) =>
-            BaseHandler(message, this, world, data);
-    }
-
-    private static string? FindMission()
-    {
-        var dir = AppContext.BaseDirectory;
-        for (int i = 0; i < 10 && dir is not null; i++)
-        {
-            var candidate = Path.Combine(dir, "build", "disc", "files", "PA", "CONFT.MIS");
-            if (File.Exists(candidate)) return candidate;
-            dir = Path.GetDirectoryName(dir);
-        }
-        return null;
-    }
-
     [RetailFact]
-    public void RetiringAUnitRunsTheRetireScriptAndRaisesScoreAndTotalInParallel()
+    public void SceneRetiresPurchasedHelicopterAndCreditsScoreAndTotal()
     {
-        var path = FindMission()!;
-        var file = new MisFile(path);
-        // A CONFT type-9 gun emplacement whose retire script lives at RPNS offset 1186 (record
-        // id 33's Scripts[1]): score+1 and total+1 in parallel, plus the active-counter decrement.
-        var record = MissionEntities.Load(file).Single(r => r.Id == 33 && r.Type == 9);
-        var pool = RpnsPool.Extract(file.Bytes)!;
-
-        // The scene loads the same CONFT pool and VM the purchase pads use, so the script writes
-        // land in the session the scene syncs for the pads (gGameSession column pairs 25/31).
-        var scene = new LevelScene(path);
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!) { EnableCsacSpawner = true };
         scene.EnableObjectives();
         var world = scene.Entities!;
         var pads = scene.PurchasePads!;
-        var vm = pads.VmState;
-        vm.GameSession[RpnsVmState.SessionHelisP2] = 2;
-        Assert.Equal(0, vm.GameSession[RpnsVmState.SessionScoreP1]);
-        Assert.Equal(0, vm.GameSession[SessionTotalP1]);
+        var spawner = scene.CsacSpawner!;
+        var score = scene.Objectives!.Score;
+        var session = pads.VmState.GameSession;
+        score.Score[1] = 5;
+        Assert.Equal(0, session[RpnsVmState.SessionScoreP1]);
+        Assert.Equal(0, session[31]);
 
-        // Wiring: the scene does not wire world.OnScript (LevelScene leaves it null and documents
-        // script side effects as not integrated), so the test provides the retail glue
-        // gInterpretEntityScript itself (func_80069D68) - the pipeline under test is the retire
-        // chain above, not the missing scene wiring of OnScript.
-        world.OnScript = (entity, script, arg1, arg2) =>
-        {
-            // 8004D958.c:53-55 passes the entity's retire script offset, arg1 = ((flags >> 26) ^ 1) & 1
-            // and arg2 = -1 (0xFFFF, the sweeping pass).
-            Assert.Equal(entity.RetireScript, script);
-            Assert.Equal(-1, arg2);
-            RpnsScriptVm.Execute(pool.Slice(script), vm, arg1, arg2);
-        };
+        // CONFT's P2 helipad (Cact 108) spends one point, increments session[30] and queues Csac 33.
+        // Trigger the scene's pad for the P2 actor; the viewer only supports attaching a P1 walker.
+        var pad = pads.FindPad(108)!;
+        pads.SyncFromMatchScore(score);
+        Assert.True(pads.TryTriggerPad(pad, pad.TargetId, isHoverMode: false,
+            scoreSlot: RpnsVmState.SessionScoreP2).Accepted);
+        pads.SyncToMatchScore(score);
+        scene.AdvanceSkyCaptain(0);
+        Assert.Equal(4, score.Score[1]);
+        Assert.Equal(1, session[RpnsVmState.SessionHelisP2]);
 
-        var unit = new ScriptedUnit(record.Id, record.Health, record.Scripts[1]);
-        world.Spawn(unit, targetable: true);
-        world.CullActive(0, 0);
-        Assert.Contains(unit, world.Units);
+        var bought = Assert.Single(spawner.SpawnedUnits, u => u.SourceSlot.Record.Id == 33);
+        var record = bought.SourceSlot.Record;
+        var unit = Assert.Single(world.Units, u => u.RecordId == record.Id);
+        Assert.Contains(bought, scene.ObjectRegistry.LiveObjects.Entries);
+        Assert.Equal(record.Type, unit.DispatchType);
+        Assert.Equal(record.Health, unit.Health);
+        Assert.Equal(record.Health, unit.MaxHealth);
+        Assert.Equal(record.Scripts[0], unit.DamageScript);
+        Assert.Equal(record.Scripts[1], unit.RetireScript);
+        Assert.Equal((record.X, record.Z), unit.GroundPosition);
+        Assert.Equal(LiveEntity.SpawnedUnitFlag, unit.Flags & LiveEntity.SpawnedUnitFlag);
 
-        // The destructive retire: the lethal damage sends health below 0 (8002AA1C.c:114-121
-        // writes the +0x8C attacker word), and the next frame sweep's message 4 (8004CE04.c:59-60)
-        // retires through gRetireEntity.
-        unit.HandleMessage(14, world, new DirectHit(0x155, (short)(record.Health + 1), 0, null));
+        var coord = Assert.IsType<CollisionCoord>(unit.Coord);
+        scene.EnableMechMovement();
+        var walker = scene.Walker!;
+        (walker.X, walker.Y, walker.Z) = (coord.X, coord.Y, coord.Z);
+        scene.AdvanceWalker(1, 0, AnalogPad.Digital);
+        var shot = new ProjectileContact(scene.Actor.Id, (short)(record.Health + 1), 0, coord.X, coord.Z);
+        LevelScene.DeliverShotContact(world, shot, coord);
         Assert.True(unit.Health < 0);
-        world.ProcessDeferredUpdates();
-        world.SweepRetired();
-        Assert.DoesNotContain(unit, world.Units);
+        Assert.Equal(0, score.Score[0]);
+        // A native score change between scripts must survive the VM round trip.
+        score.Total[1] = 3;
 
-        // The retire script at offset 1186 wrote score and total in parallel and dropped the
-        // active-unit counter: p(5) p(25)/p(31) op48 and the session[30] decrement of its column.
-        Assert.Equal(1, vm.GameSession[RpnsVmState.SessionScoreP1]);
-        Assert.Equal(1, vm.GameSession[SessionTotalP1]);
-        Assert.Equal(1, vm.GameSession[RpnsVmState.SessionHelisP2]);
+        scene.AdvanceWalker(1, 0, AnalogPad.Digital);
+        Assert.DoesNotContain(unit, world.Units);
+        Assert.DoesNotContain(bought, scene.ObjectRegistry.LiveObjects.Entries);
+        Assert.Equal(0, bought.SourceSlot.TotalSpawned);
+
+        // CONFT pool 0x4A2: 99 15 9F 15 9E 19 00 (80069D68.c:178-186,243-257).
+        // The retire script increments session[25]/[31] and decrements the P2 heli counter [30].
+        Assert.Equal(new[] { 1, 4 }, score.Score);
+        Assert.Equal(new[] { 1, 3 }, score.Total);
+        Assert.Equal(1, session[RpnsVmState.SessionScoreP1]);
+        Assert.Equal(1, session[31]);
+        Assert.Equal(0, session[RpnsVmState.SessionHelisP2]);
     }
 }
