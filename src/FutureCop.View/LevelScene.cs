@@ -335,12 +335,35 @@ public sealed class LevelScene
     public int BuiltUnitPrimitives { get; private set; }
 
     /// <summary>
-    /// The HUD session with the live score words (D_8009FA94 + 0x64). +0x5C is 1 in a Precinct Assault
-    /// match: the match end branches on it (80027D9C.c:78, 80060A0C.c:114).
+    /// Faces the last <see cref="Render"/> drew for the Csac units in <see cref="Entities"/> (bought
+    /// tanks and helis and other spawner units).
     /// </summary>
-    public HudSession ScoreSession(HudSession session) => _objectives is { } field
-        ? session with { Mode = 1, Score0 = field.Score.Score[0], Score1 = field.Score.Score[1] }
-        : session;
+    public int SpawnedUnitPrimitives { get; private set; }
+
+    /// <summary>Outline lines the last <see cref="Render"/> drew for the purchase pads (viewer markers).</summary>
+    public int PadMarkerLines { get; private set; }
+
+    /// <summary>
+    /// The HUD session with the live score words (D_8009FA94 + 0x64). +0x5C is 1 in a Precinct Assault
+    /// match: the match end branches on it (80027D9C.c:78, 80060A0C.c:114). The counters +0x6C..+0x78
+    /// and the totals +0x84/+0x88 are read from the same session words of the RPNS VM
+    /// (gGameSession[27..30], [33..34]) when the mission has purchase pads.
+    /// </summary>
+    public HudSession ScoreSession(HudSession session)
+    {
+        if (_objectives is not { } field) return session;
+        session = session with { Mode = 1, Score0 = field.Score.Score[0], Score1 = field.Score.Score[1] };
+        if (_purchasePads?.VmState.GameSession is not { Length: > 34 } words) return session;
+        return session with
+        {
+            Count1 = words[RpnsVmState.SessionTanksP1],
+            Count2 = words[RpnsVmState.SessionHelisP1],
+            Count3 = words[RpnsVmState.SessionTanksP2],
+            Count4 = words[RpnsVmState.SessionHelisP2],
+            Total1 = words[33],
+            Total2 = words[34],
+        };
+    }
 
     /// <summary>
     /// Opt in to a caller-initialized one-player walker. Initialization and clip records must be
@@ -904,6 +927,33 @@ public sealed class LevelScene
         }
         BuiltUnitPrimitives = builtUnits;
 
+        // Csac units in the entity list (bought tanks and helis, spawner units; 8006125C.c:74-76 adds
+        // them through gSpawnTargetableEntityId). Outposts are not in the list as SpawnedCsacUnit, they
+        // are drawn above. A unit the sweep freed (8004D598.c:55-64) has left the list; one retired this
+        // frame (runtime id 0, 8004D958.c:59) waits for the sweep and is no longer drawn. The port keeps
+        // no heading on SpawnedCsacUnit, so the model is placed unrotated like pickups and outposts.
+        int spawnedUnits = 0;
+        if (_entities is { Units.Count: > 0 } entities)
+        {
+            foreach (var entity in entities.Units)
+            {
+                if (entity is not SpawnedCsacUnit unit || unit.RuntimeId == 0) continue;
+                if (!_modelsById.TryGetValue(unit.ModelId, out var model)
+                    || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
+                var matrix = PlacedMatrix(unit.X, unit.Y, unit.Z, view);
+                var projected = model.IsScripted
+                    ? ScriptRender.Project(model, verts, 0, matrix, Focal, Ofx, Ofy, 1)
+                    : ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1);
+                var widths = _widthsByModelId.TryGetValue(model.Id, out var cw) ? cw : Array.Empty<short>();
+                foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
+                {
+                    _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });
+                    spawnedUnits++;
+                }
+            }
+        }
+        SpawnedUnitPrimitives = spawnedUnits;
+
         // Painter's order, far first, stable for equal keys (submission order). Viewer convention:
         // retail sorts into an ordering table whose bucket mapping is not ported; both keys are SZ3
         // averages. An unstable sort reorders coplanar terrain packets whenever the mech is added.
@@ -929,7 +979,50 @@ public sealed class LevelScene
             skyCaptain++;
         }
         SkyCaptainPrimitives = skyCaptain;
+        PadMarkerLines = PadMarkers(view);
         return _drawQueue.Count;
+    }
+
+    /// <summary>
+    /// Draws the purchase pads as ground outlines on top of the frame and returns the number of lines
+    /// drawn. Viewer presentation, not retail: a pad is an invisible trigger box in the C (80031C74.c,
+    /// 8002F8B8.c) and the visible pad is map geometry, so the outline is the box the port tests
+    /// (<see cref="PurchasePadSystem.IsInsidePad"/>: centre +/- extent on x and z) at the box centre height.
+    /// Type-95 map zones are a green rectangle; type-14 attachment pads a yellow rectangle with both
+    /// diagonals, grey while flag 0x10 disables them (8003151C.c:106). A one-shot map zone that fired
+    /// and was freed (80031DE8.c:176-184) is no longer drawn.
+    /// </summary>
+    private int PadMarkers(Gte.Mat view)
+    {
+        if (_purchasePads is not { Pads.Count: > 0 } pads) return 0;
+        int lines = 0;
+        foreach (var pad in pads.Pads)
+        {
+            bool mapZone = pad.Kind == PurchasePadKind.MapZone;
+            if (mapZone && (pad.Flags & 2) == 0 && _retiredMapZonePads.Contains(pad.RecordId)) continue;
+            byte[] colour = mapZone ? PadZoneColour : pad.IsEnabled ? PadAttachmentColour : PadDisabledColour;
+            int x0 = pad.WorldX - pad.ExtentX, x1 = pad.WorldX + pad.ExtentX;
+            int z0 = pad.WorldZ - pad.ExtentZ, z1 = pad.WorldZ + pad.ExtentZ;
+            var c00 = ProjectWorld(x0, pad.WorldY, z0, view);
+            var c10 = ProjectWorld(x1, pad.WorldY, z0, view);
+            var c11 = ProjectWorld(x1, pad.WorldY, z1, view);
+            var c01 = ProjectWorld(x0, pad.WorldY, z1, view);
+            lines += PadLine(c00, c10, colour) + PadLine(c10, c11, colour)
+                + PadLine(c11, c01, colour) + PadLine(c01, c00, colour);
+            if (!mapZone) lines += PadLine(c00, c11, colour) + PadLine(c10, c01, colour);
+        }
+        return lines;
+    }
+
+    private static readonly byte[] PadZoneColour = { 0x40, 0xFF, 0x40 };
+    private static readonly byte[] PadAttachmentColour = { 0xFF, 0xD0, 0x20 };
+    private static readonly byte[] PadDisabledColour = { 0x80, 0x80, 0x80 };
+
+    private int PadLine((int X, int Y)? a, (int X, int Y)? b, byte[] colour)
+    {
+        if (a is null || b is null) return 0;
+        Line(a.Value.X, a.Value.Y, b.Value.X, b.Value.Y, colour);
+        return 1;
     }
 
     /// <summary>

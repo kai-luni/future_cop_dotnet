@@ -225,6 +225,32 @@ public sealed class PurchasePathTests
     }
 
     [RetailFact]
+    public void SceneDrawsBoughtUnitPadsAndScoreSession()
+    {
+        string path = LevelSceneRetirementTests.FindMission()!;
+        var scene = new LevelScene(path) { EnableCsacSpawner = true };
+        scene.EnableObjectives();
+        var pad = PurchasePadSystem.LoadFromMission(File.ReadAllBytes(path))!.FindPad(106)!;
+        var walker = new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 0 };
+        scene.AttachWalker(walker);
+        scene.Objectives!.Score.Score[0] = 5;
+
+        scene.Render(new LevelCamera(0.0, 20.0, 0x1200));
+        Assert.Equal(0, scene.SpawnedUnitPrimitives);
+        Assert.True(scene.PadMarkerLines > 0, "the pad under the walker produced no marker lines");
+
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        var unit = Assert.Single(scene.CsacSpawner!.SpawnedUnits.Where(u => u.SourceSlot.Record.Id == 34));
+        walker.X = unit.X; walker.Y = unit.Y; walker.Z = unit.Z;
+        scene.AttachWalker(walker);
+        scene.Render(new LevelCamera(0.0, 20.0, 0x1200));
+        Assert.True(scene.SpawnedUnitPrimitives > 0, "the bought unit produced no rendered faces");
+
+        var session = scene.ScoreSession(new HudSession());
+        Assert.Equal((1, 4), (session.Mode, session.Score0));
+    }
+
+    [RetailFact]
     public void ScenePostCaptureScriptDispatchesPadEnableCommand()
     {
         string path = LevelSceneRetirementTests.FindMission()!;
