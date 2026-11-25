@@ -388,10 +388,9 @@ public sealed class LevelScene
     public int SkyCaptainPrimitives { get; private set; }
 
     /// <summary>
-    /// Faces the last <see cref="Render"/> drew for live units spawned through the retail
-    /// <see cref="CsacSpawner"/> (<c>D_8009F800</c>) pipeline.
+    /// The same face count as <see cref="SpawnedUnitPrimitives"/>, not a separate draw pass.
     /// </summary>
-    public int SpawnedCsacUnitPrimitives { get; private set; }
+    public int SpawnedCsacUnitPrimitives => SpawnedUnitPrimitives;
 
     /// <summary>
     /// Faces the last <see cref="Render"/> drew for placed type-10 <see cref="Elevator"/> platforms
@@ -1013,30 +1012,6 @@ public sealed class LevelScene
         }
         ElevatorPrimitives = elevatorPrims;
 
-        // Live units spawned by the retail CsacUnitSpawner (D_8009F800 -> gTrySpawnRegisteredUnit),
-        // excluding outposts (rendered above via _objectives) and retired units (RuntimeId == 0).
-        int csacUnitPrims = 0;
-        if (_csacSpawner is { SpawnedUnits.Count: > 0 } csacSpawner)
-        {
-            foreach (var unit in csacSpawner.SpawnedUnits)
-            {
-                if (unit.DispatchType == CaptureObjective.EntityType || unit.RuntimeId == 0) continue;
-                if (!_modelsById.TryGetValue(unit.ModelId, out var model)
-                    || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
-                var matrix = PlacedMatrix(unit.X, unit.Y, unit.Z, view);
-                var projected = model.IsScripted
-                    ? ScriptRender.Project(model, verts, 0, matrix, Focal, Ofx, Ofy, 1)
-                    : ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1);
-                var widths = _widthsByModelId.TryGetValue(model.Id, out var cw) ? cw : Array.Empty<short>();
-                foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
-                {
-                    _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });
-                    csacUnitPrims++;
-                }
-            }
-        }
-        SpawnedCsacUnitPrimitives = csacUnitPrims;
-
         // Built units (retired opt-in port extension beyond retail): tanks and aircraft spawned from
         // DroneStrategy build-order counters, drawn with their mission Cobj model along heading.
         int builtUnits = 0;
@@ -1067,11 +1042,11 @@ public sealed class LevelScene
         }
         BuiltUnitPrimitives = builtUnits;
 
-        // Csac units in the entity list (bought tanks and helis, spawner units; 8006125C.c:74-76 adds
-        // them through gSpawnTargetableEntityId). Outposts are not in the list as SpawnedCsacUnit, they
-        // are drawn above. A unit the sweep freed (8004D598.c:55-64) has left the list; one retired this
-        // frame (runtime id 0, 8004D958.c:59) waits for the sweep and is no longer drawn. The port keeps
-        // no heading on SpawnedCsacUnit, so the model is placed unrotated like pickups and outposts.
+        // Draw Csac units from the live entity list, not the spawner's bookkeeping list.
+        // 8006125C.c:74-76 adds them through gSpawnTargetableEntityId. Retirement clears the
+        // runtime id (8004D958.c:59) before the sweep unlinks the unit (8004D598.c:55-64).
+        // The world holds specialized outpost entities, not their spawner wrappers; the objective
+        // pass above draws them. SpawnedCsacUnit has no heading, so its model is placed unrotated.
         int spawnedUnits = 0;
         if (_entities is { Units.Count: > 0 } entities)
         {
