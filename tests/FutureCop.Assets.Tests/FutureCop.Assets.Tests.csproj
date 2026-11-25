@@ -57,5 +57,6 @@
     <None Include="../golden/capture-objective.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/capture-objective.vectors" />
     <None Include="../golden/outpost-message5.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/outpost-message5.vectors" />
     <None Include="../golden/outpost-retirement.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/outpost-retirement.vectors" />
+    <None Include="../golden/rpns-purchase.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/rpns-purchase.vectors" />
   </ItemGroup>
 </Project>

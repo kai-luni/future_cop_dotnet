@@ -1,0 +1,38 @@
+# Shared golden vectors for func_80069D68 (gInterpretEntityScript) running real CONFT.MIS
+# purchase scripts across all four price tiers (1, 2, 30, 50).
+# Verified against unchanged PS1 C (80069D68.c) via tests/host/rpns-purchase/run.sh.
+#
+# Format:
+# name script_hex s25 s26 s27 s28 s29 s30 varIdx varVal s3 -> ret s25 s26 s27 s28 s29 s30 varVal sfx spwCnt spwId spwCmd spwArg2 evtId
+
+# Tier 1 (cost 1): Cact 106 (0x000, P1 main-base helipad -> Csac 34)
+cost1_p1_heli_denied_0    991080239c1094252c140ea2c7803cbf831e99199c150804c9831e00 0 0 0 0 0 0 0 0 1 -> 1 0 0 0 0 0 0 0 73 0 -1 -1 -1 -1
+cost1_p1_heli_exact_1     991080239c1094252c140ea2c7803cbf831e99199c150804c9831e00 1 0 0 0 0 0 0 0 1 -> 28 0 0 0 1 0 0 0 63 1 34 71 0 -1
+cost1_p1_heli_above_5     991080239c1094252c140ea2c7803cbf831e99199c150804c9831e00 5 0 0 19 0 0 0 0 1 -> 28 4 0 0 20 0 0 0 63 1 34 71 0 -1
+cost1_p1_heli_cap_20      991080239c1094252c140ea2c7803cbf831e99199c150804c9831e00 5 0 0 20 0 0 0 0 1 -> 1 5 0 0 20 0 0 0 73 0 -1 -1 -1 -1
+
+# Tier 1 (cost 1): Cact 107 (0x01c, P1 main-base tankpad -> gScriptVmVars[11]++)
+cost1_p1_tank_exact_1     991080239b1094252c140c8b18bf831e99199b150804c9831e00     1 0 0 0 0 0 11 0 1 -> 27 0 0 1 0 0 0 1 63 0 -1 -1 -1 -1
+
+# Tier 1 (cost 1): Cact 108 (0x036, P2 main-base helipad -> Csac 33)
+cost1_p2_heli_exact_1     9a1080239e1094252c140ea1c7803cbf831e9a199e150804c9831e00 0 1 0 0 0 0 0 0 2 -> 30 0 0 0 0 0 1 0 63 1 33 71 0 -1
+
+# Tier 2 (cost 2): Cact 150 (0x0d7, P1 outpost tankpad -> gScriptVmVars[0]++)
+cost2_p1_tank_denied_1    991082249b1094252c140d8018bf831e8299349b150804c9831e00   1 0 0 0 0 0 0 0 1 -> 1 1 0 0 0 0 0 0 73 0 -1 -1 -1 -1
+cost2_p1_tank_exact_2     991082249b1094252c140d8018bf831e8299349b150804c9831e00   2 0 0 0 0 0 0 0 1 -> 27 0 0 1 0 0 0 1 63 0 -1 -1 -1 -1
+cost2_p1_tank_above_5     991082249b1094252c140d8018bf831e8299349b150804c9831e00   5 0 3 0 0 0 0 2 1 -> 27 3 0 4 0 0 0 3 63 0 -1 -1 -1 -1
+
+# Tier 2 (cost 2): Cact 151 (0x129, P1 outpost helipad -> Csac 145)
+cost2_p1_heli_denied_1    991082249c1094252c14100211c7803cbf831e8299349c150804c9831e00 1 0 0 0 0 0 0 0 1 -> 1 1 0 0 0 0 0 0 73 0 -1 -1 -1 -1
+cost2_p1_heli_exact_2     991082249c1094252c14100211c7803cbf831e8299349c150804c9831e00 2 0 0 0 0 0 0 0 1 -> 28 0 0 0 1 0 0 0 63 1 145 71 0 -1
+
+# Tier 30 (cost 30): Cact 150 slot 2 (0x0b5, P1 outpost capture)
+cost30_p1_capture         81a81d0212c7803c0218bd80380213bc8038b1c7803c0217fa813899109e28991d00 40 0 0 0 0 0 0 0 1 -> 1 10 0 0 0 0 0 0 0 2 49 71 0 -1
+
+# Tier 50 (cost 50): Cact 47 (0x63f, P1 dreadnought -> Csac 7, var[18]=1, evt 15)
+cost50_p1_dread_denied_49 9910b123921381252c141287c7803cbf831eb299348192208f0c0804c9831e00 49 0 0 0 0 0 18 0 1 -> 1 49 0 0 0 0 0 0 73 0 -1 -1 -1 -1
+cost50_p1_dread_exact_50  9910b123921381252c141287c7803cbf831eb299348192208f0c0804c9831e00 50 0 0 0 0 0 18 0 1 -> 25 0 0 0 0 0 0 1 63 1 7 71 0 15
+cost50_p1_dread_built_1   9910b123921381252c141287c7803cbf831eb299348192208f0c0804c9831e00 80 0 0 0 0 0 18 1 1 -> 1 80 0 0 0 0 0 1 73 0 -1 -1 -1 -1
+
+# Tier 50 (cost 50): Cact 53 (0x67f, P2 dreadnought -> Csac 57, var[19]=1, evt 16)
+cost50_p2_dread_exact_50  9a10b123931381252c1412b9c7803cbf831eb29a34819320900c0804c9831e00 0 50 0 0 0 0 19 0 2 -> 26 0 0 0 0 0 0 1 63 1 57 71 0 16
