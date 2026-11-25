@@ -303,14 +303,18 @@ public sealed class LevelScene
                 // defers re-selection, 80031DE8.c:119-159); the selection scan over the candidate
                 // table (D_800A8F90) picks the nearest entity on the same node id, skipping ids
                 // <= 0 and types 0x15 and 0x12 (:121-144). The port instead gates on the record's
-                // TargetId (the node id match, 800319D4.c:122 node->f8 = the record tag) and feeds
-                // the player entity directly, so re-selection is not modelled.
-                if ((pad.Flags & 2) == 0 && _retiredMapZonePads.Contains(pad.RecordId))
+                // TargetId (+0x1C; 800319D4.c:137) and feeds the player directly instead of selecting
+                // a matching Csac. CONFT's one-shot MapZones 235-244, 5 and 9 target Csac ids
+                // (e.g. 75, 77, 172), so the scene never runs their scoring scripts (80031C74.c:106-108).
+                // Only MapZone flags control release (80031C74.c:115); type 14 uses
+                // its byte at +0x28 for attachment behavior (80030DE0.c:115).
+                bool oneShotMapZone = pad.Kind == PurchasePadKind.MapZone && (pad.Flags & 2) == 0;
+                if (oneShotMapZone && _retiredMapZonePads.Contains(pad.RecordId))
                     continue; // one-shot node already fired and was freed
                 if (PurchasePadSystem.IsInsidePad(pad, position.X, position.Y, position.Z, position.Radius)
                     && pads.TryTriggerPad(pad, Actor.Id, isHoverMode: walker.Form != 0,
                         frameTime: _purchaseFrameTime).Triggered
-                    && (pad.Flags & 2) == 0)
+                    && oneShotMapZone)
                 {
                     // 80031C74.c:115 returns 1 (release) for a node without flag 2, so the fired
                     // node is unlinked and freed by 80031DE8.c:176-184 and never fires again.

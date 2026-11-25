@@ -82,6 +82,39 @@ public sealed class CsacSpawnerSlot
 /// <see cref="MapObjectRegistry.LiveObjects"/> for message-6 broadcasts and, when attached,
 /// <see cref="EntityWorld"/> for damage and retirement.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Port boundary: retail installs a handler per type (8002AE54.c:56-69,82-91).
+/// <see cref="Handler"/> records that choice, but world messages use the base lifecycle for
+/// direct hits and RPNS scoring, not the retail type state machines.
+/// </para>
+/// <para>
+/// Type 9: base retirement replaces the flyer's message-4 roll (one draw, plus three on
+/// tumbling; 80032F3C.c:74-101) and delayed death after ground impact (800324E0.c:242-295).
+/// Spawn heading/wander, target timers and airborne jitter also draw from the shared RNG
+/// (80032180.c:263-268, 800320E4.c:50-52, 800324E0.c:167-179,213-225,278-283,310-319).
+/// Thus later Cfun timer scripts (80049564.c:54-56) and random RPNS op 11 results
+/// (80069D68.c:297-305) can differ. Adding only the death roll cannot restore draw order
+/// without the per-frame targeting, motion and terrain-dependent impact.
+/// </para>
+/// <para>
+/// Type 8: no linked type-11 hit part (8002C584.c:280-301) forwards messages 11 and 14
+/// (8002DEA8.c:84-90). Only direct hits reach the parent, so hit counts and damage-script
+/// runs can differ; 16 of 32 CONFT records have nonempty damage scripts. Direct damage and
+/// the parent's scoring retire script remain wired; child health/flag sync and deferred death
+/// (8002D664.c:150-177) are not ported.
+/// </para>
+/// <para>
+/// Type 5: no rail-mover contact or animation-driven death sequence (800382B4.c:176-201,205-247).
+/// All 10 CONFT records have empty damage scripts and scoring retire scripts; the base path
+/// retains the latter without reproducing the contact behavior or the timing of death.
+/// </para>
+/// <para>
+/// Type 28: no mounted children are created, updated, synchronized with the parent's health
+/// and flags, or retired (800397AC.c:65-76, 800398EC.c:89-139). Only the parent's base damage
+/// and retirement are modeled; the class-5 behavior and mounted-part contact path are absent.
+/// </para>
+/// </remarks>
 public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject
 {
     public SpawnedCsacUnit(

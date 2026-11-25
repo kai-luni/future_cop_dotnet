@@ -215,7 +215,8 @@ public sealed class MountedTurret : IRegisteredMapObject
     /// 80039298.c:80 (<c>return obj-&gt;child != data</c>), 0 when <paramref name="data"/> is this
     /// part's own carrier, 1 for any other object. The plain <see cref="OnMessage(int,int,int)"/>
     /// carries no identity for <c>data</c>, so this overload is the faithful minimal shape and
-    /// delegates every other message to it.
+    /// delegates every other message to it. No PA mission uses type 20; a Csac of this type would
+    /// keep separate world health in <see cref="SpawnedCsacUnit"/>, which does not route messages 5 or 10 here.
     /// </summary>
     public int OnMessage(int message, object? data, int arg2, int arg3) =>
         message == 10 ? (ReferenceEquals(data, Carrier) ? 0 : 1) : OnMessage(message, arg2, arg3);

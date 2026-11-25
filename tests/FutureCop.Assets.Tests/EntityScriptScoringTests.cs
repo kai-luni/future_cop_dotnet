@@ -7,8 +7,10 @@ namespace FutureCop.Assets.Tests;
 
 /// <summary>
 /// A CONFT purchase enters the scene's targetable entity list (8006125C.c:74-76, 8004D4F8.c:56-59).
-/// A lethal hit retires the unit on the next frame (8002AA1C.c:114-121, 8004CE04.c:59-60), runs its
-/// RPNS script (8004D958.c:53-55) and removes it from the list (8004D598.c:46-54).
+/// For Csac 33 (type 9), the scene's base-handler substitute retires it on the frame after a
+/// lethal hit. Retail can tumble before retirement (80032F3C.c:74-101, 800324E0.c:242-295).
+/// This test checks the scene's retire script (8004D958.c:53-55) and removal (8004D598.c:46-54),
+/// not retail flyer timing.
 /// </summary>
 public class EntityScriptScoringTests
 {
