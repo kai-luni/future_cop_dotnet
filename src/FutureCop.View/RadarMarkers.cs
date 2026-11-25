@@ -266,11 +266,18 @@ public static class RadarMarkers
     /// <c>8005A9C4.c:109</c>: resolves the 16.16 radar X origin from <c>object-&gt;unkAC-&gt;unkC1</c>
     /// (<c>0x780000</c> for side 1, <c>0x280000</c> otherwise).
     /// </summary>
+    /// <param name="side">HUD side selector (<c>object-&gt;unkAC-&gt;unkC1</c>).</param>
+    /// <returns>
+    /// <see cref="RightSideOriginX"/> (<c>0x780000</c>) when <paramref name="side"/> is <c>1</c>;
+    /// otherwise <see cref="LeftSideOriginX"/> (<c>0x280000</c>).
+    /// </returns>
     public static int OriginXForSide(int side) => side == 1 ? RightSideOriginX : LeftSideOriginX;
 
     /// <summary>
     /// <c>8005A9C4.c:111</c>: computes the player heading line angle <c>-(s32)heading - 0x800</c>.
     /// </summary>
+    /// <param name="heading">Signed 16-bit entity heading (<c>object+0xB0</c>).</param>
+    /// <returns>Unmasked heading line angle <c>-(int)heading - 0x800</c>.</returns>
     public static int HeadingLineAngle(short heading) => unchecked(-(int)heading - HeadingLineAngleOffset);
 
     /// <summary>
@@ -280,6 +287,12 @@ public static class RadarMarkers
     /// <see cref="MechMath.SinCos"/>), with hard-coded tag <c>0x03000000</c> and code
     /// <c>0x40808080</c>.
     /// </summary>
+    /// <param name="origin">16.16 fixed-point radar X origin (<c>0x780000</c> or <c>0x280000</c> in retail).</param>
+    /// <param name="angle">Signed 4096-step angle passed to <see cref="MechMath.SinCos"/> (masked to 12 bits).</param>
+    /// <returns>
+    /// The PS1 <c>LINE_F2</c> <see cref="RadarLinePacket"/> with tag <c>0x03000000</c>, code
+    /// <c>0x40808080</c>, and screen-space endpoints at radii 24 and 30.
+    /// </returns>
     public static RadarLinePacket EmitAngledLine(int origin, int angle)
     {
         // 8005A740.c:47 - gSinCos(id, &first, &second); first = sine, second = cosine.
@@ -302,6 +315,9 @@ public static class RadarMarkers
     }
 
     /// <summary>Unsigned-angle convenience overload of <see cref="EmitAngledLine(int, int)"/>.</summary>
+    /// <param name="origin">16.16 fixed-point radar X origin.</param>
+    /// <param name="angle">Unsigned 4096-step angle passed to <see cref="MechMath.SinCos"/> (masked to 12 bits).</param>
+    /// <returns>The emitted PS1 <c>LINE_F2</c> <see cref="RadarLinePacket"/>.</returns>
     public static RadarLinePacket EmitAngledLine(int origin, uint angle) =>
         EmitAngledLine(origin, unchecked((int)angle));
 
@@ -309,6 +325,13 @@ public static class RadarMarkers
     /// Port of <c>func_8005A828</c> (<c>gEmitRadarTriangle</c>, <c>8005A828.c:47-89</c>) using the
     /// retail <c>D_8009AFB4</c> (<see cref="RadiusTable"/>) shape table.
     /// </summary>
+    /// <param name="origin">16.16 fixed-point radar X origin (<c>0x780000</c> or <c>0x280000</c> in retail).</param>
+    /// <param name="angle">Unsigned 4096-step rotation angle passed to <see cref="MechMath.SinCos"/> (masked to 12 bits).</param>
+    /// <param name="code">
+    /// PS1 <c>0x00BBGGRR</c> colour word (plus any optional upper GPU flag bits) OR-ed with
+    /// <see cref="PolyF3Opcode"/> (<c>0x20000000</c>).
+    /// </param>
+    /// <returns>The emitted PS1 <c>POLY_F3</c> <see cref="RadarTrianglePacket"/>.</returns>
     public static RadarTrianglePacket EmitRadarTriangle(int origin, uint angle, int code) =>
         EmitRadarTriangle(origin, angle, code, RadiusTable);
 
@@ -316,6 +339,13 @@ public static class RadarMarkers
     /// Signed-angle convenience overload of <see cref="EmitRadarTriangle(int, uint, int)"/> using the
     /// retail <c>D_8009AFB4</c> (<see cref="RadiusTable"/>) shape table.
     /// </summary>
+    /// <param name="origin">16.16 fixed-point radar X origin.</param>
+    /// <param name="angle">Signed 4096-step rotation angle, such as the output of <see cref="CheckRadarTargetBearing"/>.</param>
+    /// <param name="code">
+    /// PS1 <c>0x00BBGGRR</c> colour word (plus any optional upper GPU flag bits) OR-ed with
+    /// <see cref="PolyF3Opcode"/> (<c>0x20000000</c>).
+    /// </param>
+    /// <returns>The emitted PS1 <c>POLY_F3</c> <see cref="RadarTrianglePacket"/>.</returns>
     public static RadarTrianglePacket EmitRadarTriangle(int origin, int angle, int code) =>
         EmitRadarTriangle(origin, unchecked((uint)angle), code, RadiusTable);
 
@@ -325,6 +355,20 @@ public static class RadarMarkers
     /// convention via <c>func_8001846C</c> / <see cref="MechMath.SinCos"/>) and returns the exact
     /// PS1 <c>POLY_F3</c> packet fields written to <c>D_8009FA90</c>.
     /// </summary>
+    /// <param name="origin">16.16 fixed-point radar X origin (<c>0x780000</c> or <c>0x280000</c> in retail).</param>
+    /// <param name="angle">Unsigned 4096-step rotation angle passed to <see cref="MechMath.SinCos"/> (masked to 12 bits).</param>
+    /// <param name="code">
+    /// PS1 <c>0x00BBGGRR</c> colour word (plus any optional upper GPU flag bits) OR-ed with
+    /// <see cref="PolyF3Opcode"/> (<c>0x20000000</c>).
+    /// </param>
+    /// <param name="shapePoints">
+    /// At least 6 signed 16-bit values representing three <c>(x, y)</c> vertex pairs
+    /// (retail <c>D_8009AFB4</c> / <see cref="RadiusTable"/>).
+    /// </param>
+    /// <returns>
+    /// The PS1 <c>POLY_F3</c> <see cref="RadarTrianglePacket"/> with tag <c>0x04000000</c>,
+    /// code word <c>(uint)code | 0x20000000</c>, and the three rotated screen-space vertices.
+    /// </returns>
     public static RadarTrianglePacket EmitRadarTriangle(
         int origin,
         uint angle,
@@ -363,6 +407,14 @@ public static class RadarMarkers
     /// Convenience overload of <see cref="EmitRadarTriangle(int, uint, int, ReadOnlySpan{short})"/>
     /// for signed <c>s32</c> angles such as the output of <see cref="CheckRadarTargetBearing"/>.
     /// </summary>
+    /// <param name="origin">16.16 fixed-point radar X origin.</param>
+    /// <param name="angle">Signed 4096-step rotation angle.</param>
+    /// <param name="code">
+    /// PS1 <c>0x00BBGGRR</c> colour word (plus any optional upper GPU flag bits) OR-ed with
+    /// <see cref="PolyF3Opcode"/> (<c>0x20000000</c>).
+    /// </param>
+    /// <param name="shapePoints">At least 6 signed 16-bit values representing three <c>(x, y)</c> vertex pairs.</param>
+    /// <returns>The emitted PS1 <c>POLY_F3</c> <see cref="RadarTrianglePacket"/>.</returns>
     public static RadarTrianglePacket EmitRadarTriangle(
         int origin,
         int angle,
@@ -375,6 +427,17 @@ public static class RadarMarkers
     /// computes the relative bearing from <paramref name="reference"/> to a target at
     /// <c>(targetX, targetZ)</c> when either axis distance exceeds <c>0x2000</c>.
     /// </summary>
+    /// <param name="reference">Reference entity world <c>(X, Z)</c> and signed 16-bit <c>Heading</c> (<c>object+0x50/+0x58/+0xB0</c>).</param>
+    /// <param name="targetZ">Target world Z coordinate (matches retail argument order <c>z</c> before <c>x</c>, <c>8005A934.c:41</c>).</param>
+    /// <param name="targetX">Target world X coordinate.</param>
+    /// <param name="angle">
+    /// Receives the unmasked relative bearing <c>((gAtan2(dx, dz) &lt;&lt; 12) &gt;&gt; 12) - reference.Heading - 0x400</c>
+    /// when this method returns <see langword="true"/>; left unchanged when it returns <see langword="false"/>.
+    /// </param>
+    /// <returns>
+    /// <see langword="true"/> when <c>|targetZ - reference.Z| &gt; 0x2000</c> or
+    /// <c>|targetX - reference.X| &gt; 0x2000</c> (using MIPS branchless abs); otherwise <see langword="false"/>.
+    /// </returns>
     public static bool CheckRadarTargetBearing(RadarReference reference, int targetZ, int targetX, ref int angle)
     {
         unchecked
@@ -406,6 +469,14 @@ public static class RadarMarkers
     /// the retail <see cref="RadiusTable"/> (<c>D_8009AFB4</c>) and retail
     /// <see cref="MarkerColorTable"/> (<c>D_800A6F60</c>, <c>8004CAE4.c:57-105</c>).
     /// </summary>
+    /// <param name="reference">Reference entity world <c>(X, Z)</c> and signed 16-bit <c>Heading</c>.</param>
+    /// <param name="side">HUD side selector (<c>object-&gt;unkAC-&gt;unkC1</c>; <c>1</c> selects <see cref="RightSideOriginX"/>, otherwise <see cref="LeftSideOriginX"/>).</param>
+    /// <param name="frameTime">Retail <c>gFrameTime</c> (<c>D_8009FAA4</c>); triangles emit only while <c>(frameTime &amp; 0x180) != 0</c>.</param>
+    /// <param name="node">Optional marker node (<c>object-&gt;unkAC-&gt;unk300</c>) holding the 3-bit-strided active mask and up to 8 slots.</param>
+    /// <param name="playerCount">Active player count (<c>gPlayerCount</c>); 2P partner bearing requires <c>&gt;= 2</c>.</param>
+    /// <param name="sessionMode">Session mode (<c>session.unk5C</c>); 2P partner bearing requires <c>0</c>.</param>
+    /// <param name="otherPlayer">Optional 2P partner reference entity.</param>
+    /// <returns>A <see cref="RadarMarkerDrawResult"/> describing the resolved origin, line packets, and 0..8 triangle packets.</returns>
     public static RadarMarkerDrawResult DrawRadarMarkers(
         RadarReference reference,
         int side,
@@ -423,6 +494,15 @@ public static class RadarMarkers
     /// Pure port of <c>func_8005A9C4</c> (<c>gDrawRadarMarkers</c>, <c>8005A9C4.c:95-145</c>) with an
     /// explicit 32-entry colour table (<c>D_800A6F60</c>) and the retail <see cref="RadiusTable"/>.
     /// </summary>
+    /// <param name="reference">Reference entity world <c>(X, Z)</c> and signed 16-bit <c>Heading</c>.</param>
+    /// <param name="side">HUD side selector (<c>object-&gt;unkAC-&gt;unkC1</c>).</param>
+    /// <param name="frameTime">Retail <c>gFrameTime</c> (<c>D_8009FAA4</c>); triangles emit only while <c>(frameTime &amp; 0x180) != 0</c>.</param>
+    /// <param name="node">Optional marker node (<c>object-&gt;unkAC-&gt;unk300</c>).</param>
+    /// <param name="colorTable">At least 32 PS1 <c>0x00BBGGRR</c> entries (<c>D_800A6F60</c>), indexed by <c>slot.Flags &amp; 0x1F</c>.</param>
+    /// <param name="playerCount">Active player count (<c>gPlayerCount</c>); 2P partner bearing requires <c>&gt;= 2</c>.</param>
+    /// <param name="sessionMode">Session mode (<c>session.unk5C</c>); 2P partner bearing requires <c>0</c>.</param>
+    /// <param name="otherPlayer">Optional 2P partner reference entity.</param>
+    /// <returns>A <see cref="RadarMarkerDrawResult"/> describing the resolved origin, line packets, and 0..8 triangle packets.</returns>
     public static RadarMarkerDrawResult DrawRadarMarkers(
         RadarReference reference,
         int side,
@@ -447,6 +527,20 @@ public static class RadarMarkers
     /// (<c>0x249249</c>) to emit one <see cref="EmitRadarTriangle(int, int, int, ReadOnlySpan{short})"/>
     /// packet per active target that passes <see cref="CheckRadarTargetBearing"/>.
     /// </summary>
+    /// <param name="reference">Reference entity world <c>(X, Z)</c> and signed 16-bit <c>Heading</c>.</param>
+    /// <param name="side">HUD side selector (<c>object-&gt;unkAC-&gt;unkC1</c>; <c>1</c> selects <see cref="RightSideOriginX"/>, otherwise <see cref="LeftSideOriginX"/>).</param>
+    /// <param name="frameTime">Retail <c>gFrameTime</c> (<c>D_8009FAA4</c>); point-marker triangles emit only while <c>(frameTime &amp; 0x180) != 0</c>.</param>
+    /// <param name="node">Optional marker node (<c>object-&gt;unkAC-&gt;unk300</c>) carrying the 3-bit-strided active mask and up to 8 slots.</param>
+    /// <param name="colorTable">At least 32 PS1 <c>0x00BBGGRR</c> entries (<c>D_800A6F60</c>), indexed by <c>slot.Flags &amp; 0x1F</c>.</param>
+    /// <param name="shapePoints">At least 6 signed 16-bit values representing three <c>(x, y)</c> vertex pairs (<c>D_8009AFB4</c>).</param>
+    /// <param name="playerCount">Active player count (<c>gPlayerCount</c>); 2P partner bearing requires <c>&gt;= 2</c>.</param>
+    /// <param name="sessionMode">Session mode (<c>session.unk5C</c>); 2P partner bearing requires <c>0</c>.</param>
+    /// <param name="otherPlayer">Optional 2P partner reference entity.</param>
+    /// <returns>
+    /// A <see cref="RadarMarkerDrawResult"/> containing the resolved X origin, heading line angle and
+    /// <c>LINE_F2</c> packet, optional 2P partner bearing angle and <c>LINE_F2</c> packet, and 0..8
+    /// emitted <c>POLY_F3</c> target marker packets.
+    /// </returns>
     public static RadarMarkerDrawResult DrawRadarMarkers(
         RadarReference reference,
         int side,

@@ -46,6 +46,12 @@ public class MenuFlowTests
     private static MenuFlow NewFlow(string fe, SceneKind kind = SceneKind.Level) =>
         new MenuFlow(fe, kind, TextWriter.Null, TextWriter.Null, enableLevelMovement: true);
 
+    /// <summary>
+    /// Note on coverage limits: this case would also pass without passing <c>workingDirectory</c>,
+    /// because <c>MenuLabels.FindInstalledArchive</c> walks up from <c>programDirectory</c> and
+    /// resolves the same archive via that fallback. In addition, the actual startup wiring in
+    /// <c>tools/FcMainMenu/Program.cs:8-9</c> is not covered by this test.
+    /// </summary>
     [RetailFact]
     public void DefaultArchiveFromForeignDirectoryDrivesLabelsAudioAndScene()
     {

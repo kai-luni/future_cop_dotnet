@@ -416,11 +416,13 @@ public sealed class RadarMarkerTests
         //   Colour is the hard-coded LINE_F2 code 0x40808080 -> RGB (0x80, 0x80, 0x80): 8005A9C4.c:112
         //   passes 0xF8F8F8 as a third argument, but func_8005A740 takes two parameters and sets
         //   line->code = 0x40808080 (8005A740.c:52-53; prose at 8005A9C4.c:84-91).
-        // Active target in slot 0 at +X (PosA=0, PosB=0x20 -> X=0x4000, Z=0), flags=0:
+        // Active target in slot 0 at +X (PosA=0, PosB=0x20 -> X=0x4000, Z=0), flags=1:
+        //   MarkerColorTable[1] = 0x000000F8 (red, 8004CAE4.c:75), visible against black
+        //   (index 0 is 0x00000000 black and would not distinguish a drawn triangle from background).
         //   bearing = 0 -> vertices (64, 41), (70, 44), (64, 47) -> centroid (66, 44).
         var targetNode = new RadarMarkerNode(
             ActiveMask: 1u,
-            Slots: new[] { new RadarMarkerSlot(Flags: 0, PosA: 0, PosB: 0x20) });
+            Slots: new[] { new RadarMarkerSlot(Flags: 1, PosA: 0, PosB: 0x20) });
         var session = new HudSession { Mode = 0 };
 
         // 1. Player pointer only (target node absent, as in MenuFlow.RenderScene today).
@@ -443,11 +445,12 @@ public sealed class RadarMarkerTests
             Player = gameWithoutTargets.Player with { RadarMarkers = targetNode },
         };
         InGameHud.Paint(withTargets, gameWithTargets, session, new HudGlobals { FrameTime = 0x80 });
-        int expectedColor = RadarMarkers.MarkerColorTable[0];
+        int expectedColor = RadarMarkers.MarkerColorTable[1];
         var expectedRgb = (
             (byte)(expectedColor & 0xFF),
             (byte)((expectedColor >> 8) & 0xFF),
             (byte)((expectedColor >> 16) & 0xFF));
+        Assert.Equal((0xF8, 0x00, 0x00), expectedRgb);
         Assert.Equal((0x80, 0x80, 0x80), Pixel(withTargets, 14, 44));
         Assert.Equal(expectedRgb, Pixel(withTargets, 66, 44));
 
