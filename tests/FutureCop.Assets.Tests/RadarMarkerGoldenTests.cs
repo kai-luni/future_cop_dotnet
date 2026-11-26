@@ -7,7 +7,8 @@ namespace FutureCop.Assets.Tests;
 /// <summary>
 /// Parity test for <see cref="RadarMarkers"/> against the shared golden vectors in
 /// <c>tests/golden/radar-markers.vectors</c>, verified by the unchanged PS1 C of 8004CAE4
-/// (<c>D_800A6F60</c>), 8005A740 (<c>gEmitAngledLine</c>), 8005A828 (<c>gEmitRadarTriangle</c>),
+/// (<c>D_800A6F60</c>), 8004CC68 (<c>gUpdateMarkerPulseColors</c>, the per-frame pulse of
+/// <c>D_800A6F60[17..19]</c>), 8005A740 (<c>gEmitAngledLine</c>), 8005A828 (<c>gEmitRadarTriangle</c>),
 /// 8005A934 (<c>gCheckRadarTargetBearing</c>) and 8005A9C4 (<c>gDrawRadarMarkers</c>) via
 /// <c>tests/host/radar-markers/run.sh</c>. Field order and signedness follow
 /// <c>tests/host/radar-markers/harness.c</c>: origins, colours, masks, slot flags, tags and codes are
@@ -15,7 +16,7 @@ namespace FutureCop.Assets.Tests;
 /// </summary>
 public sealed class RadarMarkerGoldenTests
 {
-    private const int ExpectedCases = 83;
+    private const int ExpectedCases = 157;
 
     public static IEnumerable<object[]> Rows()
     {
@@ -32,6 +33,7 @@ public sealed class RadarMarkerGoldenTests
             bool shapeOk = words[0] switch
             {
                 "COLOR" => inputs == 1 && words.Length == arrow + 2,
+                "PULSE" => inputs == 2 && words.Length == arrow + 4,
                 "LINE" => inputs == 3 && words.Length == arrow + 7,
                 "TRI" => inputs == 4 && words.Length == arrow + 9,
                 "BEARING" => inputs == 7 && words.Length == arrow + 3,
@@ -50,10 +52,26 @@ public sealed class RadarMarkerGoldenTests
         var rows = Rows().ToList();
         Assert.Equal(ExpectedCases, rows.Count);
         Assert.Equal(32, rows.Count(r => (string)r[0] == "COLOR"));
+        Assert.Equal(74, rows.Count(r => (string)r[0] == "PULSE"));
         Assert.Equal(12, rows.Count(r => (string)r[0] == "LINE"));
         Assert.Equal(12, rows.Count(r => (string)r[0] == "TRI"));
         Assert.Equal(13, rows.Count(r => (string)r[0] == "BEARING"));
         Assert.Equal(14, rows.Count(r => (string)r[0] == "DRAW"));
+    }
+
+    /// <summary>
+    /// The PULSE block must cover every phase of <c>(gFrameTime &gt;&gt; 3) &amp; 0x3F</c>
+    /// (<c>8004CC68.c:36-37</c>) exactly once, so a truncated fixture cannot pass on phases 0..N.
+    /// </summary>
+    [Fact]
+    public void PulseCasesCoverAllSixtyFourPhases()
+    {
+        var phases = Rows()
+            .Where(r => (string)r[0] == "PULSE")
+            .Select(r => PulseInput((string)r[2]).FrameTime >> 3 & RadarMarkers.PulsePhaseMask)
+            .ToList();
+        Assert.Equal(64, phases.Distinct().Count());
+        Assert.Equal(Enumerable.Range(0, 64), phases.Distinct().OrderBy(p => p));
     }
 
     [Theory]
@@ -72,6 +90,24 @@ public sealed class RadarMarkerGoldenTests
                 // harness.c:313-336 - COLOR idx(dec) -> D_800A6F60[idx](hex).
                 int index = Dec(name);
                 Assert.Equal(expected.Hex(), unchecked((uint)RadarMarkers.MarkerColorTable[index]));
+                break;
+            }
+            case "PULSE":
+            {
+                // harness.c PULSE - PULSE name frameTime(dec) -> D_800A6F60[17] D_800A6F60[18]
+                // D_800A6F60[19] (hex), read straight from the unmodified func_8004CC68 (8004CC68.c:45-47).
+                var (frameTime, pulseName) = PulseInput(line);
+                Assert.Equal(name, pulseName);
+                var colors = new int[RadarMarkers.PulseColorCount];
+                RadarMarkers.MarkerPulseColors(frameTime, colors);
+                var table = RadarMarkers.ResolveMarkerColorTable(frameTime);
+                for (int i = 0; i < RadarMarkers.PulseColorCount; i++)
+                {
+                    uint want = expected.Hex();
+                    Assert.True(want == unchecked((uint)colors[i]),
+                        $"{name} (D_8009FAA4={frameTime}) D_800A6F60[{RadarMarkers.PulseFirstColorIndex + i}]: expected {want:X8} got {colors[i]:X8}");
+                    Assert.Equal(unchecked((uint)table[RadarMarkers.PulseFirstColorIndex + i]), want);
+                }
                 break;
             }
             case "LINE":
@@ -184,6 +220,16 @@ public sealed class RadarMarkerGoldenTests
 
     private static int Dec(string word) =>
         int.Parse(word, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture);
+
+    /// <summary>Reads the <c>PULSE name frameTime</c> inputs of one PULSE row (<c>harness.c</c> PULSE case).</summary>
+    private static (int FrameTime, string Name) PulseInput(string line)
+    {
+        var words = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        int arrow = Array.IndexOf(words, "->");
+        if (words[0] != "PULSE" || arrow != 3)
+            throw new FormatException($"Invalid radar-markers PULSE vector: {line}");
+        return (Dec(words[2]), words[1]);
+    }
 
     private sealed class Cursor
     {
