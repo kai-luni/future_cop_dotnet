@@ -799,11 +799,12 @@ public sealed class PurchasePadSystem
         // 80031C74.c:106-108 runs node->script only when it is non-zero: a node without a script
         // (CONFT zone 106, slot 0 = 0) hits its box and returns 1 without touching the VM. The node
         // still passed the box test of :84-100, so it returns 1 (:115); only the script is skipped.
-        // C evidence: struct Node (800319D4.c:26-41) has no script field, and gLoadMapZone (:104-151)
-        // fills f12 from the request's +0x24, f18 from its +0x28 and f14 from +0x1B, but no script
-        // slot; node->script is the request's f8 (+0x18), with no writer outside the wrapper's own
-        // pointer field (Obj, :10-16). gLoadMapZone never opens Cact for the node, so the Cact +0x24
-        // word (0 for 106, 0x74 for 234, 0x6C for 5) is how this port models "script present".
+        // C evidence: node->script sits at +0x1C (80031C74.c:34), and gLoadMapZone (800319D4.c:104-151)
+        // fills it with a constant: sw $zero, 0x1C($s1) (asm/us/main.s:40105). node+0x18 is a different
+        // field, f18 = obj->f24 (asm/us/main.s:40047-40052). So in retail node->script is always 0 and
+        // :106-108 never runs a script. This port models the retail node script through the record's
+        // Cact slot 0 (0 for 106, 0x74 for 234, 0x6C for 5); retail itself always zeroes node->script,
+        // so the Cact +0x24 -> node->script mapping is a port bridge and has no retail counterpart.
         var result = pad.Script0Offset == 0
             ? new PurchaseResult(true, false, 0, before, before)
             : RunPadScript(pad.Script0Offset, target.RecordId, before, RpnsVmState.SessionScoreP1);

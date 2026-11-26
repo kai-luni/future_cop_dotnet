@@ -182,6 +182,11 @@ public class LevelSceneGapTests
         Assert.Equal(100, words0[RpnsVmState.SessionHelisP1]);
         var bought = scene.ScoreSession(new HudSession());
         Assert.Equal((0, 100, 0, 0), (bought.Count1, bought.Count2, bought.Count3, bought.Count4));
+        // The score slot and the score session word are the untouched observable of this walk: the
+        // value of 5 set above passes SyncFromMatchScore (LevelScene:386) into word 25 and back out
+        // (:413) without the script (there is none, 80031C74.c:106-108) changing it.
+        Assert.Equal(5, pads.VmState.GameSession[RpnsVmState.SessionScoreP1]);
+        Assert.Equal(5, bought.Score0);
 
         var words = scene.PurchasePads.VmState.GameSession;
         words[RpnsVmState.SessionTanksP1] = 19;                         // the < 20 cap edge

@@ -195,8 +195,8 @@ public class LevelSceneMapZoneTargetTests
     /// <c>op 21</c> (gGameSession[a]++, 80069D68.c:243-245) runs on the -0x19 word and the branch
     /// then lands on another <c>op 1/op 9/op 20 04</c> guard; the far push of the body is what feeds
     /// a later <c>op 21</c>. Measured: <c>gGameSession[25]</c> is untouched, and the two zones differ
-    /// in exactly one word — zone 5 bumps <c>gScriptVmVars[25]</c> (op 24) and zone 240
-    /// <c>gScriptVmVars[16]</c>, over the same <c>[6..9] = 373/816/143/196</c> and <c>[25] = 5</c>.
+    /// in exactly one VM var word (op 24) — zone 5 bumps <c>gScriptVmVars[25]</c> and zone 240
+    /// <c>gScriptVmVars[16]</c>.
     /// That word is the observable of these twelve zones; the cached target and the release alone do
     /// not prove the script ran.
     /// </summary>
