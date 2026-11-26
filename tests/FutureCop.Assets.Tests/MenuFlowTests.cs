@@ -158,6 +158,132 @@ public class MenuFlowTests
         }
     }
 
+    /// <summary>
+    /// Finding 5 regression: passing an explicit mission path such as <c>PA/CONFT.MIS</c> must not
+    /// make scene/audio select <c>PA/CONFT.MIS</c> on mere file existence while labels validate and
+    /// fall through to <c>CW/FE.MIS</c>. Tests both <see cref="MenuArchive.Resolve"/> and the actual
+    /// launcher handoff (<see cref="MenuArchive.PrepareLaunch"/>) used by <c>tools/FcMainMenu/Program.cs</c>.
+    /// </summary>
+    [RetailFact]
+    public void LauncherHandoffWithExplicitMissionPathSharesValidatedFrontEndArchive()
+    {
+        string sourceArchive = FrontEndPath()!;
+        string sourceMission = Path.Combine(LevelTerrainTests.FindDisc()!, "PA", "CONFT.MIS");
+        string root = Path.Combine(Path.GetTempPath(), "fc-menu-explicit-mission-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string program = Path.Combine(root, "tools", "FcMainMenu", "bin", "Debug", "net10.0");
+            string launchDir = Path.Combine(root, "elsewhere");
+            string disc = Path.Combine(root, "build", "disc", "files");
+            Directory.CreateDirectory(program);
+            Directory.CreateDirectory(launchDir);
+            Directory.CreateDirectory(Path.Combine(disc, "CW"));
+            Directory.CreateDirectory(Path.Combine(disc, "PA"));
+            string archive = Path.Combine(disc, "CW", "FE.MIS");
+            string mission = Path.Combine(disc, "PA", "CONFT.MIS");
+            File.Copy(sourceArchive, archive);
+            File.Copy(sourceMission, mission);
+
+            // Explicit PA/CONFT.MIS exists on disk, so existence-only Resolve used to pick it.
+            Assert.Equal(archive, MenuArchive.Resolve(mission, program, workingDirectory: launchDir));
+
+            using var output = new StringWriter();
+            using var errors = new StringWriter();
+            var launch = MenuArchive.PrepareLaunch(mission, sceneKindEnv: null, program, output, errors, workingDirectory: launchDir);
+
+            Assert.Equal(archive, launch.Labels.ArchivePath);
+            Assert.Equal(archive, launch.AudioArchivePath);
+            Assert.Null(launch.Labels.UnavailablePath);
+            Assert.Equal("", errors.ToString());
+            Assert.NotEqual("fallback", launch.Labels.Lookup(0x2710, "fallback"));
+            Assert.Contains((byte)0x48, SoundBank.FromMisFile(launch.AudioArchivePath!).HighTable.Keys);
+            Assert.NotEmpty(MenuMusic.Decode(File.ReadAllBytes(launch.AudioArchivePath!)));
+
+            ToLoadout(launch.Flow);
+            launch.Flow.HandleKey(Enter);
+            Assert.Equal(MenuScreen.Scene, launch.Flow.Screen);
+            Assert.Equal(mission, launch.Flow.Level?.MissionPath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Finding 5 regression: launcher handoff skips an explicit mission in a foreign directory or a
+    /// corrupt local <c>FE.MIS</c> in favour of the validated installed <c>CW/FE.MIS</c> for labels,
+    /// scene, and audio alike; when no valid archive exists anywhere, warnings and the unavailable
+    /// notice are preserved and audio is disabled.
+    /// </summary>
+    [RetailFact]
+    public void LauncherHandoffSkipsCorruptAndForeignArchivesAndPreservesMissingWarnings()
+    {
+        string sourceArchive = FrontEndPath()!;
+        string sourceMission = Path.Combine(LevelTerrainTests.FindDisc()!, "PA", "CONFT.MIS");
+        string root = Path.Combine(Path.GetTempPath(), "fc-menu-handoff-fallbacks-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string program = Path.Combine(root, "project", "tools", "FcMainMenu", "bin");
+            string launchDir = Path.Combine(root, "elsewhere");
+            string disc = Path.Combine(root, "project", "build", "disc", "files");
+            Directory.CreateDirectory(program);
+            Directory.CreateDirectory(launchDir);
+            Directory.CreateDirectory(Path.Combine(disc, "CW"));
+            Directory.CreateDirectory(Path.Combine(disc, "PA"));
+            string installedArchive = Path.Combine(disc, "CW", "FE.MIS");
+            string installedMission = Path.Combine(disc, "PA", "CONFT.MIS");
+            File.Copy(sourceArchive, installedArchive);
+            File.Copy(sourceMission, installedMission);
+
+            // 1) Explicit CONFT.MIS in a foreign directory with no sibling CW/FE.MIS -> falls through to installed FE.MIS.
+            string foreignMission = Path.Combine(launchDir, "CONFT.MIS");
+            File.Copy(sourceMission, foreignMission);
+            using (var errors = new StringWriter())
+            {
+                var launch = MenuArchive.PrepareLaunch(foreignMission, null, program, TextWriter.Null, errors, workingDirectory: launchDir);
+                Assert.Equal(installedArchive, launch.Labels.ArchivePath);
+                Assert.Equal(installedArchive, launch.AudioArchivePath);
+                Assert.Null(launch.Labels.UnavailablePath);
+                Assert.Equal("", errors.ToString());
+                ToLoadout(launch.Flow);
+                launch.Flow.HandleKey(Enter);
+                Assert.Equal(MenuScreen.Scene, launch.Flow.Screen);
+                Assert.Equal(installedMission, launch.Flow.Level?.MissionPath);
+            }
+
+            // 2) Corrupt local FE.MIS at cwd default -> skipped in favour of installed FE.MIS.
+            string corruptLocal = Path.Combine(launchDir, "build", "disc", "files", "CW", "FE.MIS");
+            Directory.CreateDirectory(Path.GetDirectoryName(corruptLocal)!);
+            File.WriteAllText(corruptLocal, "corrupt archive");
+            Assert.Equal(installedArchive, MenuArchive.Resolve(null, program, workingDirectory: launchDir));
+            using (var errors = new StringWriter())
+            {
+                var launch = MenuArchive.PrepareLaunch(null, null, program, TextWriter.Null, errors, workingDirectory: launchDir);
+                Assert.Equal(installedArchive, launch.Labels.ArchivePath);
+                Assert.Equal(installedArchive, launch.AudioArchivePath);
+                Assert.Null(launch.Labels.UnavailablePath);
+                Assert.Equal("", errors.ToString());
+            }
+
+            // 3) No valid archive anywhere -> preserves stderr warning and UnavailablePath notice, disables audio.
+            string emptyProgram = Directory.CreateDirectory(Path.Combine(root, "isolated", "bin")).FullName;
+            string emptyLaunch = Directory.CreateDirectory(Path.Combine(root, "isolated", "cwd")).FullName;
+            Assert.Null(MenuArchive.Resolve(null, emptyProgram, workingDirectory: emptyLaunch));
+            using (var errors = new StringWriter())
+            {
+                var launch = MenuArchive.PrepareLaunch(null, null, emptyProgram, TextWriter.Null, errors, workingDirectory: emptyLaunch);
+                Assert.StartsWith("Menu text unavailable: ", errors.ToString());
+                Assert.NotNull(launch.Labels.UnavailablePath);
+                Assert.Null(launch.AudioArchivePath);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [RetailFact]
     public void SceneStartConfirmIsIssuedAfterLevelLoading()
     {

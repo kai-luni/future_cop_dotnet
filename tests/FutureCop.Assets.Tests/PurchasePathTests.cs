@@ -284,7 +284,7 @@ public sealed class PurchasePathTests
 
         // A busy candidate (hover mode, unkAC->unk40 != 0) is rejected by the flag-4 gate of
         // 80031C74.c:102: the node caches it, its box test runs and nothing fires.
-        var player = new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8, busy: true);
+        var player = new PlayerTarget(12, pad.WorldX, pad.WorldY, pad.WorldZ, busy: true);
         scene.AddMapZoneCandidate(player);
         Assert.True(ReferenceEquals(player, scene.MapZoneTargetOf(pad)));
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
@@ -339,7 +339,7 @@ public sealed class PurchasePathTests
 
         // The walker itself is the node-12 candidate (obj+0x14 of the player entity is its record id
         // 12, PlayerTarget), standing on the pad centre.
-        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8));
+        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX, pad.WorldY, pad.WorldZ));
         Assert.Equal(12, scene.MapZoneTargetOf(pad)?.RecordId);
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
         var fire = pad.LastFire ?? throw new InvalidOperationException("zone 106 did not fire");

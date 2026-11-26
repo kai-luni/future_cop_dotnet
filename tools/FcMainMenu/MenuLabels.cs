@@ -6,21 +6,10 @@ internal sealed record MenuLabels(string ArchivePath, Func<ushort, string, strin
 {
     public static MenuLabels Load(string? path, string programDirectory, TextWriter error, string? workingDirectory = null)
     {
-        // Same candidates, in the same order, that scene and audio read (tools/FcMainMenu/MenuArchive.cs).
-        string[] archives = MenuArchive.Candidates(path, programDirectory, workingDirectory).ToArray();
-        var failures = new List<string>();
-        foreach (string archive in archives)
-        {
-            try
-            {
-                var text = FrontEndText.FromMisFile(archive);
-                return new MenuLabels(archive, (id, fallback) => SingleLine(text.Lookup(id) ?? fallback), null);
-            }
-            catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
-            {
-                failures.Add($"{archive}: {exception.Message}");
-            }
-        }
+        // Same validated candidate lookup that scene and audio share (tools/FcMainMenu/MenuArchive.cs).
+        var (archive, text, archives, failures) = MenuArchive.TryLoad(path, programDirectory, workingDirectory);
+        if (archive != null && text != null)
+            return new MenuLabels(archive, (id, fallback) => SingleLine(text.Lookup(id) ?? fallback), null);
 
         error.WriteLine(MenuArchive.FailureMessage(failures));
         // Path the notice points at, as selected before the resolution moved to MenuArchive: the

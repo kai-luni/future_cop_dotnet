@@ -5,16 +5,16 @@ using FutureCop.View;
 using FcMainMenu;
 
 const int width = 640, height = 480;
-var labels = MenuLabels.Load(args.FirstOrDefault(), AppContext.BaseDirectory, Console.Error);
-// Scene, labels and audio read the same archive: the path is resolved from the program directory
-// (MenuArchive walks up to build/disc/files/CW/FE.MIS), not from the working directory we start in.
-string? path = MenuArchive.Resolve(args.FirstOrDefault(), AppContext.BaseDirectory) ?? labels.ArchivePath;
-var flow = new MenuFlow(path, MenuFlow.SceneKindFrom(Environment.GetEnvironmentVariable("FC_MENU_SCENE")),
-    Console.Out, Console.Error, enableLevelMovement: true);
+// Scene, labels and audio share one validated archive resolution (MenuArchive.PrepareLaunch), so an
+// explicit PA/CONFT.MIS or corrupt local file falls through to CW/FE.MIS consistently for all three.
+var launch = MenuArchive.PrepareLaunch(args.FirstOrDefault(), Environment.GetEnvironmentVariable("FC_MENU_SCENE"),
+    AppContext.BaseDirectory, Console.Out, Console.Error);
+var labels = launch.Labels;
+var flow = launch.Flow;
 var menu = flow.Menu;
 using var window = MenuWindow.Open(width, height);
 if (window == null) { Console.Error.WriteLine("Cannot open X11 display."); return; }
-MenuAudio? audio = labels.UnavailablePath == null ? MenuAudio.TryStart(path) : null;
+MenuAudio? audio = launch.AudioArchivePath != null ? MenuAudio.TryStart(launch.AudioArchivePath) : null;
 SoundMixer? frontEndMixer = audio?.Mixer;
 LevelAudio? levelAudio = null;
 flow.SceneEntered += () => {
@@ -25,7 +25,7 @@ flow.SceneEntered += () => {
 };
 flow.SceneLeft += () => {
     levelAudio?.Dispose(); levelAudio = null;
-    audio = labels.UnavailablePath == null ? MenuAudio.TryStart(path) : null;
+    audio = launch.AudioArchivePath != null ? MenuAudio.TryStart(launch.AudioArchivePath) : null;
     frontEndMixer = audio?.Mixer ?? frontEndMixer;
 };
 flow.MenuSoundTriggered += id => audio?.PlayMenuSound(id);
