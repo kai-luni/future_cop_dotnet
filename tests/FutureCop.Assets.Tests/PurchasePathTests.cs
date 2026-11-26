@@ -127,12 +127,12 @@ public sealed class PurchasePathTests
 
         // Hover mode (unkAC->unk40 != 0) must not trigger the pad (80031C74.c:102)
         purchase.VmState.GameSession[RpnsVmState.SessionScoreP1] = 5;
-        var hoverRes = purchase.TryTriggerPad(heliPad, playerEntityId: 12, isHoverMode: true);
+        var hoverRes = purchase.TryTriggerPad(heliPad, new PlayerTarget(12, 0, 0, 0, 0, busy: true));
         Assert.False(hoverRes.Triggered);
         Assert.Equal(5, purchase.VmState.GameSession[RpnsVmState.SessionScoreP1]);
 
         // Walker mode triggers purchase: deducts 1, increments P1 helis, queues burst on Csac 34
-        var walkRes = purchase.TryTriggerPad(heliPad, playerEntityId: 12, isHoverMode: false);
+        var walkRes = purchase.TryTriggerPad(heliPad, new PlayerTarget(12, 0, 0, 0, 0, busy: false));
         Assert.True(walkRes.Triggered);
         Assert.True(walkRes.Accepted);
         Assert.Equal(RpnsVmState.SfxPurchaseAccepted, walkRes.SfxId);
@@ -144,7 +144,7 @@ public sealed class PurchasePathTests
         // Main-base P1 tankpad (Cact 107, type 95, cost 1 -> ScriptVars[11]++ -> Cfun T18 -> Csac 75)
         // T18 has raw period 202 -> scaled 202 * 5 = 1010 (80049420.c:85-92), fires only at remaining < 0 (80049564.c:51).
         var tankPad = purchase.FindPad(107)!;
-        var tankRes = purchase.TryTriggerPad(tankPad, playerEntityId: 12, isHoverMode: false);
+        var tankRes = purchase.TryTriggerPad(tankPad, new PlayerTarget(12, 0, 0, 0, 0, busy: false));
         Assert.True(tankRes.Accepted);
         Assert.Equal(3, tankRes.ScoreAfter);
         Assert.Equal(1, purchase.VmState.ScriptVars[11]);
@@ -170,7 +170,7 @@ public sealed class PurchasePathTests
         Assert.Equal(5, purchase.VmState.GameSession[RpnsVmState.SessionScoreP1]);
 
         // Now trigger outpost pad (cost 2)
-        var outRes = purchase.TryTriggerPad(outpostPad, playerEntityId: 12, isHoverMode: false, frameTime: 100);
+        var outRes = purchase.TryTriggerPad(outpostPad, new PlayerTarget(12, 0, 0, 0, 0, busy: false), frameTime: 100);
         Assert.True(outRes.Accepted);
         Assert.Equal(3, outRes.ScoreAfter);
         Assert.Equal(1, purchase.VmState.ScriptVars[0]);
@@ -180,7 +180,7 @@ public sealed class PurchasePathTests
         Assert.False(dreadPad.IsEnabled);
         purchase.ApplyPadCommand7A(dreadPad, arg: 1);
         purchase.VmState.GameSession[RpnsVmState.SessionScoreP1] = 50;
-        var dreadRes = purchase.TryTriggerPad(dreadPad, playerEntityId: 12, isHoverMode: false, frameTime: 200);
+        var dreadRes = purchase.TryTriggerPad(dreadPad, new PlayerTarget(12, 0, 0, 0, 0, busy: false), frameTime: 200);
         Assert.True(dreadRes.Accepted);
         Assert.Equal(0, dreadRes.ScoreAfter);
         Assert.Equal(1, purchase.VmState.ScriptVars[18]);
@@ -199,7 +199,7 @@ public sealed class PurchasePathTests
         score.Score[1] = 7;
 
         sys.SyncFromMatchScore(score);
-        var res = sys.TryTriggerPad(pad, playerEntityId: 12, isHoverMode: false);
+        var res = sys.TryTriggerPad(pad, new PlayerTarget(12, 0, 0, 0, 0, busy: false));
         sys.SyncToMatchScore(score);
 
         Assert.True(res.Accepted);
@@ -207,34 +207,72 @@ public sealed class PurchasePathTests
         Assert.Equal(7, score.Score[1]);
     }
 
+    /// <summary>
+    /// The scene walk of a map zone (func_80031DE8, 80031DE8.c:85-204): node 106 caches a D_800A8F90
+    /// candidate of its node id 12 (:119-144, 106 is <c>id == 12</c> at tACT +0x1C, 800319D4.c:137),
+    /// tests it against its box every frame (:159-168) and runs <c>Cact</c> 106's slot-0 script
+    /// (:106-108) on a hit. The script spends 1 (<c>cost 1</c> of the helipad), queues the burst on
+    /// Csac 34 and increments the P1 heli counter, which the drain of 800616A0 turns into the unit.
+    /// Zone 234 (flags 2, no cost) shares the patch, so it fires its script in the same frames and
+    /// leaves the score alone; 106 supplies the observable through its own <see cref="PurchaseResult"/>.
+    /// The old test drove a hover walker over the pad and read the score: the player is only ever a
+    /// <i>candidate</i> of the scan now, never the tested target by its own right.
+    /// </summary>
     [RetailFact]
     public void SceneWalkerPurchaseSpawnsHelicopterInTheSameTick()
     {
         string path = LevelSceneRetirementTests.FindMission()!;
         var scene = new LevelScene(path) { EnableCsacSpawner = true };
         scene.EnableObjectives();
-        var pad = PurchasePadSystem.LoadFromMission(File.ReadAllBytes(path))!.FindPad(106)!;
+        var pads = scene.PurchasePads!;
+        var pad = pads.FindPad(106)!;
         var walker = new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 1 };
         scene.AttachWalker(walker);
         scene.Objectives!.Score.Score[0] = 5;
 
+        // A busy candidate (hover mode, unkAC->unk40 != 0) is rejected by the flag-4 gate of
+        // 80031C74.c:102: the node caches it, its box test runs and nothing is bought.
+        var player = new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8, busy: true);
+        scene.AddMapZoneCandidate(player);
+        Assert.True(ReferenceEquals(player, scene.MapZoneTargetOf(pad)));
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
         Assert.Equal(5, scene.ScoreSession(new HudSession()).Score0);
         Assert.DoesNotContain(scene.CsacSpawner!.SpawnedUnits, u => u.SourceSlot.Record.Id == 34);
+        Assert.Null(pad.LastFire);
 
+        // Walker form, same cached target: the box test fires (80031C74.c:106-108), Cact 106's script
+        // spends the point, counts the heli and queues Csac 34. The queue drains on the following
+        // update, because func_800616A0 runs ahead of the node walk of the same frame.
+        player.Busy = false;
         walker.Form = 0;
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
-        Assert.Equal(4, scene.ScoreSession(new HudSession()).Score0);
+        var fire = pad.LastFire ?? throw new InvalidOperationException("zone 106 did not fire");
+        Assert.Equal(12, pad.MapZoneTargetId);
+        Assert.Equal((5, 4), (fire.ScoreBefore, fire.ScoreAfter));
+        Assert.True(fire.Accepted);
+        var helis = pads.VmState.GameSession[RpnsVmState.SessionHelisP1];
+        Assert.InRange(helis, 1, 2);                                     // 106 and 234 may both count
+        Assert.Empty(scene.CsacSpawner.SpawnedUnits.Where(u => u.SourceSlot.Record.Id == 34));
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
         Assert.Single(scene.CsacSpawner.SpawnedUnits.Where(u => u.SourceSlot.Record.Id == 34));
+        Assert.False(scene.IsMapZoneReleased(pad));                      // flags 2: the node stays linked
     }
 
+    /// <summary>
+    /// The drawn frame after the purchase: the scene renders the spawned Csac 34 unit only once it is
+    /// inside the camera, and the HUD session of that frame carries the spent points (80031C74.c:106-108
+    /// through the RPNS script) and the play mode. The drain frame after the hit is a frame of the
+    /// stay node as well: zones 106 and 234 both stand on the helipad patch, both cache the node-12
+    /// candidate and both fire it, so the session reads 3.
+    /// </summary>
     [RetailFact]
     public void SceneDrawsBoughtUnitPadsAndScoreSession()
     {
         string path = LevelSceneRetirementTests.FindMission()!;
         var scene = new LevelScene(path) { EnableCsacSpawner = true };
         scene.EnableObjectives();
-        var pad = PurchasePadSystem.LoadFromMission(File.ReadAllBytes(path))!.FindPad(106)!;
+        var pads = scene.PurchasePads!;
+        var pad = pads.FindPad(106)!;
         var walker = new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 0 };
         scene.AttachWalker(walker);
         scene.Objectives!.Score.Score[0] = 5;
@@ -243,6 +281,16 @@ public sealed class PurchasePathTests
         Assert.Equal(0, scene.SpawnedUnitPrimitives);
         Assert.True(scene.PadMarkerLines > 0, "the pad under the walker produced no marker lines");
 
+        // The walker itself is the node-12 candidate (obj+0x14 of the player entity is its record id
+        // 12, PlayerTarget), standing on the pad centre.
+        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8));
+        Assert.Equal(12, scene.MapZoneTargetOf(pad)?.RecordId);
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        var fire = pad.LastFire ?? throw new InvalidOperationException("zone 106 did not fire");
+        Assert.Equal((5, 4), (fire.ScoreBefore, fire.ScoreAfter));
+
+        // The burst of the fired frame drains on the next update, which fires the stay node again
+        // (800616A0 ahead of the node walk, 80031DE8.c:90).
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
         var unit = Assert.Single(scene.CsacSpawner!.SpawnedUnits.Where(u => u.SourceSlot.Record.Id == 34));
         walker.X = unit.X; walker.Y = unit.Y; walker.Z = unit.Z;
@@ -251,7 +299,8 @@ public sealed class PurchasePathTests
         Assert.True(scene.SpawnedUnitPrimitives > 0, "the bought unit produced no rendered faces");
 
         var session = scene.ScoreSession(new HudSession());
-        Assert.Equal((1, 4), (session.Mode, session.Score0));
+        Assert.Equal((1, 3), (session.Mode, session.Score0));
+        Assert.InRange(pads.VmState.GameSession[RpnsVmState.SessionHelisP1], 1, 2);
     }
 
     [RetailFact]
@@ -536,7 +585,7 @@ public sealed class PurchasePathTests
         pads.VmState.GameSession[RpnsVmState.SessionScoreP2] = 100;
 
         // Exercise the east-side branch of 152 -> 149 -> 153 with the retail P2 tag.
-        Assert.True(pads.TryTriggerPad(pads.FindPad(152)!, playerEntityId: 16, isHoverMode: false).Triggered);
+        Assert.True(pads.TryTriggerPad(pads.FindPad(152)!, new PlayerTarget(16, 0, 0, 0, 0, busy: false)).Triggered);
         Assert.True(helipad.IsEnabled);
         var session = scene.ScoreSession(new HudSession());
         Assert.Equal((0, 1), (session.Total1, session.Total2));

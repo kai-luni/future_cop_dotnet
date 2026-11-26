@@ -119,6 +119,15 @@ public class LevelSceneGapTests
         scene.AttachWalker(new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 0 });
         scene.Objectives!.Score.Score[0] = 5;
 
+        // func_80031DE8 never tests the player: the node selects its own target out of D_800A8F90
+        // (80031DE8.c:119-144) and this node's id is 12, i.e. the record id of the P1 player entity.
+        // The old test relied on the walker standing on the zone; the player now enters the scan as
+        // the candidate func_80031DE8 would list, standing in the zone centre (octile distance 0).
+        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8));
+        Assert.Equal(12, scene.MapZoneTargetOf(pad)?.RecordId);
+
+        // The loader timer of the node is a random byte (800319D4.c:142); the box test runs every
+        // frame the cached target exists (:159-168), so the three fired frames need no rescan.
         for (int frame = 0; frame < 3; frame++)
             scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
 
@@ -146,7 +155,11 @@ public class LevelSceneGapTests
         var start = scene.ScoreSession(new HudSession());
         Assert.Equal((0, 0, 0, 0), (start.Count1, start.Count2, start.Count3, start.Count4));
 
-        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);            // the walker buys one heli
+        // Node 106 selects a D_800A8F90 candidate of its own node id 12 (80031DE8.c:121-140); the P1
+        // player entity is such a candidate and stands in the zone centre. The box test of
+        // 80031C74.c:84-108 then runs on that cached target every frame and buys one heli.
+        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8));
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
         var bought = scene.ScoreSession(new HudSession());
         Assert.Equal((0, 1, 0, 0), (bought.Count1, bought.Count2, bought.Count3, bought.Count4));
         Assert.Equal(4, bought.Score0);

@@ -115,7 +115,7 @@ public sealed class CsacSpawnerSlot
 /// and retirement are modeled; the class-5 behavior and mounted-part contact path are absent.
 /// </para>
 /// </remarks>
-public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject
+public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNodeId
 {
     public SpawnedCsacUnit(
         int id,
@@ -153,6 +153,30 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject
 
     /// <inheritdoc/>
     public override (int X, int Z) GroundPosition => (X, Z);
+
+    // The scan fields of struct Target80031DE8 (80031DE8.c:6-15) that a spawned unit exposes: id at
+    // +0x08 (which the loader also copies to the node id at +0x14, see PlayerTarget), type at +0x16
+    // and the position at +0x50/+0x58 in C units, so the scan of :121-134 reads it like any entity.
+    /// <inheritdoc/>
+    int ICsacNodeId.RecordId => RecordId;
+
+    /// <inheritdoc/>
+    short ICsacNodeId.NodeId => unchecked((short)RecordId);
+
+    /// <inheritdoc/>
+    int ICsacNodeId.DispatchType => DispatchType;
+
+    /// <inheritdoc/>
+    int ICsacNodeId.X => X;
+
+    /// <inheritdoc/>
+    int ICsacNodeId.Y => Y;
+
+    /// <inheritdoc/>
+    int ICsacNodeId.Z => Z;
+
+    /// <summary>obj+0x68 of a Csac unit: the port has no model instance radius (0, like PlayerTarget).</summary>
+    int ICsacNodeId.Radius => 0;
 
     /// <inheritdoc/>
     public override int HandleMessage(int message, EntityWorld world, object? data) =>
