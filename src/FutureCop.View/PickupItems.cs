@@ -25,7 +25,9 @@ namespace FutureCop.View;
 /// Drawing is left to the caller: the descriptor names a Cobj through its aRSL list
 /// (<see cref="WeaponPickup.ModelId"/>, e.g. 23/24/25/57 in CONFT), so a scene that already walks
 /// <see cref="MisFile.Models"/> can place that model at <see cref="WeaponPickup.X"/>/<see
-/// cref="WeaponPickup.Y"/>/<see cref="WeaponPickup.Z"/> and skip the collected ones. This type
+/// cref="WeaponPickup.Y"/>/<see cref="WeaponPickup.Z"/> and skip the collected ones. A record whose
+/// aRSL list carries no Cobj entry has <see cref="WeaponPickups.NoModel"/> and draws no model at
+/// all, the null instance of func_8002ACB4:60-62; it must not fall back on another id. This type
 /// deliberately owns no renderer, so it stays usable from the software and the GPU path alike.
 /// </para>
 /// </remarks>

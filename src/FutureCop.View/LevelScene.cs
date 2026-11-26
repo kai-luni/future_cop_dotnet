@@ -627,6 +627,12 @@ public sealed class LevelScene
     /// </summary>
     public int SpawnedUnitPrimitives { get; private set; }
 
+    /// <summary>
+    /// Faces the last <see cref="Render"/> drew for the live weapon pickups; the models are the ones
+    /// <see cref="DrawnPickupPlacements"/> lists.
+    /// </summary>
+    public int PickupPrimitives { get; private set; }
+
     /// <summary>Outline lines the last <see cref="Render"/> drew for the purchase pads (viewer markers).</summary>
     public int PadMarkerLines { get; private set; }
 
@@ -1031,9 +1037,37 @@ public sealed class LevelScene
     /// <summary>Local y range of the assembled walker in model units (min, max).</summary>
     public (double Min, double Max) MechBounds { get; private set; }
 
+    /// <summary>
+    /// World placements of the pickups the last <see cref="Render"/> drew: exactly one entry per live
+    /// <see cref="WeaponPickup"/>, in archive order. This is the list the draw pass consumes, so it is
+    /// what a test can count without a rasterizer.
+    /// </summary>
+    public IReadOnlyList<PlacedPickup> DrawnPickupPlacements => _drawnPickupPlacements;
+
+    private readonly List<PlacedPickup> _drawnPickupPlacements = new();
+
+    /// <summary>Pickup list of the frame being rendered, or null for the scene's own.</summary>
+    private PickupItems? _renderingPickupField;
+
+    /// <summary>One pickup model at one world position: what the frame draws for a live pickup.</summary>
+    /// <param name="Model">The mission model whose Cobj id the pickup named (null when it has none).</param>
+    /// <param name="X">World x of the placement.</param>
+    /// <param name="Y">World y of the placement.</param>
+    /// <param name="Z">World z of the placement.</param>
+    public readonly record struct PlacedPickup(Model? Model, int X, int Y, int Z);
+
     /// <summary>Renders one frame. Returns the number of drawn primitives.</summary>
-    public int Render(LevelCamera camera)
+    /// <param name="camera">Camera to render from.</param>
+    /// <param name="pickupField">
+    /// Pickup list for this frame, or null for the scene's own. The draw path is identical either
+    /// way, so a test can feed a field the retail archive cannot produce (a record without an aRSL
+    /// Cobj entry) and read <see cref="DrawnPickupPlacements"/> back without a rasterizer.
+    /// </param>
+    public int Render(LevelCamera camera, WeaponPickups? pickupField = null)
     {
+        _renderingPickupField = pickupField is null
+            ? null
+            : new PickupItems(pickupField, new PlayerResupplyState(new WeaponSlots()));
         if (Sink is null) Array.Clear(Rgb);
         // View of the mech-local frame (model units, pivot = walker centre). Viewer camera, not the
         // retail chase camera func_800569EC.
@@ -1149,23 +1183,35 @@ public sealed class LevelScene
 
         // Weapon pickups lying on the map (func_8002FA20). Same pipeline as the shots: local offset
         // from the mech origin, no rotation, sorted into the shared list by depth.
-        if (_pickups is { RemainingCount: > 0 } pickups)
+        // One model at one position per live pickup: a record whose ModelId names no mission model
+        // (WeaponPickups.NoModel, i.e. no aRSL Cobj entry) adds no model, like the null instance
+        // func_8002ACB4:60-62 skips, and is still listed so the count stays one entry per pickup.
+        _drawnPickupPlacements.Clear();
+        int pickupPrims = 0;
+        if ((_renderingPickupField ?? _pickups) is { RemainingCount: > 0 } pickups)
         {
             foreach (var item in pickups.Items)
             {
                 if (item.Collected) continue;
                 var model = _file.Models.FirstOrDefault(m => m.Id == item.ModelId);
+                bool hasFrame = model is not null && model.Vertices.TryGetValue(1, out var verts) && verts.Count > 0;
+                if (!hasFrame) model = null;
+                _drawnPickupPlacements.Add(new PlacedPickup(model, item.X, item.Y, item.Z));
                 if (model is null) continue;
-                if (!model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
+                var frame = model.Vertices[1];
                 var pickupMatrix = PickupMatrix(item, view);
                 var projected = model.IsScripted
-                    ? ScriptRender.Project(model, verts, 0, pickupMatrix, Focal, Ofx, Ofy, 1)
-                    : ModelRender.Project(Gte.Load(pickupMatrix), verts, Focal, Ofx, Ofy, 1);
+                    ? ScriptRender.Project(model, frame, 0, pickupMatrix, Focal, Ofx, Ofy, 1)
+                    : ModelRender.Project(Gte.Load(pickupMatrix), frame, Focal, Ofx, Ofy, 1);
                 var widths = model.Widths.TryGetValue(1, out var pw) ? pw.ToArray() : Array.Empty<short>();
                 foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
+                {
                     _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });
+                    pickupPrims++;
+                }
             }
         }
+        PickupPrimitives = pickupPrims;
 
         // Outposts (type 0x24): the record's own model and the child gInitObjectFromDef spawns from the
         // second aRSL model (8002C584.c:286-295), both at the outpost position, unrotated like pickups.
