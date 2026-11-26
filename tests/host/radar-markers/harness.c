@@ -4,6 +4,7 @@
  *   func_8005A828 (gEmitRadarTriangle,       8005A828.c) -> POLY_F3 packets (using D_8009AFB4)
  *   func_8005A934 (gCheckRadarTargetBearing, 8005A934.c) -> bearing + dead-zone gate
  *   func_8005A9C4 (gDrawRadarMarkers,        8005A9C4.c) -> full radar marker pass
+ *   func_8004CC68 (gUpdateMarkerPulseColors, 8004CC68.c) -> D_800A6F60[17..19] per frame
  *   func_8001846C (gSinCos,                  8001846C.c) -> ROM table D_8009A234
  *   func_80095C30 (gAtan2,                   80095C30.c) -> ROM table D_8009E0A0
  *
@@ -12,7 +13,7 @@
  */
 #include "game/types.h"
 
-#define EXPECTED_CASES 83
+#define EXPECTED_CASES 157
 #define PKT_STRIDE 0x1C
 #define MAX_PKTS 16
 
@@ -87,6 +88,7 @@ extern void gEmitAngledLine(s32 origin, s32 angle) __asm__("func_8005A740");
 extern void gEmitRadarTriangle(s32 origin, u32 angle, s32 code) __asm__("func_8005A828");
 extern s32 gCheckRadarTargetBearing(void *object, s32 z, s32 x, s32 *angle) __asm__("func_8005A934");
 extern void gDrawRadarMarkers(void *object) __asm__("func_8005A9C4");
+extern void gUpdateMarkerPulseColors(void) __asm__("func_8004CC68");
 
 /* Linux MIPS o32 syscalls */
 static s32 sys_read(s32 fd, void *buf, s32 len)
@@ -265,6 +267,14 @@ static void init_colors(void)
     gInitMarkerColorsAndPools();
 }
 
+/* Seed D_8009FAA4 the way the retail frame loop does (8002703C.c:69,341-352) and let the
+ * unmodified func_8004CC68 (8004CC68.c:32-48) pulse D_800A6F60[17..19]. */
+static void run_marker_pulse(s32 frame_time)
+{
+    gFrameTime = frame_time;
+    gUpdateMarkerPulseColors();
+}
+
 void __main(void) {}
 
 s32 main(s32 argc, char **argv)
@@ -310,7 +320,50 @@ s32 main(s32 argc, char **argv)
         line_start = p;
         kind_len = read_token(&p, &kind);
 
-        if (tok_eq(kind, kind_len, "COLOR")) {
+        if (tok_eq(kind, kind_len, "PULSE")) {
+            /* PULSE name frameTime(dec) -> unk44(hex) unk48(hex) unk4C(hex): D_800A6F60[17..19]
+             * after the unmodified func_8004CC68 (8004CC68.c:45-47) ran with D_8009FAA4 = frameTime. */
+            const char *name;
+            s32 name_len = read_token(&p, &name);
+            s32 frame_time = parse_int(&p);
+            const char *input_end = p;
+            u32 got[3];
+            s32 i;
+
+            run_marker_pulse(frame_time);
+            got[0] = gMarkerColorTable[17];
+            got[1] = gMarkerColorTable[18];
+            got[2] = gMarkerColorTable[19];
+
+            if (print_mode) {
+                put_n(1, line_start, (s32)(input_end - line_start));
+                put_fd(1, " -> ");
+                for (i = 0; i < 3; i++) {
+                    if (i) put_fd(1, " ");
+                    put_hex8(1, got[i]);
+                }
+                put_fd(1, "\n");
+            } else {
+                u32 exp[3];
+                skip_ws(&p);
+                if (p[0] == '-' && p[1] == '>') p += 2;
+                for (i = 0; i < 3; i++) exp[i] = parse_hex(&p);
+                if (got[0] != exp[0] || got[1] != exp[1] || got[2] != exp[2]) {
+                    put_fd(2, "PULSE ");
+                    put_n(2, name, name_len);
+                    put_fd(2, " (D_8009FAA4="); put_int(2, frame_time);
+                    put_fd(2, "): expected "); put_hex8(2, exp[0]);
+                    put_fd(2, " "); put_hex8(2, exp[1]);
+                    put_fd(2, " "); put_hex8(2, exp[2]);
+                    put_fd(2, " got "); put_hex8(2, got[0]);
+                    put_fd(2, " "); put_hex8(2, got[1]);
+                    put_fd(2, " "); put_hex8(2, got[2]);
+                    put_fd(2, " (D_800A6F60[17..19])\n");
+                    return 1;
+                }
+            }
+            cases++;
+        } else if (tok_eq(kind, kind_len, "COLOR")) {
             s32 idx = parse_int(&p);
             const char *arrow_pos = p;
             u32 got, exp;
@@ -479,6 +532,7 @@ s32 main(s32 argc, char **argv)
             s32 slotCount = parse_int(&p);
             s32 i, count;
             const char *input_end;
+            s32 saved_frame_time = gFrameTime;
 
             mem_zero(&s_obj, sizeof(s_obj));
             mem_zero(&s_ctl, sizeof(s_ctl));
@@ -600,6 +654,11 @@ s32 main(s32 argc, char **argv)
                     }
                 }
             }
+
+            /* gDrawRadarMarkers (8005A9C4.c) emits the lines/triangles but does not touch
+             * gFrameTime; restore the pre-case value so one DRAW cannot leak its frame stamp into
+             * the PULSE cases that follow (8002703C.c:69 owns D_8009FAA4 in retail). */
+            gFrameTime = saved_frame_time;
             cases++;
         } else {
             put_fd(2, "Unknown directive: ");

@@ -1,8 +1,8 @@
 #!/bin/bash
-# Run unchanged PS1 C radar marker units (8004CAE4, 8005A740, 8005A828, 8005A934, 8005A9C4,
+# Run unchanged PS1 C radar marker units (8004CAE4, 8004CC68, 8005A740, 8005A828, 8005A934, 8005A9C4,
 # 8001846C, 80095C30) with gcc 2.7.2 and qemu-mipsel against tests/golden/radar-markers.vectors.
 #
-# qemu-mipsel cannot map guest addresses >= 0x80000000. All seven units reach PS1 ROM tables
+# qemu-mipsel cannot map guest addresses >= 0x80000000. All eight units reach PS1 ROM tables
 # (D_8009A234, D_8009AFB4, D_8009E0A0) and RAM/BSS globals (D_8009FA90, D_8009F9C0, D_8009FA0C,
 # D_8009FA94, D_8009FA58, D_8009FAA4, D_800A6F60, ...) through D_800xxxxx linker symbols, so
 # --defsym relocates the entire PS1 RAM window by -0x70000000 into .retailram at 0x10010000,
@@ -33,7 +33,7 @@ compile() {
     mipsel-linux-gnu-as -o "$2" "$OUT/tmp.mas.s"
 }
 
-UNITS=(8004CAE4 8005A740 8005A828 8005A934 8005A9C4 8001846C 80095C30)
+UNITS=(8004CAE4 8004CC68 8005A740 8005A828 8005A934 8005A9C4 8001846C 80095C30)
 OBJS=()
 for u in "${UNITS[@]}"; do
     compile "$DECOMP/src/game/$u.c" "$OUT/$u.o"
@@ -72,4 +72,4 @@ if [ "${1:-}" = print ]; then
     exit 0
 fi
 "$QEMU" "$OUT/radar_markers" < "$DOTNET/tests/golden/radar-markers.vectors"
-printf 'radar-markers: 83 shared vectors PASS (unchanged C, qemu-mipsel)\n'
+printf 'radar-markers: 157 shared vectors PASS (unchanged C, qemu-mipsel)\n'
