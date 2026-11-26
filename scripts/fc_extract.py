@@ -2,7 +2,7 @@
 """Extract a PS1 disc (raw MODE2/2352 .bin or cooked 2048 .iso) into a file tree.
 
 Stdlib only. Usage:
-    python3 extract_disc.py <disc.bin|disc.iso> <output-dir>
+    python3 scripts/fc_extract.py <disc.bin|disc.iso> <output-dir>
 
 Raw MODE2 tracks are first converted to a 2048-byte-sector ISO view (same
 logic as the decomp repo's tools/extract_mode2.py), then the ISO9660 primary
