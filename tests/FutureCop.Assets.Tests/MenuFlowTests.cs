@@ -46,6 +46,56 @@ public class MenuFlowTests
     private static MenuFlow NewFlow(string fe, SceneKind kind = SceneKind.Level) =>
         new MenuFlow(fe, kind, TextWriter.Null, TextWriter.Null, enableLevelMovement: true);
 
+    /// <summary>
+    /// Note on coverage limits: this case would also pass without passing <c>workingDirectory</c>,
+    /// because <c>MenuLabels.FindInstalledArchive</c> walks up from <c>programDirectory</c> and
+    /// resolves the same archive via that fallback. In addition, the actual startup wiring in
+    /// <c>tools/FcMainMenu/Program.cs:8-9</c> is not covered by this test.
+    /// </summary>
+    [RetailFact]
+    public void DefaultArchiveFromForeignDirectoryDrivesLabelsAudioAndScene()
+    {
+        string sourceArchive = FrontEndPath()!;
+        string root = Path.Combine(Path.GetTempPath(), "fc-menu-launch-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string program = Path.Combine(root, "tools", "FcMainMenu", "bin");
+            string launch = Path.Combine(root, "elsewhere");
+            string disc = Path.Combine(root, "build", "disc", "files");
+            Directory.CreateDirectory(program);
+            Directory.CreateDirectory(launch);
+            Directory.CreateDirectory(Path.Combine(disc, "CW"));
+            Directory.CreateDirectory(Path.Combine(disc, "PA"));
+            string archive = Path.Combine(disc, "CW", "FE.MIS");
+            string mission = Path.Combine(disc, "PA", "CONFT.MIS");
+            string sourceMission = Path.Combine(LevelTerrainTests.FindDisc()!, "PA", "CONFT.MIS");
+            File.Copy(sourceArchive, archive);
+            File.Copy(sourceMission, mission);
+
+            using var errors = new StringWriter();
+            var labels = MenuLabels.Load(null, program, errors, workingDirectory: launch);
+
+            Assert.Equal(archive, labels.ArchivePath);
+            Assert.Null(labels.UnavailablePath);
+            Assert.Equal("", errors.ToString());
+            // Retail looks up the selected loadout text by id (8007D7CC.c:211-212) and
+            // plays 0x48 on menu confirmation (80078DD0.c:235-238). Use the retail data.
+            Assert.NotEqual("fallback", labels.Lookup(0x2710, "fallback"));
+            Assert.Contains((byte)0x48, SoundBank.FromMisFile(labels.ArchivePath).HighTable.Keys);
+            Assert.NotEmpty(MenuMusic.Decode(File.ReadAllBytes(labels.ArchivePath)));
+
+            var flow = NewFlow(labels.ArchivePath);
+            ToLoadout(flow);
+            flow.HandleKey(Enter);
+            Assert.Equal(MenuScreen.Scene, flow.Screen);
+            Assert.Equal(mission, flow.Level?.MissionPath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [RetailFact]
     public void SceneStartConfirmIsIssuedAfterLevelLoading()
     {
@@ -312,6 +362,34 @@ public class MenuFlowTests
         var stopped = level.MechWorld;
         for (int i = 0; i < 60; i++) flow.Advance(1.0 / 60);
         Assert.Equal(stopped, level.MechWorld);
+    }
+
+    /// <summary>
+    /// D_8009FAA4 (gFrameTime) is a monotonically growing s32 clock in retail (8002703C.c:15,71),
+    /// and the radar marker blink gates on bits 0x180 of it (8005A9C4.c:125). Advancing the scene
+    /// must therefore carry <see cref="MenuFlow.Globals"/>.FrameTime past the byte range so the
+    /// 0x100 blink phase is reachable; an 8-bit counter would wrap at 0xFF and never see it.
+    /// </summary>
+    [RetailFact]
+    public void SceneAdvancingGrowsTheFrameClockIntoBothRadarBlinkPhases()
+    {
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+
+        // Advance adds min(seconds * RetailClock.TicksPerSecond, 0x3C) ticks per call - nine at
+        // 0.033 s - so the clock crosses 0xFF within a few dozen calls.
+        int mask = 0;
+        for (int i = 0; i < 60; i++)
+        {
+            flow.Advance(0.033);
+            if (flow.Globals.FrameTime >= 0x100)
+                mask |= flow.Globals.FrameTime & 0x180;
+        }
+        Assert.True(flow.Globals.FrameTime >= 0x100,
+            $"frame clock stopped at {flow.Globals.FrameTime}, never passed 0xFF");
+        Assert.True(mask is 0x100 or 0x180,
+            $"radar blink mask after the clock passed the byte range: {mask:X3}");
     }
 
     [Fact]
@@ -610,7 +688,9 @@ public class MenuFlowTests
         Assert.Null(flow.Level);
         Assert.Equal(0, entered);
         Assert.Equal("Cannot load SLIM.MIS.", flow.LastLoadError);
-        Assert.Contains($"Cannot load mission {Path.Combine(root, "PA", "SLIM.MIS")}", err.ToString());
+        string missingMission = Path.Combine(root, "PA", "SLIM.MIS");
+        Assert.Equal(missingMission, flow.LastLoadErrorPath);
+        Assert.Contains($"Cannot load mission {missingMission}", err.ToString());
 
         flow.HandleKey(Escape);
         Assert.Equal(MenuScreen.Hub, flow.Screen);

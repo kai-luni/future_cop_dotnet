@@ -41,7 +41,8 @@ public sealed class InGameHud : IHudDevice
     /// <summary>Creates a device that paints into <paramref name="rgb"/> (320x240, 3 bytes per pixel).</summary>
     /// <param name="rgb">Frame buffer, 3 bytes per pixel, top row first.</param>
     /// <param name="frameTime">
-    /// D_8009FAA4. The gauge reads it directly: at 0x80 and above the "busy" flag halves the colours.
+    /// D_8009FAA4. The gauge reads its low byte as u8 (80047BE8.c:18,78-79, lbu): when bit 0x80 is
+    /// set the "busy" flag halves the colours.
     /// </param>
     public InGameHud(byte[] rgb, int frameTime = 0) : this(rgb, frameTime, null) { }
 
@@ -183,9 +184,9 @@ public sealed class InGameHud : IHudDevice
 
     /// <summary>
     /// <c>func_8004EDC8</c> -&gt; <c>func_8005A9C4</c> (<see cref="RadarMarkers.DrawRadarMarkers"/>):
-    /// when <see cref="HudGameBlock.Radar"/> is populated, rasterises the player's own heading pointer
-    /// (as a stand-in triangle at <see cref="RadarMarkerDrawResult.HeadingLineAngle"/> until
-    /// <c>func_8005A740</c> is ported) and any active target triangles emitted from
+    /// when <see cref="HudGameBlock.Radar"/> is populated, rasterises the player's heading line
+    /// (<c>func_8005A740</c>, <c>8005A9C4.c:111-112</c>), optional 2P partner bearing line
+    /// (<c>8005A9C4.c:114-122</c>), and any active target triangles emitted from
     /// <see cref="HudPlayerBlock.RadarMarkers"/> via <see cref="DrawRadarTriangle"/>.
     /// </summary>
     public void Markers(HudGameBlock game, HudSession session, HudGlobals globals)
@@ -200,15 +201,41 @@ public sealed class InGameHud : IHudDevice
             globals.PlayerCount,
             session.Mode);
 
-        // Stand-in for func_8005A740(origin, -heading - 0x800, 0xF8F8F8) (8005A9C4.c:111-112):
-        // renders the player's own radar heading pointer using the retail D_8009AFB4 triangle shape.
-        DrawRadarTriangle(RadarMarkers.EmitRadarTriangle(
-            result.OriginX,
-            result.HeadingLineAngle,
-            RadarMarkers.PlayerPointerColor));
+        // 8005A9C4.c:111-112 - heading indicator via func_8005A740 (LINE_F2, code 0x40808080).
+        DrawRadarLine(result.HeadingLine);
+
+        if (result.OtherPlayerBearingLine is { } otherLine)
+            DrawRadarLine(otherLine);
 
         for (int i = 0; i < result.Triangles.Count; i++)
             DrawRadarTriangle(result.Triangles[i]);
+    }
+
+    /// <summary>
+    /// Rasterises one flat <c>LINE_F2</c> packet from <see cref="RadarMarkers.EmitAngledLine"/>
+    /// (<c>func_8005A740</c>, <c>8005A740.c:41-58</c>) into the 320x240 RGB frame using <see cref="Put"/>.
+    /// </summary>
+    public void DrawRadarLine(RadarLinePacket packet)
+    {
+        int x0 = packet.X0, y0 = packet.Y0;
+        int x1 = packet.X1, y1 = packet.Y1;
+        bool opaque = (packet.GpuCode & 0x02) == 0;
+        int r = packet.R, g = packet.G, b = packet.B;
+
+        int dx = Math.Abs(x1 - x0);
+        int dy = -Math.Abs(y1 - y0);
+        int sx = x0 < x1 ? 1 : -1;
+        int sy = y0 < y1 ? 1 : -1;
+        int err = dx + dy;
+
+        while (true)
+        {
+            Put(x0, y0, r, g, b, opaque);
+            if (x0 == x1 && y0 == y1) break;
+            int e2 = err * 2;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
     }
 
     /// <summary>
@@ -252,8 +279,9 @@ public sealed class InGameHud : IHudDevice
         var plate = HudMath.BarBackdrop(x, y);
         Fill(plate.X, plate.Y, plate.W, plate.H, PlateColour.R, PlateColour.G, PlateColour.B, opaque: false);
 
-        // func_80047BE8 halves both colour edges when the busy flag meets a frame stamp >= 0x80.
-        var (top, bottom) = HudMath.BarColours(p3, p4, p5, flag != 0 && _frameTime >= 0x80);
+        // func_80047BE8 (80047BE8.c:18,78-79) reads D_8009FAA4 as u8 (lbu) and checks v >= 0x80,
+        // which is equivalent to bit 0x80 being set regardless of upper frame-clock bits.
+        var (top, bottom) = HudMath.BarColours(p3, p4, p5, flag != 0 && (_frameTime & 0x80) != 0);
         var (left, right) = HudMath.BarQuads(x, y, intensity, top, bottom);
         Quad(left);
         Quad(right);

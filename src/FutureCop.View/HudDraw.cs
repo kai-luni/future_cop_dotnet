@@ -128,7 +128,11 @@ public sealed record HudGlobals
     public int ScreenState { get; init; } = 4;
     /// <summary>D_8009FA0C.</summary>
     public int PlayerCount { get; init; } = 1;
-    /// <summary>D_8009FAA4: bit 0x80 drives the blink phase and gauge dimming; bit 0x40 drives status-bar highlights.</summary>
+    /// <summary>
+    /// D_8009FAA4: bit 0x40 drives status-bar highlights (8006BF44.c:79, 8006C080.c:72), bit 0x80
+    /// drives HUD blink and gauge dimming (80047F30.c:194,217,256; 80047BE8.c:18,78-79), and bits
+    /// 0x180 drive radar target-marker blink (8005A9C4.c:125).
+    /// </summary>
     public int FrameTime { get; init; }
     /// <summary>D_8009F348: objective label pointers, indexed by the player block's +0xA4.</summary>
     public IReadOnlyList<string> Labels { get; init; } = HudDraw.DefaultLabels;

@@ -63,5 +63,6 @@
     <None Include="../golden/rpns-purchase.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/rpns-purchase.vectors" />
     <None Include="../golden/map-occupancy.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/map-occupancy.vectors" />
     <None Include="../golden/csac-spawner.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/csac-spawner.vectors" />
+    <None Include="../golden/radar-markers.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/radar-markers.vectors" />
   </ItemGroup>
 </Project>
