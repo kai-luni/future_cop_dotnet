@@ -8,15 +8,17 @@ namespace FutureCop.Assets.Tests;
 public sealed class MoverPlacementTests
 {
     [Theory]
-    [InlineData("CONFT", 4)]
-    [InlineData("HK", 0)]
-    [InlineData("JOKE", 2)]
-    [InlineData("OVMP", 0)]
-    [InlineData("SLIM", 2)]
-    public void PlacesRetailCactLiftsWithoutInventingAnyTypeTwenty(string mapName, int count)
+    [InlineData("conft", "CONFT", 4)]
+    [InlineData("hk", "HK", 0)]
+    [InlineData("joke", "JOKE", 2)]
+    [InlineData("ovmp", "OVMP", 0)]
+    [InlineData("slim", "SLIM", 2)]
+    public void PlacesRetailCactLiftsWithoutInventingAnyTypeTwenty(string module, string mapName, int count)
     {
+        // The module name is the canonical D_8009C1CC string; func_800833A8 picks "PA\" for it with the
+        // case-sensitive BIOS strcmp, so a name like "CONFT.MIS" would fall through to "CW\".
         string? disc = LevelTerrainTests.FindDisc();
-        string? path = disc is null ? null : ModulePath.Resolve(disc, mapName + ".MIS");
+        string? path = disc is null ? null : ModulePath.Resolve(disc, module + ".mis");
         if (path is null)
         {
             Assert.NotEqual("1", Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL"));
@@ -66,5 +68,23 @@ public sealed class MoverPlacementTests
                 Assert.Equal(lift.Id == 262 ? 14 : 15, lift.GroundKind);
             }
         }
+    }
+
+    [Theory]
+    [InlineData("conft.mis", true)]
+    [InlineData("slim.mis", true)]
+    [InlineData("hk.mis", true)]
+    [InlineData("ovmp.mis", true)]
+    [InlineData("joke.mis", true)]
+    [InlineData("CONFT.MIS", false)]
+    [InlineData("Conft.mis", false)]
+    [InlineData("conft", false)]
+    [InlineData("m1a1.mis", false)]
+    public void ModulePrefixComparesTheNameCaseSensitively(string module, bool precinctAssault)
+    {
+        // func_800833A8 compares the module name with gBiosStrcmp (BIOS strcmp A(0x17): exact and
+        // case-sensitive) before it selects the prefix, so only the verbatim D_8009C1CC strings get "PA\".
+        Assert.Equal(precinctAssault ? ModulePath.PrecinctAssaultPrefix : ModulePath.CrimeWarPrefix,
+            ModulePath.Prefix(module));
     }
 }
