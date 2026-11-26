@@ -82,12 +82,14 @@ public sealed class PurchasePad
     public int MapZoneTargetId { get; set; } = -1;
 
     /// <summary>
-    /// The re-selection timer (<c>node-&gt;t+0x16</c>): an empty scan arms 600 + 600 + (rand &amp; 0x3F),
-    /// a scan that found a target 600 + (rand &amp; 0x3F) (<c>80031DE8.c:148-158</c>); 600 when the
-    /// target is gone (<c>80031DE8.c:104-105</c>); defaults to the loader's random byte
-    /// (<c>node-&gt;t+0x16 = func_80019668() &amp; 0xFF</c>, <c>800319D4.c:142</c>).
+    /// The re-selection timer (<c>node->t+0x16</c>, a u16: the loader stores a random byte there,
+    /// 800319D4.c:142, and the walk re-arms it with <c>+= 0x258</c>, 80031DE8.c:157). An empty scan
+    /// arms 600 + 600 + (rand &amp; 0x3F), a scan that found a target 600 + (rand &amp; 0x3F)
+    /// (80031DE8.c:148-158) and <c>-= delta</c> of :159 wraps in 16 bits; 600 when the target is
+    /// gone (80031DE8.c:104-105); the loader value is 0..255 (<c>node->t+0x16 = func_80019668() &amp;
+    /// 0xFF</c>, 800319D4.c:142).
     /// </summary>
-    public int MapZoneTimer { get; set; }
+    public ushort MapZoneTimer { get; set; }
 
     /// <summary>True once <c>80031DE8.c:176-184</c> unlinked and freed the map-zone node.</summary>
     public bool Released { get; set; }
@@ -229,6 +231,13 @@ public interface ICsacNodeId
 
     /// <summary>obj+0x68: the model instance radius the box test of 80031C74.c:84-100 subtracts.</summary>
     int Radius { get; }
+
+    /// <summary>
+    /// <c>e-&gt;unkAC-&gt;unk40 != 0</c> for a type-1 entity (the player's control block, 80031C74.c:102):
+    /// true rejects the entity in a flag-4 node and in a flag-4 type-14 pad (8002F8B8.c:122). Every
+    /// other type never reads that word, so an implementation without a control block answers false.
+    /// </summary>
+    bool Busy => false;
 }
 
 /// <summary>
@@ -510,8 +519,8 @@ public sealed class PurchasePadSystem
                         flags, targetId, matchSelector: 2,
                         s0, s2)
                     {
-                        // 800319D4.c:142: node->t16 = func_80019668() & 0xFF, in record order.
-                        MapZoneTimer = rng.Next() & 0xFF,
+                        // 800319D4.c:142: node->t16 (u16) = func_80019668() & 0xFF, in record order.
+                        MapZoneTimer = (ushort)(rng.Next() & 0xFF),
                     });
                     zoneDraws++;
                 }
@@ -768,23 +777,36 @@ public sealed class PurchasePadSystem
             node.MapZoneTarget = target;
             if (target is not null) node.MapZoneTargetId = target.RecordId;
         }
-        node.MapZoneTimer = 0x258 + (Random.Next() & 0x3F) + (target is null ? 0x258 : 0);
-        if (target is not null) node.MapZoneTimer -= delta;
+        // :151 arms 600 + (rand & 0x3F) and :157 adds another 600 when nothing was found; :159 subtracts
+        // delta — all on the u16 node->t+0x16, so the subtraction wraps in 16 bits.
+        node.MapZoneTimer = unchecked((ushort)(0x258 + (Random.Next() & 0x3F) + (target is null ? 0x258 : 0)));
+        if (target is not null) node.MapZoneTimer = unchecked((ushort)(node.MapZoneTimer - delta));
         return target;
     }
 
     /// <summary>
     /// Runs the script of a map zone whose box test fired (<c>func_80031C74</c>, 80031C74.c:106-108):
-    /// <c>gInterpretEntityScript(node-&gt;script, 0, other-&gt;unk14 &amp; 0x7FFF, 0)</c>. The node's
-    /// script (+0x18) is the slot-0 script of the Cact record; the VM of the C node list is the same
-    /// one the pads share, so a node the node list owned needs no separate VM.
+    /// <c>gInterpretEntityScript(node-&gt;script, 0, other-&gt;unk14 &amp; 0x7FFF, 0)</c>. The VM of the C
+    /// node list is the same one the pads share, so a node the node list owned needs no separate VM.
+    /// The script slot is the record's Cact slot 0 (see <see cref="ResetMapZoneScript"/>); it is 0 for
+    /// every zone of CONFT.MIS except 5, 234 and 240, and a 0 slot skips the call.
     /// </summary>
     public PurchaseResult FireMapZone(PurchasePad pad, ICsacNodeId target)
     {
         ArgumentNullException.ThrowIfNull(pad);
         ArgumentNullException.ThrowIfNull(target);
         int before = VmState.GameSession[RpnsVmState.SessionScoreP1];
-        var result = RunPadScript(pad.Script0Offset, target.RecordId, before, RpnsVmState.SessionScoreP1);
+        // 80031C74.c:106-108 runs node->script only when it is non-zero: a node without a script
+        // (CONFT zone 106, slot 0 = 0) hits its box and returns 1 without touching the VM. The node
+        // still passed the box test of :84-100, so it returns 1 (:115); only the script is skipped.
+        // C evidence: struct Node (800319D4.c:26-41) has no script field, and gLoadMapZone (:104-151)
+        // fills f12 from the request's +0x24, f18 from its +0x28 and f14 from +0x1B, but no script
+        // slot; node->script is the request's f8 (+0x18), with no writer outside the wrapper's own
+        // pointer field (Obj, :10-16). gLoadMapZone never opens Cact for the node, so the Cact +0x24
+        // word (0 for 106, 0x74 for 234, 0x6C for 5) is how this port models "script present".
+        var result = pad.Script0Offset == 0
+            ? new PurchaseResult(true, false, 0, before, before)
+            : RunPadScript(pad.Script0Offset, target.RecordId, before, RpnsVmState.SessionScoreP1);
         pad.LastFire = result;
         return result;
     }
@@ -858,9 +880,9 @@ public sealed class PurchasePadSystem
             return new PurchaseResult(false, false, 0, before, before);
 
         // Retail walker-mode gate: both type-95 (80031C74.c:102) and type-14 (8002F8B8.c:122)
-        // reject players whose unkAC->unk40 != 0 when flag bit 0x04 is set. The type half of the C
-        // test (other->unk16 == 1) excludes a non-player candidate, so only a player target is busy.
-        if (pad.RequiresWalkerMode && target.DispatchType == 1 && target is PlayerTarget { Busy: true })
+        // reject a type-1 entity whose unkAC->unk40 != 0 when flag bit 0x04 is set. The type half of
+        // the C test (other->unk16 == 1) applies to any type-1 entity, not only to the PlayerTarget.
+        if (pad.RequiresWalkerMode && target.DispatchType == 1 && target.Busy)
             return new PurchaseResult(false, false, 0, before, before);
 
         // Target entity id match: type-95 node->id (80031DE8.c:126) and type-14 selector 2 (8002F8B8.c:76-81).

@@ -12,8 +12,12 @@ namespace FutureCop.Assets.Tests;
 /// D_800A8F90 picked for the node's id. CONFT's one-shot zones 5, 9 and 235-244 carry the Csac record
 /// ids 57, 7, 172, 77, 185, 204, 154, 75, 87, 173, 144 and 205, so such a zone fires only while a
 /// matching unit stands in its trigger box. The observable is the cached target and the one-shot
-/// release of the node (80031DE8.c:176-184); the twelve zones ship without an RPNS slot-0 script in
-/// CONFT.MIS (their Cact slots 0 and 1 are 0), so no session word can observe them.
+/// release of the node (80031DE8.c:176-184), and the session and script words their RPNS slot-0
+/// script writes (func_80069D68 op 21/24): in CONFT.MIS zones 5, 9, 240 and 244 carry slot 0 = 108 or
+/// 112, whose first statements raise <c>gGameSession[19]</c> to 4, <c>[39]</c> to 2, <c>[44]</c> to 7 and
+/// <c>[45]</c> to 3 and then <c>gScriptVmVars[25]</c> (family <c>8199 2000</c>, zone 5) or
+/// <c>gScriptVmVars[16]</c> (zone 240); only zone 106 ships slot 0 = 0
+/// (<see cref="LevelSceneMapZoneTargetTests.CsacZoneScriptWritesItsSessionWords"/>).
 /// </summary>
 public class LevelSceneMapZoneTargetTests
 {
@@ -183,6 +187,118 @@ public class LevelSceneMapZoneTargetTests
     }
 
     /// <summary>
+    /// The script side of a Csac zone (80031C74.c:104-108): a fired node runs its RPNS slot-0 script
+    /// with <c>arg2 = target id &amp; 0x7FFF</c>. In CONFT.MIS zone 5 takes <c>Cact</c> +0x24 = 108
+    /// and zone 240 = 112; zone 5's body (pool 0x6c) is the tail
+    /// <c>81 99 20 00 81 90 20 00 82 12 80 21 14 04 ...</c> = <c>op 1</c> -0x19, <c>op 1</c> -0x10,
+    /// <c>op 2</c> 0x12 (18), <c>op 9</c>, <c>op 20</c> +4: <c>if (!(18 != 0)) skip op 21</c>, so
+    /// <c>op 21</c> (gGameSession[a]++, 80069D68.c:243-245) runs on the -0x19 word and the branch
+    /// then lands on another <c>op 1/op 9/op 20 04</c> guard; the far push of the body is what feeds
+    /// a later <c>op 21</c>. Measured: <c>gGameSession[25]</c> is untouched, and the two zones differ
+    /// in exactly one word — zone 5 bumps <c>gScriptVmVars[25]</c> (op 24) and zone 240
+    /// <c>gScriptVmVars[16]</c>, over the same <c>[6..9] = 373/816/143/196</c> and <c>[25] = 5</c>.
+    /// That word is the observable of these twelve zones; the cached target and the release alone do
+    /// not prove the script ran.
+    /// </summary>
+    [ConftTheory]
+    [InlineData(5, 57, 25)]
+    [InlineData(240, 75, 16)]
+    public void CsacZoneScriptWritesItsSessionWords(int zoneId, int csacId, int scriptVar)
+    {
+        var scene = LoadScene();
+        var pads = scene.PurchasePads!;
+        var zone = pads.FindPad(zoneId)!;
+        Assert.Equal(csacId, (int)zone.TargetId);
+        // Zone 5 draws slot 0 = 108, zone 240 the same family at 112 (both non-zero, so the script runs).
+        Assert.Equal(zoneId == 5 ? 108 : 112, zone.Script0Offset);
+
+        // The walker stands far away so that the box test of the node cannot accept the player as the
+        // cached target of the very frame the unit is added; the unit is the only candidate in the box.
+        var walker = scene.Walker!;
+        walker.X = 0x200000;
+        walker.Z = 0x200000;
+        var unit = new SyntheticEntity(0x2150)
+        {
+            RecordId = csacId, NodeId = (short)csacId, DispatchType = 5,
+            X = zone.WorldX << 8, Y = zone.WorldY << 8, Z = zone.WorldZ << 8,
+        };
+        scene.AddMapZoneCandidate(unit);
+        var session = pads.VmState.GameSession;
+        var vars = pads.VmState.ScriptVars;
+        int before25 = session[RpnsVmState.SessionScoreP1];
+        int beforeVar = vars[scriptVar];
+        var before = (s6: session[6], s7: session[7], s8: session[8], s9: session[9]);
+
+        scene.AdvanceSkyCaptain(1);
+
+        // Op 21/24 of func_80069D68 (80069D68.c:243-250): the one script var the body's op 24 bumps.
+        Assert.True(scene.IsMapZoneReleased(zone), $"zone {zoneId} did not fire");
+        // gGameSession[6..9] are gInitScriptVmState's random words (80069B58.c:47-50), not script
+        // output: the body of neither zone touches them.
+        Assert.Equal(before, (session[6], session[7], session[8], session[9]));
+        Assert.Equal(beforeVar + 1, vars[scriptVar]);
+        // Measured in the scene: zone 5's body bumps gScriptVmVars[25] and leaves var 16 alone;
+        // zone 240's older slot bumps var 16 and leaves var 25 alone (each node runs only its own
+        // script, 80031C74.c:106-108), and neither touches the score slot.
+        Assert.Equal(before25, session[RpnsVmState.SessionScoreP1]);
+        Assert.Equal(zoneId == 5 ? 1 : 0, vars[25]);
+        Assert.Equal(zoneId == 240 ? 1 : 0, vars[16]);
+    }
+
+    /// <summary>
+    /// A type-95 record whose <c>Cact</c> slot 0 is 0 (CONFT zone 106, the only such zone) has no
+    /// script to run: the box test of 80031C74.c:84-100 accepts the target, the busy gate of :102
+    /// passes, :104-115 runs the script only when <c>node-&gt;script != 0</c>, and the node returns 1
+    /// (<c>(node-&gt;flags &amp; 2) == 0</c> is false for its flags 0x06). So it fires on every frame the
+    /// player stands in it and the session bank never moves. The dangerous alternative is reading
+    /// pool byte 0 as the script: that byte is <c>0x99</c> = <c>op 25</c> on an empty operand stack,
+    /// not a helipad script, so nothing is bought either — the test pins the session words of both
+    /// arms and the per-frame fire instead.
+    /// </summary>
+    [ConftFact]
+    public void ZoneWithoutAScriptFiresWithoutTouchingTheVm()
+    {
+        var scene = LoadScene();
+        var pads = scene.PurchasePads!;
+        var zone = pads.FindPad(106)!;
+        Assert.Equal(0, zone.Script0Offset);
+        Assert.Equal(0x99, pads.Pool.Bytes[0]);
+        var session = pads.VmState.GameSession;
+        Assert.Equal(0, session[RpnsVmState.SessionHelisP1]);
+
+        var walker = scene.Walker!;
+        walker.X = 0x200000;
+        walker.Z = 0x200000;
+        var unit = new SyntheticEntity(0x2150)
+        {
+            RecordId = 12, NodeId = 12, DispatchType = 1,
+            X = zone.WorldX << 8, Y = zone.WorldY << 8, Z = zone.WorldZ << 8,
+        };
+        scene.AddMapZoneCandidate(unit);
+        var bank = (int[])session.Clone();
+        var vars = (int[])pads.VmState.ScriptVars.Clone();
+        scene.AdvanceSkyCaptain(1);
+
+        Assert.True(zone.LastFire is { Triggered: true });       // :115 returns 1 on the box hit
+        Assert.False(zone.LastFire!.Value.Accepted);             // no script ran
+        Assert.False(scene.IsMapZoneReleased(zone));             // flags 2: the node stays linked
+        // No script output and no score, heli or tank word moved: :106-108 never entered the VM.
+        // (gGameSession[19] is the economy mirror of SyncFromEconomy, written before any script.)
+        Assert.Equal(bank[6], session[6]);
+        Assert.Equal(bank[RpnsVmState.SessionScoreP1], session[RpnsVmState.SessionScoreP1]);
+        Assert.Equal(bank[RpnsVmState.SessionHelisP1], session[RpnsVmState.SessionHelisP1]);
+        Assert.Equal(bank[RpnsVmState.SessionTanksP1], session[RpnsVmState.SessionTanksP1]);
+        Assert.Equal(vars, pads.VmState.ScriptVars);
+
+        // The cached target stays; the next frame tests it again and fires again without a script.
+        scene.AdvanceSkyCaptain(1);
+        Assert.True(zone.LastFire is { Triggered: true });
+        Assert.False(zone.LastFire!.Value.Accepted);
+        Assert.Equal(vars, pads.VmState.ScriptVars);
+        Assert.Equal(bank[RpnsVmState.SessionHelisP1], session[RpnsVmState.SessionHelisP1]);
+    }
+
+    /// <summary>
     /// The same unit of another node id never wakes a zone: a zone fires only for a unit whose
     /// obj+0x14 (node id) equals the zone's tACT +0x1C (80031DE8.c:122). Zone 5 targets the Csac
     /// id 57; the unit carries 75, the id of zone 240.
@@ -246,14 +362,6 @@ public class LevelSceneMapZoneTargetTests
         unit.Z = zone.WorldZ << 8;
         unit.Y = zone.WorldY << 8;
         Assert.True(LevelScene.MapZoneBoxAccepts(zone, unit));
-        // The node timer of the loader is a random byte (800319D4.c:142), so the rescan of :118 is
-        // due whenever the frame delta passes it; frame 0 has a delta of 0 truncated to a u8 (:95),
-        // so the rescan is armed directly here instead of waiting 67 frames.
-        zone.MapZoneTimer = -1;
-        // D_8009FAA4 starts at 0 and only a Draw turns it into a real frame counter; the pad walk
-        // truncates its delta to a u8 (80031DE8.c:95), so frame 0 would never reach the box test.
-        Assert.Equal(0, scene.PurchaseFrameTime);
-        scene.AdvanceDrawFrame();
         // The unit spawns at the origin of its Csac slot and is placed at a world ValidPoint; the
         // test moves it in front of the walker, the zone centre it later stands on.
         unit.X = zone.WorldX << 8;
@@ -261,11 +369,19 @@ public class LevelSceneMapZoneTargetTests
         scene.Entities.CullActive(zone.WorldX, zone.WorldZ);
         Assert.Contains(scene.Entities.Active, e => ReferenceEquals(e, unit));
         Assert.False(zone.Released);
-        for (int frame = 0; frame < 2; frame++) scene.AdvanceSkyCaptain(0);
+        // The node timer of the loader is a random byte (800319D4.c:142), so the rescan of :118 is
+        // due whenever the frame delta passes it. The walk truncates its delta to a u8 (80031DE8.c:95)
+        // and only a Draw turns D_8009FAA4 into a frame counter, so the rescan is armed directly with
+        // a timer below the 5-tick delta of the next update.
+        zone.MapZoneTimer = 1;
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
 
         _output.WriteLine("zone 240 with the spawned unit: " + Dump(scene, zone, scene.Walker));
         var table = scene.MapZoneCandidates();
         Assert.Contains(table, c => ReferenceEquals(c, unit));
+        // Measured: the scan culls at the zone centre (8004DF28.c:113-143) and the spawned unit is the
+        // only candidate of node id 75 there, so :121-140 picks it and :159-168 fires the one-shot
+        // node (flags 0 -> freed, 80031DE8.c:176-184).
         Assert.Equal(75, scene.MapZoneTargetOf(zone)?.RecordId);
         Assert.True(scene.IsMapZoneReleased(zone), "zone 240 kept its one-shot node");
     }

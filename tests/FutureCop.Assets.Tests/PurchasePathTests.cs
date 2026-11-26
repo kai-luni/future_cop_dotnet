@@ -208,14 +208,66 @@ public sealed class PurchasePathTests
     }
 
     /// <summary>
+    /// Finding 3 of the review: the type-14 walk of 8003151C.c:105-122 tests <i>every</i> player entity
+    /// of D_8009FA58, not only the P1 body. Slot 1 is the P2 entity (obj+0x14 = 16 in CONFT.MIS), and
+    /// <see cref="LevelScene.AttachSecondPlayer"/> is what registers it. The observable is the pad's
+    /// own <see cref="PurchasePad.LastTriggerFrame"/>: a pad accepts only the player inside its box, so
+    /// a P1 body parked 0x200000 world units away never makes the pad fire, while the P2 body standing
+    /// on the pad does — with the same pad, the same script offset and no second candidate.
+    /// </summary>
+    [RetailFact]
+    public void SecondPlayerEntityDrivesTheType14TriggerWalk()
+    {
+        string path = LevelSceneRetirementTests.FindMission()!;
+
+        // Negative arm: the type-14 pad is marked, P1 is far away and no P2 is registered. The pad
+        // walk (and with it D_8009FA58) runs only with the spawner enabled and a walker attached.
+        var solo = new LevelScene(path) { EnableCsacSpawner = true };
+        solo.EnableObjectives();
+        var soloPads = solo.PurchasePads!;
+        solo.AttachWalker(new MechBody { X = 0x200000, Y = 0, Z = 0x200000, Form = 0 });
+        int marked = -1;
+        foreach (var candidate in soloPads.Pads)
+        {
+            if (candidate.Kind != PurchasePadKind.TriggerAttachment || !candidate.IsEnabled) continue;
+            if (soloPads.Pads.Any(p => p != candidate && p.Kind == PurchasePadKind.MapZone && p.RecordId == candidate.RecordId)) continue;
+            marked = candidate.RecordId;
+            break;
+        }
+        Assert.True(marked >= 0, "CONFT has no standalone type-14 pad");
+        var pad = soloPads.FindPad(marked)!;
+        solo.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.Single(solo.PlayerTargets);                               // D_8009FA58: P1 only
+        int frameAfterSolo = pad.LastTriggerFrame;
+
+        // Positive arm: the same pad, the same far P1, and P2 standing on it.
+        var dual = new LevelScene(path) { EnableCsacSpawner = true };
+        dual.EnableObjectives();
+        var dualPads = dual.PurchasePads!;
+        dual.AttachWalker(new MechBody { X = 0x200000, Y = 0, Z = 0x200000, Form = 0 });
+        var pad2 = dualPads.FindPad(marked)!;
+        dual.AttachSecondPlayer(new MechBody { X = pad2.WorldX, Y = pad2.WorldY, Z = pad2.WorldZ, Form = 0 }, 16);
+        dual.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+
+        // D_8009FA58 now carries both entities (80031DE8.c:19): the P1 actor and the P2 actor 16.
+        Assert.Equal(2, dual.PlayerTargets.Count);
+        Assert.Contains(dual.PlayerTargets, t => t.RecordId == 16);
+        Assert.Contains(dual.PlayerTargets, t => t.RecordId == dual.Actor.Id);
+        // 8003151C.c:115 stamps the frame of the accepted test on the pad; the P2 entity supplied it.
+        Assert.NotEqual(frameAfterSolo, pad2.LastTriggerFrame);
+        Assert.Equal(dual.PurchaseFrameTime, pad2.LastTriggerFrame);
+    }
+
+    /// <summary>
     /// The scene walk of a map zone (func_80031DE8, 80031DE8.c:85-204): node 106 caches a D_800A8F90
-    /// candidate of its node id 12 (:119-144, 106 is <c>id == 12</c> at tACT +0x1C, 800319D4.c:137),
-    /// tests it against its box every frame (:159-168) and runs <c>Cact</c> 106's slot-0 script
-    /// (:106-108) on a hit. The script spends 1 (<c>cost 1</c> of the helipad), queues the burst on
-    /// Csac 34 and increments the P1 heli counter, which the drain of 800616A0 turns into the unit.
-    /// Zone 234 (flags 2, no cost) shares the patch, so it fires its script in the same frames and
-    /// leaves the score alone; 106 supplies the observable through its own <see cref="PurchaseResult"/>.
-    /// The old test drove a hover walker over the pad and read the score: the player is only ever a
+    /// candidate of its node id 12 (:119-144, 106 is <c>id == 12</c> at tACT +0x1C, 800319D4.c:137)
+    /// and tests it against its box every frame (:159-168 / 80031C74.c:84-100). It has no script to
+    /// run: <c>Cact</c> 106's +0x24 word is 0 in CONFT.MIS, and 80031C74.c:106-108 enters
+    /// <c>gInterpretEntityScript</c> only for a non-zero <c>node-&gt;script</c> (loaded from the
+    /// request's +0x24, 800319D4.c:137). So the node fires, buys nothing and never reaches the
+    /// helipad script at pool byte 0 (0x99 = <c>op 25 gGameSession[25]--</c>). The purchase itself is
+    /// covered on a hand-built pad (<see cref="ConftMis_LoadsPurchasePadsAndSpawnsHeliAndTankAndDreadnought"/>).
+    /// The old test read the score of a hover walker over the pad; the player is only ever a
     /// <i>candidate</i> of the scan now, never the tested target by its own right.
     /// </summary>
     [RetailFact]
@@ -231,7 +283,7 @@ public sealed class PurchasePathTests
         scene.Objectives!.Score.Score[0] = 5;
 
         // A busy candidate (hover mode, unkAC->unk40 != 0) is rejected by the flag-4 gate of
-        // 80031C74.c:102: the node caches it, its box test runs and nothing is bought.
+        // 80031C74.c:102: the node caches it, its box test runs and nothing fires.
         var player = new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8, busy: true);
         scene.AddMapZoneCandidate(player);
         Assert.True(ReferenceEquals(player, scene.MapZoneTargetOf(pad)));
@@ -240,30 +292,34 @@ public sealed class PurchasePathTests
         Assert.DoesNotContain(scene.CsacSpawner!.SpawnedUnits, u => u.SourceSlot.Record.Id == 34);
         Assert.Null(pad.LastFire);
 
-        // Walker form, same cached target: the box test fires (80031C74.c:106-108), Cact 106's script
-        // spends the point, counts the heli and queues Csac 34. The queue drains on the following
-        // update, because func_800616A0 runs ahead of the node walk of the same frame.
+        // Walker form, same cached target: the box test passes and 80031C74.c:104-115 returns 1
+        // without a script (node->script == 0). The node keeps flag 2 (:176-184 keeps it linked).
         player.Busy = false;
         walker.Form = 0;
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
         var fire = pad.LastFire ?? throw new InvalidOperationException("zone 106 did not fire");
         Assert.Equal(12, pad.MapZoneTargetId);
-        Assert.Equal((5, 4), (fire.ScoreBefore, fire.ScoreAfter));
-        Assert.True(fire.Accepted);
-        var helis = pads.VmState.GameSession[RpnsVmState.SessionHelisP1];
-        Assert.InRange(helis, 1, 2);                                     // 106 and 234 may both count
-        Assert.Empty(scene.CsacSpawner.SpawnedUnits.Where(u => u.SourceSlot.Record.Id == 34));
+        Assert.True(fire.Triggered);
+        Assert.False(fire.Accepted);                                     // no script ran
+        Assert.Equal((5, 5), (fire.ScoreBefore, fire.ScoreAfter));
+        Assert.Equal(0, pads.VmState.GameSession[RpnsVmState.SessionHelisP1]);
+        // No script word moved: the pool's zone bodies are the only writers of the script vars here.
+        Assert.Equal(0, pads.VmState.ScriptVars[25]);
+        Assert.Equal(0, pads.VmState.ScriptVars[16]);
+        // No burst is queued, so the drain of the next update cannot turn anything into a unit.
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
-        Assert.Single(scene.CsacSpawner.SpawnedUnits.Where(u => u.SourceSlot.Record.Id == 34));
+        Assert.Empty(scene.CsacSpawner.SpawnedUnits);
         Assert.False(scene.IsMapZoneReleased(pad));                      // flags 2: the node stays linked
     }
 
     /// <summary>
-    /// The drawn frame after the purchase: the scene renders the spawned Csac 34 unit only once it is
-    /// inside the camera, and the HUD session of that frame carries the spent points (80031C74.c:106-108
-    /// through the RPNS script) and the play mode. The drain frame after the hit is a frame of the
-    /// stay node as well: zones 106 and 234 both stand on the helipad patch, both cache the node-12
-    /// candidate and both fire it, so the session reads 3.
+    /// The drawn frame after a hit on the player's helipad node: the scene renders the pad markers,
+    /// and the HUD session of that frame carries the play mode. Node 106 stands on
+    /// (-480, 0, 871944) with flag 2 and no script (Cact +0x24 = 0, 800319D4.c:137): the box test of
+    /// 80031C74.c:84-100 accepts the player every frame, :104-115 returns 1, and without a script
+    /// (80031C74.c:106-108) the session bank is untouched - 5 points and 0 helis stay. The bought
+    /// unit and its face count are covered on a hand-built pad (the retail 106 buys nothing), so this
+    /// test pins the no-script arm of the walk in a real render.
     /// </summary>
     [RetailFact]
     public void SceneDrawsBoughtUnitPadsAndScoreSession()
@@ -287,20 +343,21 @@ public sealed class PurchasePathTests
         Assert.Equal(12, scene.MapZoneTargetOf(pad)?.RecordId);
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
         var fire = pad.LastFire ?? throw new InvalidOperationException("zone 106 did not fire");
-        Assert.Equal((5, 4), (fire.ScoreBefore, fire.ScoreAfter));
+        Assert.True(fire.Triggered);
+        Assert.False(fire.Accepted);                                     // no script ran
+        Assert.Equal((5, 5), (fire.ScoreBefore, fire.ScoreAfter));
 
-        // The burst of the fired frame drains on the next update, which fires the stay node again
-        // (800616A0 ahead of the node walk, 80031DE8.c:90).
+        // The stay node fires again on the next frame as well (800616A0 ahead of the node walk,
+        // 80031DE8.c:90) and still buys nothing: no unit, no burst.
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
-        var unit = Assert.Single(scene.CsacSpawner!.SpawnedUnits.Where(u => u.SourceSlot.Record.Id == 34));
-        walker.X = unit.X; walker.Y = unit.Y; walker.Z = unit.Z;
-        scene.AttachWalker(walker);
+        Assert.Empty(scene.CsacSpawner!.SpawnedUnits);
         scene.Render(new LevelCamera(0.0, 20.0, 0x1200));
-        Assert.True(scene.SpawnedUnitPrimitives > 0, "the bought unit produced no rendered faces");
+        Assert.Equal(0, scene.SpawnedUnitPrimitives);
 
         var session = scene.ScoreSession(new HudSession());
-        Assert.Equal((1, 3), (session.Mode, session.Score0));
-        Assert.InRange(pads.VmState.GameSession[RpnsVmState.SessionHelisP1], 1, 2);
+        Assert.Equal((1, 5), (session.Mode, session.Score0));
+        Assert.Equal(5, pads.VmState.GameSession[RpnsVmState.SessionScoreP1]);
+        Assert.Equal(0, pads.VmState.GameSession[RpnsVmState.SessionHelisP1]);
     }
 
     [RetailFact]

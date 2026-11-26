@@ -36,6 +36,12 @@ public sealed class PlayerTarget : ICsacNodeId
     /// <summary>obj+0x68, the model instance radius of the box test (80031C74.c:86-98).</summary>
     public int Radius { get; set; }
 
-    /// <summary><c>e-&gt;unkAC-&gt;unk40 != 0</c>: a flag-4 node rejects the player (80031C74.c:102).</summary>
+    /// <summary>
+    /// <c>e-&gt;unkAC-&gt;unk40 != 0</c>: a flag-4 node or flag-4 type-14 pad rejects a type-1 entity that
+    /// carries it (80031C74.c:102, 8002F8B8.c:122). It is exposed through
+    /// <see cref="ICsacNodeId.Busy"/>, which is the gate both paths read.
+    /// </summary>
     public bool Busy { get; set; }
+
+    bool ICsacNodeId.Busy => Busy;
 }

@@ -32,6 +32,10 @@ public sealed class LevelScene
     private readonly Dictionary<int, Dictionary<int, TextureRecord>> _texByModel = new();
     private readonly Dictionary<int, Model> _modelsById = new();
     private readonly Dictionary<int, short[]> _widthsByModelId = new();
+    // D_8009FA58: the player entities the trigger tests read, keyed by actor record id (12 / 16).
+    private readonly Dictionary<int, PlayerTarget> _playerTargets = new();
+    private MechBody? _secondPlayer;
+    private int _secondPlayerId;
     // Per-frame scratch storage. The old draw queue allocated closures and used a LINQ sort; the
     // terrain vertex buffer and packet lists were also recreated. Reuse them between frames.
     private readonly List<DrawItem> _drawQueue = new();
@@ -381,28 +385,80 @@ public sealed class LevelScene
         if (_skyCaptain is { } sky) pads.SyncFromEconomy(sky.Economy);
         pads.SyncFromMatchScore(objectives.Score);
         pads.TickTimers(dt);
-        if (_walker is { } walker)
+        if (_walker is { })
         {
             UpdateMapZoneTriggers(pads, dt);
+            // Type-14 trigger attachments: func_8003151C message 10 tests a pad against the player
+            // entity the message carries (8003151C.c:105-122), so the scene walks the D_8009FA58
+            // entries it has (80031DE8.c:19) instead of measuring from the P1 body alone.
+            UpdatePlayerTargets();
+            var players = _playerTargets.Values;
             foreach (var pad in pads.Pads)
             {
-                // Type-14 trigger attachments keep the caller-side walker test and the walker-mode
-                // gate of 8002F8B8.c:122 / 8003151C.c:105-122.
+                // The pad gate itself (unkA0 bit 0x10) sits before the test in 8003151C.c:106.
                 if (pad.Kind != PurchasePadKind.TriggerAttachment) continue;
-                if (pad.IsRetired) continue;
-                // Zone tests use obj+0x50/54/58 with the model instance radius at +0x68 (80031C74.c).
-                var position = CoordOf(_parts[0].Model.Id, walker.X, walker.Y, walker.Z);
-                if (!PurchasePadSystem.IsInsidePad(pad, position.X, position.Y, position.Z, position.Radius))
-                    continue;
-                pads.TryTriggerPad(pad,
-                    new PlayerTarget(Actor.Id, position.X, position.Y, position.Z, position.Radius,
-                        busy: walker.Form != 0),
-                    frameTime: _purchaseFrameTime);
-                // Type 14 uses its byte at +0x28 for attachment behavior (80030DE0.c:115).
+                if (pad.IsRetired || !pad.IsEnabled) continue;
+                foreach (var player in players)
+                {
+                    // The entity's own obj+0x50/54/58 and its model radius at +0x68 (80031C74.c:84-100)
+                    // are the collision coordinate the entity carries; do not measure from the P1 body.
+                    if (!PurchasePadSystem.IsInsidePad(pad, player.X, player.Y, player.Z, player.Radius))
+                        continue;
+                    // scoreSlot stays the P1 bank the port's session reads (RpnsVmState.SessionScoreP1).
+                    pads.TryTriggerPad(pad, player, frameTime: _purchaseFrameTime);
+                    // Type 14 uses its byte at +0x28 for attachment behavior (80030DE0.c:115).
+                }
             }
         }
         pads.SyncToMatchScore(objectives.Score);
         if (_skyCaptain is { } skyAfter) pads.SyncToEconomy(skyAfter.Economy);
+    }
+
+    /// <summary>
+    /// The D_8009FA58 entries a trigger test of this frame reads (80031DE8.c:19, 8003151C.c:105-122):
+    /// the P1 body at slot 0 and — only when the caller attached a second player body — slot 1.
+    /// </summary>
+    public IReadOnlyList<PlayerTarget> PlayerTargets => _playerTargets.Values.ToList();
+
+    /// <summary>
+    /// Registers a second player entity in D_8009FA58[1] for the type-14 trigger walk
+    /// (8003151C.c:105-122 tests every player entity, not only the P1 walker). The port models no
+    /// player entity besides the attached P1 body, so a caller has to supply the second body itself;
+    /// the message-10 loop over D_8009FA58[1] and the map-zone walk of a node with id == -1
+    /// (80031DE8.c:189-206) stay unmodelled.
+    /// </summary>
+    /// <param name="body">The second player's body; only slot 1 accepts it.</param>
+    /// <param name="actorId">Its actor record id (obj+0x14): 16 in CONFT.MIS.</param>
+    public void AttachSecondPlayer(MechBody body, int actorId)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        ArgumentOutOfRangeException.ThrowIfZero(actorId);
+        _playerTargets[actorId] = new PlayerTarget(actorId, body.X, body.Y, body.Z);
+        _secondPlayer = body;
+        _secondPlayerId = actorId;
+    }
+
+    /// <summary>
+    /// Refreshes the D_8009FA58 entities of this frame: the P1 body and, once attached, the second
+    /// player. <c>unkAC-&gt;unk40</c> is the form phase the body carries (0 = walker, 80031C74.c:102).
+    /// </summary>
+    private void UpdatePlayerTargets()
+    {
+        if (_walker is { } walker) UpdatePlayerTarget(Actor.Id, walker);
+        if (_secondPlayer is { } second && _secondPlayerId != 0)
+            UpdatePlayerTarget(_secondPlayerId, second);
+    }
+
+    private void UpdatePlayerTarget(int id, MechBody body)
+    {
+        if (!_playerTargets.TryGetValue(id, out var target))
+            _playerTargets[id] = target = new PlayerTarget(id, body.X, body.Y, body.Z);
+        var position = CoordOf(_parts[0].Model.Id, body.X, body.Y, body.Z);
+        target.X = position.X;
+        target.Y = position.Y;
+        target.Z = position.Z;
+        target.Radius = position.Radius;
+        target.Busy = body.Form != 0;
     }
 
     /// <summary>
@@ -432,7 +488,7 @@ public sealed class LevelScene
             if (node.MapZoneTarget is { } cached && node.MapZoneTargetId != cached.RecordId)
             {
                 node.MapZoneTarget = null;                                 // :111
-                node.MapZoneTimer = 0x258;                                 // :112 (s16, int arithmetic)
+                node.MapZoneTimer = 0x258;                                 // :112 (u16 node->t+0x16)
                 continue;
             }
 
@@ -445,15 +501,16 @@ public sealed class LevelScene
                     node.MapZoneTarget = target;
                     if (target is not null) node.MapZoneTargetId = target.RecordId;
                 }
-                // :148-151: 600 plus the random jitter, another 600 when nothing was found (:154-156).
-                node.MapZoneTimer = 0x258 + (pads.Random.Next() & 0x3F) + (target is null ? 0x258 : 0);
+                // :148-151: 600 plus the random jitter, another 600 when nothing was found (:154-156),
+                // stored in the u16 node->t+0x16.
+                node.MapZoneTimer = unchecked((ushort)(0x258 + (pads.Random.Next() & 0x3F) + (target is null ? 0x258 : 0)));
                 // :157-158: without a target the node goes to next, skipping the box test.
                 if (target is null) continue;
             }
-            // :159-160: node->timer -= delta runs on every frame with a non-zero target, the rescan
-            // frame included (:158 is not a goto next); a node whose timer already passed zero keeps
-            // rescanning every further frame (timer < delta stays true) until a target holds one.
-            node.MapZoneTimer = unchecked(node.MapZoneTimer - dt);
+            // :159-160: the u16 node->timer -= delta runs on every frame with a non-zero target, the
+            // rescan frame included (:158 is not a goto next); the subtraction wraps in 16 bits, so a
+            // node whose timer already passed zero keeps rescanning every further frame.
+            node.MapZoneTimer = unchecked((ushort)(node.MapZoneTimer - dt));
             if (node.MapZoneTarget is not { } nodeTarget) continue;
 
             // :161-168: the cached target is tested against the box every frame while it exists.
@@ -480,8 +537,9 @@ public sealed class LevelScene
         long dz = Math.Abs((long)(node.WorldY << positionScale) - target.Y) - target.Radius - node.ExtentY;
         if (dx >= 0 || dz >= 0 || dy >= 0) return false;
         // 80031C74.c:102: <c>other->unk16 == 1 &amp;&amp; (node->flags &amp; 4) &amp;&amp; other->ptrAC->unk40 != 0</c>
-        // rejects the player in hover mode after the box, before the script of :106.
-        return !(node.RequiresWalkerMode && target.DispatchType == 1 && target is PlayerTarget { Busy: true });
+        // rejects any type-1 entity whose control block is busy after the box, before the script of :106.
+        // The entity carries its own control-block word (<see cref="ICsacNodeId.Busy"/>), not the class.
+        return !(node.RequiresWalkerMode && target.DispatchType == 1 && target.Busy);
     }
 
     /// <summary>The cached target of a map zone (<c>node-&gt;target</c>, 80031DE8.c:131), or null.</summary>
