@@ -284,7 +284,7 @@ public sealed class PurchasePathTests
 
         // A busy candidate (hover mode, unkAC->unk40 != 0) is rejected by the flag-4 gate of
         // 80031C74.c:102: the node caches it, its box test runs and nothing fires.
-        var player = new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8, busy: true);
+        var player = new PlayerTarget(12, pad.WorldX, pad.WorldY, pad.WorldZ, busy: true);
         scene.AddMapZoneCandidate(player);
         Assert.True(ReferenceEquals(player, scene.MapZoneTargetOf(pad)));
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
@@ -339,7 +339,7 @@ public sealed class PurchasePathTests
 
         // The walker itself is the node-12 candidate (obj+0x14 of the player entity is its record id
         // 12, PlayerTarget), standing on the pad centre.
-        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8));
+        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX, pad.WorldY, pad.WorldZ));
         Assert.Equal(12, scene.MapZoneTargetOf(pad)?.RecordId);
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
         var fire = pad.LastFire ?? throw new InvalidOperationException("zone 106 did not fire");
@@ -456,7 +456,9 @@ public sealed class PurchasePathTests
             File.WriteAllBytes(path, mission);
             var scene = new LevelScene(path);
             scene.EnableObjectives();
-            Assert.Equal(layeredTile.Y, scene.PurchasePads!.FindPad(106)!.WorldY);
+            // 800319D4.c:131–132 stores the selected surface height in a signed halfword.
+            int mapZoneY = unchecked((short)(layeredTile.Y >> 8)) << 8;
+            Assert.Equal(mapZoneY, scene.PurchasePads!.FindPad(106)!.WorldY);
             Assert.Equal(layeredTile.Y, scene.PurchasePads.FindPad(152)!.WorldY);
         }
         finally

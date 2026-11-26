@@ -170,7 +170,7 @@ public class LevelSceneGapTests
         // (80031DE8.c:119-144) and this node's id is 12, i.e. the record id of the P1 player entity.
         // The old test relied on the walker standing on the zone; the player now enters the scan as
         // the candidate func_80031DE8 would list, standing in the zone centre (octile distance 0).
-        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8));
+        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX, pad.WorldY, pad.WorldZ));
         Assert.Equal(12, scene.MapZoneTargetOf(pad)?.RecordId);
 
         // The loader timer of the node is a random byte (800319D4.c:142); the box test runs every
@@ -221,7 +221,7 @@ public class LevelSceneGapTests
         // 80031C74.c:84-100 accepts it, and :104-115 returns 1 without entering the VM (no script).
         var words0 = pads.VmState.GameSession;
         words0[RpnsVmState.SessionHelisP1] = 100;
-        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8));
+        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX, pad.WorldY, pad.WorldZ));
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
         Assert.True(pad.LastFire is { Triggered: true }, "the node did not fire");
         Assert.Equal(100, words0[RpnsVmState.SessionHelisP1]);

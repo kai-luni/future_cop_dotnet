@@ -26,6 +26,11 @@ public sealed class PlayerTarget : ICsacNodeId
 
     public short NodeId => (short)RecordId;
 
+    // A detached player may still be referenced by a node until its next update.
+    public bool IsDetached { get; private set; }
+
+    public void Detach() => IsDetached = true;
+
     /// <summary>obj+0x16 of a player entity.</summary>
     public int DispatchType => 1;
 

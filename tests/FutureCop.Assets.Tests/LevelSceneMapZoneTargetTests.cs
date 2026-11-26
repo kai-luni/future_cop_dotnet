@@ -21,9 +21,11 @@ namespace FutureCop.Assets.Tests;
 /// </summary>
 public class LevelSceneMapZoneTargetTests
 {
-    // 80031DE8.c:148-158: a rescan arms 600 + (rand & 0x3F) and another 600 when it found nothing;
+    // 80031DE8.c:151-159 (asm/us/main.s:40447-40462): a rescan rearms from the old u16 timer with
+    // +600 + (rand & 0x3F); a miss stores that and skips the second +600 and -= delta, while a hit
+    // adds another +600 and subtracts delta.
     // 80031C74.c:115: a node without flag 2 is released (unlinked, freed) on its first box hit.
-    private const int EmptyRescanTicks = 1200;
+    private const int EmptyRescanTicks = 600;
 
     private readonly ITestOutputHelper _output;
 
@@ -56,24 +58,24 @@ public class LevelSceneMapZoneTargetTests
         var node = new PurchasePad(9001, PurchasePadKind.MapZone, 100, 0, 200,
             extentX: 0x1000, extentY: 0x400, extentZ: 0x1000, flags: 0x06, targetId: 12,
             matchSelector: 2, script0Offset: 0, script2Offset: 0);
-        var centre = new PlayerTarget(12, 100 << 8, 0, 200 << 8);
+        var centre = new PlayerTarget(12, 100, 0, 200);
         Assert.True(LevelScene.MapZoneBoxAccepts(node, centre));
         // One axis past the extent (0x1001 > 0x1000) fails the whole test.
-        Assert.False(LevelScene.MapZoneBoxAccepts(node, new PlayerTarget(12, (100 << 8) + 0x1001, 0, 200 << 8)));
-        Assert.False(LevelScene.MapZoneBoxAccepts(node, new PlayerTarget(12, 100 << 8, 0, (200 << 8) - 0x1001)));
-        Assert.False(LevelScene.MapZoneBoxAccepts(node, new PlayerTarget(12, 100 << 8, 0x401, 200 << 8)));
+        Assert.False(LevelScene.MapZoneBoxAccepts(node, new PlayerTarget(12, 100 + 0x1001, 0, 200)));
+        Assert.False(LevelScene.MapZoneBoxAccepts(node, new PlayerTarget(12, 100, 0, 200 - 0x1001)));
+        Assert.False(LevelScene.MapZoneBoxAccepts(node, new PlayerTarget(12, 100, 0x401, 200)));
         // The radius of the target (obj+0x68) is subtracted from the margin: 0x1002 out with radius 2
         // gives |delta| - radius - extent == 0, still a refusal; radius 3 goes negative and passes.
-        var offset = new PlayerTarget(12, (100 << 8) + 0x1002, 0, 200 << 8) { Radius = 2 };
+        var offset = new PlayerTarget(12, 100 + 0x1002, 0, 200) { Radius = 2 };
         Assert.False(LevelScene.MapZoneBoxAccepts(node, offset));
         offset.Radius = 3;
         Assert.True(LevelScene.MapZoneBoxAccepts(node, offset));
 
         // 80031C74.c:102: flag 4 and a busy player refuse, a clear control block and a non-player pass.
-        Assert.False(LevelScene.MapZoneBoxAccepts(node, new PlayerTarget(12, 100 << 8, 0, 200 << 8, busy: true)));
+        Assert.False(LevelScene.MapZoneBoxAccepts(node, new PlayerTarget(12, 100, 0, 200, busy: true)));
         Assert.True(LevelScene.MapZoneBoxAccepts(node, centre));
         node.Flags &= unchecked((byte)~4);
-        Assert.True(LevelScene.MapZoneBoxAccepts(node, new PlayerTarget(12, 100 << 8, 0, 200 << 8, busy: true)));
+        Assert.True(LevelScene.MapZoneBoxAccepts(node, new PlayerTarget(12, 100, 0, 200, busy: true)));
     }
 
     /// <summary>
@@ -95,12 +97,12 @@ public class LevelSceneMapZoneTargetTests
         walker.Z = zone.WorldZ;
 
         // The walker is the only candidate of node id 12 in this scene, and the scan measures it at
-        // the zone centre: octile distance 0 (80031DE8.c:130-134). The loader's random byte
-        // (800319D4.c:142) can arm the node above the walk of frame 1, so the rescan is forced here
-        // with the zero delta of the frame that runs it.
-        scene.AddMapZoneCandidate(new PlayerTarget(12, zone.WorldX << 8, zone.WorldY << 8, zone.WorldZ << 8));
+        // the zone centre: octile distance 0 (80031DE8.c:130-137). On a hit, RescanMapZoneTarget
+        // rearms from the existing u16 timer with +600 + (rand & 0x3F) + 600 - delta (80031DE8.c:151-159).
+        ushort beforeRescan = zone.MapZoneTimer;
+        scene.AddMapZoneCandidate(new PlayerTarget(12, zone.WorldX, zone.WorldY, zone.WorldZ));
         Assert.Equal(12, scene.MapZoneTargetOf(zone)?.RecordId);
-        Assert.InRange(zone.MapZoneTimer, 0x258, 0x297);                   // 600 + jitter
+        Assert.InRange(zone.MapZoneTimer, beforeRescan + 1200 - 1, beforeRescan + 1200 + 0x3F - 1);
 
         // The cached target is re-tested every frame (80031C74.c:84-108) and the timer counts down
         // (:159-160); flag 2 keeps the node linked.
@@ -116,14 +118,14 @@ public class LevelSceneMapZoneTargetTests
         scene.AddMapZoneCandidate(new SyntheticEntity(0x2300)
         {
             RecordId = 7, NodeId = 7, DispatchType = 5,
-            X = zone.WorldX << 8, Y = zone.WorldY << 8, Z = zone.WorldZ << 8,
+            X = zone.WorldX, Y = zone.WorldY, Z = zone.WorldZ,
         });
         scene.AdvanceSkyCaptain(1);
         Assert.Equal(12, zone.MapZoneTargetId);
         Assert.Equal(12, scene.MapZoneTargetOf(zone)?.RecordId);
 
-        // No candidate at all: the re-selection empties the cache (:148-158) and the box test drops
-        // out for the 1200 + jitter window; the node keeps itself (flag 2), only the target is gone.
+        // No candidate at all: the re-selection empties the cache (:151-155) and rearms from oldTimer
+        // with +600 + jitter without subtracting delta; the node keeps itself (flag 2).
         scene.SetMapZoneCandidates(Array.Empty<ICsacNodeId?>());
         Assert.Null(scene.MapZoneTargetOf(zone));
         Assert.False(scene.IsMapZoneReleased(zone));
@@ -161,11 +163,11 @@ public class LevelSceneMapZoneTargetTests
         _output.WriteLine($"zone {zoneId}, before: " + Dump(scene, zone, walker));
 
         // The unit sits exactly on the zone centre with the Csac node id of the Cact record and a
-        // dispatch type the scan accepts (:122-124). Scene coordinates are C coordinates (<<8).
+        // dispatch type the scan accepts (:123-126). Both zone and entity use full world coordinates.
         var unit = new SyntheticEntity(0x2150)
         {
             RecordId = csacId, NodeId = (short)csacId, DispatchType = 5,
-            X = zone.WorldX << 8, Y = zone.WorldY << 8, Z = zone.WorldZ << 8,
+            X = zone.WorldX, Y = zone.WorldY, Z = zone.WorldZ,
         };
         Assert.True(LevelScene.MapZoneBoxAccepts(zone, unit), $"zone {zoneId} does not test its own centre");
         scene.AddMapZoneCandidate(unit);
@@ -220,7 +222,7 @@ public class LevelSceneMapZoneTargetTests
         var unit = new SyntheticEntity(0x2150)
         {
             RecordId = csacId, NodeId = (short)csacId, DispatchType = 5,
-            X = zone.WorldX << 8, Y = zone.WorldY << 8, Z = zone.WorldZ << 8,
+            X = zone.WorldX, Y = zone.WorldY, Z = zone.WorldZ,
         };
         scene.AddMapZoneCandidate(unit);
         var session = pads.VmState.GameSession;
@@ -272,7 +274,7 @@ public class LevelSceneMapZoneTargetTests
         var unit = new SyntheticEntity(0x2150)
         {
             RecordId = 12, NodeId = 12, DispatchType = 1,
-            X = zone.WorldX << 8, Y = zone.WorldY << 8, Z = zone.WorldZ << 8,
+            X = zone.WorldX, Y = zone.WorldY, Z = zone.WorldZ,
         };
         scene.AddMapZoneCandidate(unit);
         var bank = (int[])session.Clone();
@@ -315,7 +317,7 @@ public class LevelSceneMapZoneTargetTests
         scene.AddMapZoneCandidate(new SyntheticEntity(0x2151)
         {
             RecordId = 75, NodeId = 75, DispatchType = 5,
-            X = zone.WorldX << 8, Y = zone.WorldY << 8, Z = zone.WorldZ << 8,
+            X = zone.WorldX, Y = zone.WorldY, Z = zone.WorldZ,
         });
         Assert.Null(scene.MapZoneTargetOf(zone));
         scene.AdvanceSkyCaptain(1);
@@ -356,16 +358,12 @@ public class LevelSceneMapZoneTargetTests
         // The scan fields of the spawned unit are its own (record +0x14 of Csac 75).
         Assert.Equal(75, ((ICsacNodeId)unit).NodeId);
 
-        // The unit stands in the zone box now, like a tank that walked in; the next frame's scan
-        // (culled at the zone, which is where the walker is) picks it and fires the node.
-        unit.X = zone.WorldX << 8;
-        unit.Z = zone.WorldZ << 8;
-        unit.Y = zone.WorldY << 8;
+        // The unit stands in the zone box now, at the zone's actual world coordinates (1382656, y, 856454);
+        // the next frame's scan (culled at the zone, where the walker stands) picks it and fires the node.
+        unit.X = zone.WorldX;
+        unit.Z = zone.WorldZ;
+        unit.Y = zone.WorldY;
         Assert.True(LevelScene.MapZoneBoxAccepts(zone, unit));
-        // The unit spawns at the origin of its Csac slot and is placed at a world ValidPoint; the
-        // test moves it in front of the walker, the zone centre it later stands on.
-        unit.X = zone.WorldX << 8;
-        unit.Z = zone.WorldZ << 8;
         scene.Entities.CullActive(zone.WorldX, zone.WorldZ);
         Assert.Contains(scene.Entities.Active, e => ReferenceEquals(e, unit));
         Assert.False(zone.Released);
@@ -389,7 +387,7 @@ public class LevelSceneMapZoneTargetTests
     /// <summary>
     /// The candidate gate of 80031DE8.c:121-128 on the zone 5 node (id 57): an id of 0 (retired,
     /// 8004D958.c:59), the type 0x15, the type 0x12, another node id and null slots are skipped; of
-    /// two candidates on node 57 the nearer wins. Zone 5 sits at (583680, 845700).
+    /// two candidates on node 57 the nearer wins. Zone 5's retail center is (583680, 845568).
     /// </summary>
     [ConftFact]
     public void CandidateScanSkipsRetiredIdsAndTypes15And12AndPicksTheNearest()
@@ -397,27 +395,330 @@ public class LevelSceneMapZoneTargetTests
         var scene = LoadScene();
         var zone = scene.PurchasePads!.FindPad(5)!;
         Assert.Equal(57, (int)zone.TargetId);
+        Assert.Equal((583680, 845568), (zone.WorldX, zone.WorldZ));
         SyntheticEntity Candidate(int id, short node, int type, int x, int z) => new(id)
         {
-            RecordId = id, NodeId = node, DispatchType = type, X = x << 8, Z = z << 8,
+            RecordId = id, NodeId = node, DispatchType = type, X = x, Z = z,
         };
-        var retiredId = Candidate(0, 57, 5, 583680, 845700);               // id 0 (80031DE8.c:121)
-        var typeFifteen = Candidate(1, 57, 0x15, 583680, 845700);          // :123
-        var typeTwelve = Candidate(2, 57, 0x12, 583680, 845700);           // :124
-        var otherNode = Candidate(3, 77, 5, 583680, 845700);               // :122
-        var far = Candidate(4, 57, 5, 583680 + 0x1000, 845700);
-        var near = Candidate(5, 57, 5, 583680 + 0x602, 845700 + 0x401);
+        var retiredId = Candidate(0, 57, 5, zone.WorldX, zone.WorldZ);               // id 0 (80031DE8.c:123)
+        var typeFifteen = Candidate(1, 57, 0x15, zone.WorldX, zone.WorldZ);          // :125
+        var typeTwelve = Candidate(2, 57, 0x12, zone.WorldX, zone.WorldZ);           // :126
+        var otherNode = Candidate(3, 77, 5, zone.WorldX, zone.WorldZ);               // :124
+        var far = Candidate(4, 57, 5, zone.WorldX + 0x1000, zone.WorldZ);
+        var near = Candidate(5, 57, 5, zone.WorldX + 0x602, zone.WorldZ + 0x401);
         var items = new ICsacNodeId?[] { retiredId, typeFifteen, typeTwelve, otherNode, far, near, null };
         scene.SetMapZoneCandidates(items);
         _output.WriteLine($"candidates: {string.Join(", ", scene.MapZoneCandidates()!.Select(c => c?.ToString() ?? "null"))}");
 
-        // The far candidate is 0x1000 east of zone 5 (583680/845700), the near one 0x602 and 0x401
-        // away: min is 0x401, so the octile distances are 0x1000 and 0xA03 + 0x401/2 (80031DE8.c:130-134).
+        // The far candidate is 0x1000 east of zone 5, the near one 0x602 and 0x401
+        // away: min is 0x401, so the octile distances are 0x1000 and 0xA03 - 0x401/2 (80031DE8.c:133-137).
         Assert.True(ReferenceEquals(near, scene.MapZoneTarget(zone)));
         var withoutNear = scene.MapZoneCandidates()!.Where(c => !ReferenceEquals(c, near)).ToArray();
         Assert.True(ReferenceEquals(far, scene.MapZoneTarget(zone, withoutNear)));
         var onlyRejected = new ICsacNodeId?[] { retiredId, typeFifteen, typeTwelve, otherNode, null };
         Assert.Null(scene.MapZoneTarget(zone, onlyRejected));
+    }
+
+    /// <summary>
+    /// Zone 240's retail center is (1382656, y, 856320) and targets
+    /// Csac unit 75. Both <see cref="LevelScene.MapZoneBoxAccepts"/> and
+    /// <see cref="PurchasePadSystem.SelectMapZoneTarget"/> must compare full world coordinates in the
+    /// same units without shifting <see cref="PurchasePad.WorldX"/>/<c>WorldY</c>/<c>WorldZ</c> by 8.
+    /// </summary>
+    [ConftFact]
+    public void Zone240AcceptsUnit75AtActualWorldCenterAndPicksNearestInWorldUnits()
+    {
+        var scene = LoadScene();
+        var zone = scene.PurchasePads!.FindPad(240)!;
+        const int retailZ = 856320; // 800319D4.c:117–118 stores signed halfwords after shifting.
+        var retailCenter = new SyntheticEntity(6) { RecordId = 75, NodeId = 75, X = 1382656, Z = retailZ };
+        var rawCenter = new SyntheticEntity(7) { RecordId = 75, NodeId = 75, X = 1382656, Z = 856454 };
+        Assert.Same(retailCenter, PurchasePadSystem.SelectMapZoneTarget(zone, new[] { rawCenter, retailCenter }));
+        Assert.False(LevelScene.MapZoneBoxAccepts(zone, new SyntheticEntity(8)
+        {
+            X = 1382656, Y = zone.WorldY, Z = 876101,
+        }));
+        Assert.Equal((75, 1382656, retailZ), ((int)zone.TargetId, zone.WorldX, zone.WorldZ));
+
+        var atCenter = new SyntheticEntity(1)
+        {
+            RecordId = 75, NodeId = 75, DispatchType = 5,
+            X = zone.WorldX, Y = zone.WorldY, Z = zone.WorldZ,
+        };
+        var atEdgeOutside = new SyntheticEntity(2)
+        {
+            RecordId = 75, NodeId = 75, DispatchType = 5,
+            X = zone.WorldX + zone.ExtentX, Y = zone.WorldY, Z = zone.WorldZ,
+        };
+        var shiftedBy8 = new SyntheticEntity(3)
+        {
+            RecordId = 75, NodeId = 75, DispatchType = 5,
+            X = zone.WorldX << 8, Y = zone.WorldY << 8, Z = zone.WorldZ << 8,
+        };
+        Assert.True(LevelScene.MapZoneBoxAccepts(zone, atCenter));
+        Assert.False(LevelScene.MapZoneBoxAccepts(zone, atEdgeOutside));
+        Assert.False(LevelScene.MapZoneBoxAccepts(zone, shiftedBy8));
+
+        // Nearest scan in actual world units: near is 0x400 away from (1382656, 856320),
+        // far is 0x2000 away, and a bogus << 8 coordinate is hundreds of millions of units away.
+        var near = new SyntheticEntity(4)
+        {
+            RecordId = 75, NodeId = 75, DispatchType = 5,
+            X = zone.WorldX + 0x400, Y = zone.WorldY, Z = zone.WorldZ,
+        };
+        var far = new SyntheticEntity(5)
+        {
+            RecordId = 75, NodeId = 75, DispatchType = 5,
+            X = zone.WorldX - 0x2000, Y = zone.WorldY, Z = zone.WorldZ,
+        };
+        Assert.True(ReferenceEquals(near, PurchasePadSystem.SelectMapZoneTarget(zone, new ICsacNodeId?[] { shiftedBy8, far, near })));
+        Assert.True(ReferenceEquals(far, PurchasePadSystem.SelectMapZoneTarget(zone, new ICsacNodeId?[] { shiftedBy8, far })));
+    }
+
+    /// <summary>
+    /// Finding 2 regression: <see cref="LevelScene.EnableObjectives"/> passes
+    /// <see cref="CsacUnitSpawner.Random"/> into <see cref="PurchasePadSystem.LoadFromMission"/>, and
+    /// the loaded system keeps that exact generator instance without consuming 30 extra catch-up draws.
+    /// </summary>
+    [ConftFact]
+    public void EnableObjectivesConsumesSharedRngInRetailRequestOrder()
+    {
+        string path = LevelSceneRetirementTests.FindMission()!;
+
+        var scene = new LevelScene(path) { EnableCsacSpawner = true };
+        scene.EnableObjectives();
+        var spawner = scene.CsacSpawner!;
+        var pads = scene.PurchasePads!;
+
+        Assert.Same(spawner.Random, pads.Random);
+        Assert.Equal(30, pads.ZoneLoadDraws);
+
+        // Fixed vectors at seed 0x457 from the retail PRNG (80019668.c, 80019720.c).
+        // VM draws first (80024A24.c:193–215), then CONFT's 57 positive Cfun periods,
+        // 30 type-95 actors and 36 positive Csac delays in streamed order (80024EC8.c:108–202).
+        Assert.Equal(new[] { 324, 442, 320, 606 }, pads.VmState.GameSession[6..10]);
+        Assert.Equal(206, pads.FindPad(106)!.MapZoneTimer);
+        Assert.Equal(228, pads.FindPad(58)!.MapZoneTimer);
+        Assert.Equal(1461, Assert.Single(spawner.Slots, slot => slot.Record.Id == 33).Timer);
+        Assert.Equal(1897196941, pads.Random.Next());
+    }
+
+    [ConftFact]
+    public void MapZoneLoadQuantizesSurfaceHeightLikeRetailHarness()
+    {
+        byte[] mission = File.ReadAllBytes(LevelSceneRetirementTests.FindMission()!);
+        // Port the +0x12345 and -1 surface results from leaf_systems_harness.c:717–772.
+        var positive = PurchasePadSystem.LoadFromMission(mission, groundHeight: (_, _, _) => 0x12345)!;
+        var negative = PurchasePadSystem.LoadFromMission(mission, groundHeight: (_, _, _) => -1)!;
+        Assert.Equal(0x12300, positive.FindPad(240)!.WorldY);
+        Assert.Equal(-0x100, negative.FindPad(240)!.WorldY);
+    }
+
+    [ConftFact]
+    public void SimultaneousMapZoneRescansDrawInReverseLoadOrder()
+    {
+        var scene = LoadScene();
+        var pads = scene.PurchasePads!;
+        var first = pads.FindPad(106)!;
+        var last = pads.FindPad(58)!;
+        foreach (var pad in pads.Pads)
+            if (pad != first && pad != last) pad.Flags |= 0x10;
+        scene.SetMapZoneCandidates(Array.Empty<ICsacNodeId?>());
+        pads.Random = new RetailRandom(0x457);
+        first.MapZoneTimer = last.MapZoneTimer = 0;
+
+        scene.AdvanceSkyCaptain(5);
+
+        // Port the prepend case of leaf_systems_harness.c:760–769: the last loaded node
+        // is visited first and receives jitter 28; the first loaded node gets 10.
+        Assert.Equal(610, first.MapZoneTimer);
+        Assert.Equal(628, last.MapZoneTimer);
+    }
+
+    /// <summary>
+    /// Finding 3 regression: retail <c>func_80031DE8</c> (<c>80031DE8.c:151-159</c>,
+    /// <c>asm/us/main.s:40447-40462</c>) rearms from the existing u16 timer with
+    /// <c>+600 + (rand &amp; 0x3F)</c>; on a miss (<c>target == null</c>) it stores that value and
+    /// skips both the second <c>+600</c> and <c>-= delta</c>, while on a hit (<c>target != null</c>)
+    /// it adds another <c>+600</c> and falls through to <c>-= delta</c>, all wrapping in 16 bits.
+    /// Covers both <see cref="LevelScene.AdvanceSkyCaptain"/> and
+    /// <see cref="PurchasePadSystem.RescanMapZoneTarget"/> across hit, miss, and 16-bit wrap.
+    /// </summary>
+    [ConftFact]
+    public void MapZoneRescanTimerMatchesRetailHitMissAnd16BitWrap()
+    {
+        var scene = LoadScene();
+        var pads = scene.PurchasePads!;
+        var zone = pads.FindPad(5)!; // TargetId = 57
+        Assert.Equal(57, (int)zone.TargetId);
+        // Disable all other map zones so only zone 5 consumes draws from pads.Random.
+        foreach (var other in pads.Pads)
+            if (other != zone && other.Kind == PurchasePadKind.MapZone)
+                other.Flags |= 0x10;
+
+        var candidate = new SyntheticEntity(777)
+        {
+            RecordId = 57, NodeId = 57, DispatchType = 5,
+            // Outside box so one-shot zone 5 does not release itself during the timer assertions.
+            X = zone.WorldX + zone.ExtentX + 0x4000, Y = zone.WorldY, Z = zone.WorldZ,
+        };
+
+        // 1) UpdateMapZoneTriggers MISS: oldTimer=3 < dt=5 -> (ushort)(3 + 600 + (r & 0x3F)), no +600, no -dt.
+        var refRng = new RetailRandom(0x457);
+        pads.Random = new RetailRandom(0x457);
+        scene.SetMapZoneCandidates(Array.Empty<ICsacNodeId?>());
+        // Consume the single draw used by SetMapZoneCandidates' immediate rescan on zone 5.
+        _ = refRng.Next();
+        zone.MapZoneTimer = 3;
+        scene.AdvanceSkyCaptain(5);
+        ushort expectedMiss = unchecked((ushort)(3 + 0x258 + (refRng.Next() & 0x3F)));
+        Assert.Null(zone.MapZoneTarget);
+        Assert.Equal(expectedMiss, zone.MapZoneTimer);
+
+        // 2) UpdateMapZoneTriggers HIT: oldTimer=4 < dt=5 -> (ushort)(4 + 600 + (r & 0x3F) + 600 - 5).
+        scene.SetMapZoneCandidates(new ICsacNodeId?[] { candidate });
+        _ = refRng.Next();
+        zone.MapZoneTimer = 4;
+        scene.AdvanceSkyCaptain(5);
+        ushort expectedHit = unchecked((ushort)(4 + 0x258 + (refRng.Next() & 0x3F) + 0x258 - 5));
+        Assert.Same(candidate, zone.MapZoneTarget);
+        Assert.Equal(expectedHit, zone.MapZoneTimer);
+
+        // 3) 16-bit wrap on UpdateMapZoneTriggers MISS: oldTimer=0xFE00 < dt=0xFF00 wraps across 0x10000.
+        scene.SetMapZoneCandidates(Array.Empty<ICsacNodeId?>());
+        _ = refRng.Next();
+        zone.MapZoneTimer = 0xFE00;
+        scene.AdvanceSkyCaptain(0xFF00);
+        ushort expectedWrapMiss = unchecked((ushort)(0xFE00 + 0x258 + (refRng.Next() & 0x3F)));
+        Assert.Equal(expectedWrapMiss, zone.MapZoneTimer);
+        Assert.InRange(zone.MapZoneTimer, (ushort)0x0058, (ushort)0x0097);
+
+        // 4) 16-bit wrap on UpdateMapZoneTriggers HIT: oldTimer=0xFC00 (first +600 = 0xFE58 does not wrap,
+        // second +600 = 0x00B0 wraps past 0xFFFF, then -dt wraps again in u16).
+        scene.SetMapZoneCandidates(new ICsacNodeId?[] { candidate });
+        _ = refRng.Next();
+        zone.MapZoneTimer = 0xFC00;
+        scene.AdvanceSkyCaptain(0xFD00);
+        ushort expectedWrapHit = unchecked((ushort)(0xFC00 + 0x258 + (refRng.Next() & 0x3F) + 0x258 - 0xFD00));
+        Assert.Equal(expectedWrapHit, zone.MapZoneTimer);
+
+        // 5) Direct RescanMapZoneTarget: miss, hit, and 16-bit wrap with small delta.
+        pads.TargetCandidates = Array.Empty<ICsacNodeId?>();
+        zone.MapZoneTimer = 0xFE20;
+        Assert.Null(pads.RescanMapZoneTarget(zone, delta: 7));
+        Assert.Equal(unchecked((ushort)(0xFE20 + 0x258 + (refRng.Next() & 0x3F))), zone.MapZoneTimer);
+
+        pads.TargetCandidates = new ICsacNodeId?[] { candidate };
+        zone.MapZoneTimer = 0xFC10;
+        Assert.Same(candidate, pads.RescanMapZoneTarget(zone, delta: 7));
+        Assert.Equal(unchecked((ushort)(0xFC10 + 0x258 + (refRng.Next() & 0x3F) + 0x258 - 7)), zone.MapZoneTimer);
+    }
+
+    /// <summary>
+    /// Finding 4 regression (P1 + hover gate): retail spawns players into <c>D_8009FA40</c> with
+    /// flag 8 (<c>800579D4.c:207</c>), so <c>gCullActiveEntitiesSolo</c> (<c>8004DF28.c:142</c>)
+    /// always includes them in <c>D_800A8F90</c>. Standing the walker at zone 107 (P1 tankpad,
+    /// <c>TargetId == 12</c>, <c>Script0Offset == 28</c>) with no manual
+    /// <see cref="LevelScene.AddMapZoneCandidate"/> must reject hover mode and buy tanks in walker
+    /// mode (matching base: <c>ScriptVars[11] == 4</c>, <c>Score0 == 5 -> 0</c> over 300 frames).
+    /// </summary>
+    [ConftFact]
+    public void ProductionWalkerAtZone107PurchasesTanksAndRespectsHoverGate()
+    {
+        string path = LevelSceneRetirementTests.FindMission()!;
+
+        // Hover arm: player is selected as the production candidate for zone 107, but flag 4 rejects hover.
+        var hoverScene = new LevelScene(path) { EnableCsacSpawner = true };
+        hoverScene.EnableObjectives();
+        var hoverPad = hoverScene.PurchasePads!.FindPad(107)!;
+        var hoverWalker = new MechBody { X = hoverPad.WorldX, Y = hoverPad.WorldY, Z = hoverPad.WorldZ, Form = 1 };
+        hoverScene.AttachWalker(hoverWalker);
+        hoverScene.Objectives!.Score.Score[0] = 5;
+        for (int i = 0; i < 300; i++) hoverScene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.Same(Assert.Single(hoverScene.PlayerTargets), hoverScene.MapZoneTargetOf(hoverPad));
+        Assert.Equal(0, hoverScene.PurchasePads.VmState.ScriptVars[11]);
+        Assert.Equal(5, hoverScene.ScoreSession(new HudSession()).Score0);
+
+        // Switching the same walker to Form 0 buys immediately on the cached production target.
+        hoverWalker.Form = 0;
+        hoverScene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.Equal(1, hoverScene.PurchasePads.VmState.ScriptVars[11]);
+        Assert.Equal(4, hoverScene.ScoreSession(new HudSession()).Score0);
+
+        // Walker arm (exact Opus zone-107 probe): 5 score -> 5 queued tanks, 1 drained by T18 -> var11 == 4, score == 0.
+        var walkScene = new LevelScene(path) { EnableCsacSpawner = true };
+        walkScene.EnableObjectives();
+        var pad = walkScene.PurchasePads!.FindPad(107)!;
+        walkScene.AttachWalker(new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 0 });
+        walkScene.Objectives!.Score.Score[0] = 5;
+        for (int i = 0; i < 300; i++) walkScene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.Equal(4, walkScene.PurchasePads.VmState.ScriptVars[11]);
+        Assert.Equal(0, walkScene.ScoreSession(new HudSession()).Score0);
+    }
+
+    /// <summary>
+    /// Finding 4 regression (P2 + hover + no duplicate registrations): P2 attached via
+    /// <see cref="LevelScene.AttachSecondPlayer"/> enters the production <c>D_800A8F90</c> scan and
+    /// drives P2's map-zone helipad 108 (<c>TargetId == 16</c>, <c>Script0Offset == 54</c>, flags 0x06),
+    /// respecting hover mode, and repeated attachments/frames never create duplicate player entries.
+    /// </summary>
+    [ConftFact]
+    public void ProductionSecondPlayerDrivesMapZoneAndHoverGateWithoutDuplicates()
+    {
+        string path = LevelSceneRetirementTests.FindMission()!;
+        var scene = new LevelScene(path) { EnableCsacSpawner = true };
+        scene.EnableObjectives();
+        var pads = scene.PurchasePads!;
+        var p2Helipad = pads.FindPad(108)!;
+        Assert.Equal((PurchasePadKind.MapZone, 16, 0x06), (p2Helipad.Kind, (int)p2Helipad.TargetId, p2Helipad.Flags));
+        Assert.NotEqual(0, p2Helipad.Script0Offset);
+
+        var p1 = new MechBody { X = 0x200000, Y = 0, Z = 0x200000, Form = 0 };
+        var p2 = new MechBody { X = p2Helipad.WorldX, Y = p2Helipad.WorldY, Z = p2Helipad.WorldZ, Form = 1 };
+        scene.AttachWalker(p1);
+        scene.AttachSecondPlayer(p2, 16);
+        scene.Objectives!.Score.Score[1] = 5;
+
+        // Re-attaching P1/P2 (and swapping P2 actorId and back) must not leave duplicate or stale registrations.
+        scene.AttachWalker(p1);
+        scene.AttachSecondPlayer(p2, 99);
+        scene.AttachSecondPlayer(p2, 16);
+        Assert.Equal(2, scene.PlayerTargets.Count);
+        Assert.DoesNotContain(scene.PlayerTargets, t => t.RecordId == 99);
+
+        // Hover mode: P2 is cached as zone 108's target when the loader timer expires, but flag 4 rejects purchase.
+        // Note: Sky Captain also shares team 2's score bank in 1P mode, so observe pad 108's own fire record
+        // and P2's heli counter directly.
+        p2Helipad.MapZoneTimer = 0;
+        for (int i = 0; i < 5; i++) scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        var p2Target = Assert.Single(scene.PlayerTargets, t => t.RecordId == 16);
+        Assert.Same(p2Target, scene.MapZoneTargetOf(p2Helipad));
+        Assert.Null(p2Helipad.LastFire);
+        Assert.Equal(0, pads.VmState.GameSession[RpnsVmState.SessionHelisP2]);
+
+        // Production candidate table must contain each player target exactly once across repeated frames.
+        var table = scene.MapZoneCandidates();
+        Assert.Equal(1, table.Count(c => c is PlayerTarget pt && pt.RecordId == scene.Actor.Id));
+        Assert.Equal(1, table.Count(c => c is PlayerTarget pt && pt.RecordId == 16));
+
+        // Walker mode: P2 purchases a helicopter on zone 108 without any manual AddMapZoneCandidate.
+        scene.Objectives.Score.Score[1] = 5;
+        p2.Form = 0;
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.True(p2Helipad.LastFire is { Triggered: true, Accepted: true });
+        Assert.Equal(4, scene.Objectives.Score.Score[1]);
+        Assert.Equal(1, pads.VmState.GameSession[RpnsVmState.SessionHelisP2]);
+
+        var previousFire = p2Helipad.LastFire;
+        scene.Objectives.Score.Score[1] = 5;
+        scene.AttachSecondPlayer(new MechBody { X = 0x200000, Z = 0x200000 }, 99);
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+
+        Assert.Null(scene.MapZoneTargetOf(p2Helipad));
+        Assert.Equal(0x258, p2Helipad.MapZoneTimer);
+        Assert.Equal(previousFire, p2Helipad.LastFire);
+        Assert.Equal(5, scene.Objectives.Score.Score[1]);
+        Assert.Equal(1, pads.VmState.GameSession[RpnsVmState.SessionHelisP2]);
     }
 
     private static string Dump(LevelScene scene, PurchasePad pad, MechBody walker) =>

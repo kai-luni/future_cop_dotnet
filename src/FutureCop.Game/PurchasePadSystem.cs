@@ -83,11 +83,12 @@ public sealed class PurchasePad
 
     /// <summary>
     /// The re-selection timer (<c>node->t+0x16</c>, a u16: the loader stores a random byte there,
-    /// 800319D4.c:142, and the walk re-arms it with <c>+= 0x258</c>, 80031DE8.c:157). An empty scan
-    /// arms 600 + 600 + (rand &amp; 0x3F), a scan that found a target 600 + (rand &amp; 0x3F)
-    /// (80031DE8.c:148-158) and <c>-= delta</c> of :159 wraps in 16 bits; 600 when the target is
-    /// gone (80031DE8.c:104-105); the loader value is 0..255 (<c>node->t+0x16 = func_80019668() &amp;
-    /// 0xFF</c>, 800319D4.c:142).
+    /// 800319D4.c:142). When <c>node-&gt;timer &lt; delta</c> (80031DE8.c:119,151-159;
+    /// <c>asm/us/main.s:40447-40462</c>), the walk rearms from the existing u16 timer with
+    /// <c>+600 + (rand &amp; 0x3F)</c>; on a miss (<c>target == null</c>) it stores that value and
+    /// moves to the next node without subtracting <c>delta</c>, while on a hit (<c>target != null</c>)
+    /// it adds another <c>+600</c> and falls through to <c>-= delta</c> (all wrapping in 16 bits).
+    /// On cached-target id mismatch (:113-116) it is set to 600.
     /// </summary>
     public ushort MapZoneTimer { get; set; }
 
@@ -254,6 +255,7 @@ public sealed class PurchasePadSystem
     private const uint TagSdat = 0x53444154u;
     private const uint TagFill = 0x46494C4Cu;
     private const uint TagCact = 0x43616374u;
+    private const uint TagCsac = 0x43736163u;
     private const uint TagCfun = 0x4366756Eu;
     private const uint TagTact = 0x74414354u;
     private const uint TagTfun = 0x7446554Eu;
@@ -285,13 +287,15 @@ public sealed class PurchasePadSystem
         IEnumerable<PurchasePad>? pads = null,
         IEnumerable<ScriptTimerEntry>? timers = null,
         byte[]? timerBytecode = null,
-        EntityWorld? world = null)
+        EntityWorld? world = null,
+        RetailRandom? random = null)
     {
         ArgumentNullException.ThrowIfNull(pool);
         Pool = pool;
         VmState = vmState ?? new RpnsVmState();
         _spawner = spawner;
         _timerBytecode = timerBytecode ?? Array.Empty<byte>();
+        Random = random ?? spawner?.Random ?? new RetailRandom();
 
         var entityWorld = world ?? new EntityWorld();
         if (pads is not null)
@@ -369,7 +373,8 @@ public sealed class PurchasePadSystem
         RpnsVmState? vmState = null,
         RetailRandom? random = null,
         EntityWorld? world = null,
-        Func<int, int, int, int>? groundHeight = null)
+        Func<int, int, int, int>? groundHeight = null,
+        Action<int>? registerSpawner = null)
     {
         var pool = RpnsPool.Extract(missionBytes);
         if (pool is null)
@@ -382,9 +387,9 @@ public sealed class PurchasePadSystem
             vmState.InitRetailRandomState(rng); // 80069B58.c:47-54
         }
 
-        // The node timers of 800319D4.c:142 draw from the loaders' generator, so the scene has to
-        // take over the generator at this state to keep the retail draw order.
-        byte zoneDraws = 0;
+        // The node timers of 800319D4.c:142 draw from the loaders' shared generator, which is kept on
+        // the constructed system so the scene uses the exact same RNG state without replaying draws.
+        int zoneDraws = 0;
         var pads = new List<PurchasePad>();
         var timers = new List<ScriptTimerEntry>();
         byte[] timerBytecode = Array.Empty<byte>();
@@ -398,6 +403,12 @@ public sealed class PurchasePadSystem
             }
 
             uint tag = BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(off + 0x18)..]);
+            if (tag == TagCsac)
+            {
+                // 80024EC8.c:108–202: dispatch Csac and Cact/Cfun in stream order on the same RNG.
+                registerSpawner?.Invoke(off);
+                continue;
+            }
             if (tag != TagCact && tag != TagCfun)
                 continue;
 
@@ -514,7 +525,7 @@ public sealed class PurchasePadSystem
                     short targetId = BinaryPrimitives.ReadInt16LittleEndian(src[0x1C..]);
                     pads.Add(new PurchasePad(
                         recordId, PurchasePadKind.MapZone,
-                        wx, wy, wz,
+                        MapZoneCoordinate(wx), MapZoneCoordinate(wy), MapZoneCoordinate(wz),
                         (rawX / 2) << 4, (rawY / 2) << 4, (rawZ / 2) << 4,
                         flags, targetId, matchSelector: 2,
                         s0, s2)
@@ -545,12 +556,15 @@ public sealed class PurchasePadSystem
             }
         }
 
-        var system = new PurchasePadSystem(pool, vmState, spawner, pads, timers, timerBytecode, world)
+        var system = new PurchasePadSystem(pool, vmState, spawner, pads, timers, timerBytecode, world, random: rng)
         {
             ZoneLoadDraws = zoneDraws,
         };
         return system;
     }
+
+    // 800319D4.c:117–132 stores signed halfwords; the scan and the box shift them back to world units.
+    private static int MapZoneCoordinate(int value) => unchecked((short)(value >> 8)) << 8;
 
     // Both loaders select the same gQuerySurfaceHeight mode (800319D4.c:121-132, 80030DE0.c:139-150).
     private static int SurfaceRank(int surfaceType) => surfaceType switch { 0 => -1, 1 => -2, _ => surfaceType - 2 };
@@ -702,41 +716,56 @@ public sealed class PurchasePadSystem
     public static IList<ICsacNodeId> ReadOnlyCandidates => Array.AsReadOnly(Array.Empty<ICsacNodeId>());
 
     /// <summary>
-    /// One byte of the shared loaders' generator for the node timer of 800319D4.c:142. The pads are
-    /// created before <see cref="Random"/> receives the scene's generator, so the load counts its own
-    /// draws; the scene keeps the count on the published generator.
-    /// </summary>
-    private int _zoneBytes;
-
-    private int NextZoneByte() => Random.Next() & 0xFF;
-
-    /// <summary>
-    /// Generator draws the loader spent on node timers (800319D4.c:142). The scene replaces
-    /// <see cref="Random"/> at load time, so it replays this many draws to keep the retail order.
+    /// Generator draws the loader spent on node timers (800319D4.c:142).
     /// </summary>
     public int ZoneLoadDraws { get; private init; }
 
     /// <summary>PRNG of the map-zone rescan jitter (<c>func_80019668() &amp; 0x3F</c>, 80031DE8.c:149).</summary>
-    public RetailRandom Random { get; set; } = new();
+    public RetailRandom Random { get; set; }
 
     /// <summary>
-    /// Publishes the frame's D_800A8F90 as <see cref="TargetCandidates"/>: the active entities, then
-    /// whatever an owner added with <see cref="AddTargetCandidate"/>. Entities that do not expose the
-    /// scan fields (<see cref="ICsacNodeId"/>) are empty slots, which the scan skips.
+    /// Publishes the frame's D_800A8F90 as <see cref="TargetCandidates"/>: the active entities, the
+    /// live player entities (which retail links into D_8009FA40 with flag 8 in 800579D4.c:207 so
+    /// 8004DF28.c:142 / 8004E248.c:140 always include them in D_800A8F90), and whatever an owner
+    /// added with <see cref="AddTargetCandidate"/>. Entities that do not expose the scan fields
+    /// (<see cref="ICsacNodeId"/>) are empty slots, which the scan skips; duplicate references are
+    /// omitted.
     /// </summary>
-    public void SyncTargetCandidates(IReadOnlyList<LiveEntity>? active)
+    public void SyncTargetCandidates(
+        IReadOnlyList<LiveEntity>? active,
+        IEnumerable<ICsacNodeId>? players = null)
     {
         if (OwnsTable) return;
-        var extra = ExtraCandidates.Count > 0 ? ExtraCandidates.ToArray() : Array.Empty<ICsacNodeId?>();
-        if (active is null)
+        var list = new List<ICsacNodeId?>();
+        var seen = new HashSet<ICsacNodeId>(ReferenceEqualityComparer.Instance);
+        if (active is not null)
         {
-            TargetCandidates = extra;
-            return;
+            for (int i = 0; i < active.Count; i++)
+            {
+                if (active[i] is ICsacNodeId candidate)
+                {
+                    if (seen.Add(candidate))
+                        list.Add(candidate);
+                }
+                else
+                {
+                    list.Add(null);
+                }
+            }
         }
-        var list = new ICsacNodeId?[active.Count + extra.Length];
-        for (int i = 0; i < active.Count; i++)
-            list[i] = active[i] is ICsacNodeId candidate ? candidate : null;
-        extra.CopyTo(list, active.Count);
+        if (players is not null)
+        {
+            foreach (var player in players)
+            {
+                if (player is not null && seen.Add(player))
+                    list.Add(player);
+            }
+        }
+        foreach (var extra in ExtraCandidates)
+        {
+            if (seen.Add(extra))
+                list.Add(extra);
+        }
         TargetCandidates = list;
         TargetCandidatesStale = false;
     }
@@ -747,24 +776,27 @@ public sealed class PurchasePadSystem
     /// </summary>
     public void AddTargetCandidate(ICsacNodeId? candidate)
     {
-        if (candidate is not null)
+        if (candidate is not null && !ExtraCandidates.Any(c => ReferenceEquals(c, candidate)))
         {
             ExtraCandidates.Add(candidate);
-            // Make the candidate visible to a scan that runs before the next frame rebuild.
-            var list = new ICsacNodeId?[TargetCandidates.Count + 1];
-            for (int i = 0; i < TargetCandidates.Count; i++) list[i] = TargetCandidates[i];
-            list[^1] = candidate;
-            TargetCandidates = list;
+            if (!TargetCandidates.Any(c => ReferenceEquals(c, candidate)))
+            {
+                // Make the candidate visible to a scan that runs before the next frame rebuild.
+                var list = new ICsacNodeId?[TargetCandidates.Count + 1];
+                for (int i = 0; i < TargetCandidates.Count; i++) list[i] = TargetCandidates[i];
+                list[^1] = candidate;
+                TargetCandidates = list;
+            }
         }
         TargetCandidatesStale = true;
     }
 
     /// <summary>
-    /// Re-selects the cached target of a map zone out of the scan of 80031DE8.c:119-155, the same
-    /// call the per-frame walk makes when the node's timer ran out. The scene uses it for a node the
-    /// walk has not reached yet in the frame (a unit placed inside its box): without it the stale
-    /// loader timer (800319D4.c:142) keeps the target empty for up to 1200 ticks. Sets the jittered
-    /// timer (<see cref="MapZoneTimer"/>) from <see cref="Random"/> like :149-151.
+    /// Re-selects the cached target of a map zone out of the scan of 80031DE8.c:119-160, the same
+    /// call the per-frame walk makes when the node's timer ran out. Rearms <see cref="PurchasePad.MapZoneTimer"/>
+    /// from its existing u16 value with <c>+600 + (rand &amp; 0x3F)</c>; on a miss stores that value
+    /// without subtracting <paramref name="delta"/>, and on a hit adds another <c>+600</c> and
+    /// subtracts <paramref name="delta"/> (all wrapping in 16 bits, <c>asm/us/main.s:40447-40462</c>).
     /// </summary>
     public ICsacNodeId? RescanMapZoneTarget(PurchasePad node, int delta)
     {
@@ -777,10 +809,16 @@ public sealed class PurchasePadSystem
             node.MapZoneTarget = target;
             if (target is not null) node.MapZoneTargetId = target.RecordId;
         }
-        // :151 arms 600 + (rand & 0x3F) and :157 adds another 600 when nothing was found; :159 subtracts
-        // delta — all on the u16 node->t+0x16, so the subtraction wraps in 16 bits.
-        node.MapZoneTimer = unchecked((ushort)(0x258 + (Random.Next() & 0x3F) + (target is null ? 0x258 : 0)));
-        if (target is not null) node.MapZoneTimer = unchecked((ushort)(node.MapZoneTimer - delta));
+        // 80031DE8.c:151-159 (asm/us/main.s:40447-40462): rearm from existing u16 timer with
+        // +600 + (rand & 0x3F); miss stores and skips the second +600 and -= delta; hit adds
+        // another +600 and subtracts delta, all in 16-bit unsigned arithmetic.
+        ushort rearmed = unchecked((ushort)(node.MapZoneTimer + 0x258 + (Random.Next() & 0x3F)));
+        if (target is null)
+        {
+            node.MapZoneTimer = rearmed;
+            return null;
+        }
+        node.MapZoneTimer = unchecked((ushort)(rearmed + 0x258 - delta));
         return target;
     }
 
@@ -824,18 +862,19 @@ public sealed class PurchasePadSystem
         ArgumentNullException.ThrowIfNull(node);
         ArgumentNullException.ThrowIfNull(candidates);
         ICsacNodeId? target = null;
-        int bestDist = 0;
+        long bestDist = 0;
         foreach (var candidate in candidates)
         {
-            if (candidate is null) continue;
-            if (candidate.RecordId <= 0) continue;                         // :121
-            if (candidate.NodeId != node.TargetId) continue;               // :122
-            if (candidate.DispatchType is 0x15 or 0x12) continue;          // :123-124
-            // The node coordinate is a s16 world unit << 8 (:125, :127).
-            int dx = Math.Abs(candidate.X - (node.WorldX << 8));            // :125-126, |dx| = s + (dx >> 31) ^ (dx >> 31)
-            int dy = Math.Abs(candidate.Z - (node.WorldZ << 8));            // :127-128
-            int dist = dx + dy - Math.Min(dx, dy) / 2;                      // :130-134
-            if (target is null || dist < bestDist)                          // :135-140
+            if (candidate is null or PlayerTarget { IsDetached: true }) continue;
+            if (candidate.RecordId <= 0) continue;                         // :123
+            if (candidate.NodeId != node.TargetId) continue;               // :124
+            if (candidate.DispatchType is 0x15 or 0x12) continue;          // :125-126
+            // Both candidate.X/Z and node.WorldX/Z are already in full world units
+            // (retail stores node->x/y >> 8 in s16 at 800319D4.c:117-118 and shifts << 8 at :127,:130).
+            long dx = Math.Abs((long)candidate.X - node.WorldX);           // :127-128
+            long dy = Math.Abs((long)candidate.Z - node.WorldZ);           // :130-131
+            long dist = dx + dy - Math.Min(dx, dy) / 2;                    // :133-137
+            if (target is null || dist < bestDist)                         // :138-142
             {
                 target = candidate;
                 bestDist = dist;

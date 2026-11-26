@@ -215,17 +215,18 @@ public sealed class LevelScene
             SinglePlayerTeam = droneTeam,
             Player0Team = _playerTeam,
         };
-        _csacSpawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(_file.Bytes, r));
+        var spawnerRecords = records.Where(r => r.Container == EntityContainer.Csac).ToDictionary(r => r.HeaderOffset);
         _purchasePads = PurchasePadSystem.LoadFromMission(_file.Bytes, _csacSpawner, random: _csacSpawner.Random,
-            world: _entities, groundHeight: (x, z, rank) => LevelGround.PlacementHeight(Map, x, z, rank) ?? 0);
+            world: _entities, groundHeight: (x, z, rank) => LevelGround.PlacementHeight(Map, x, z, rank) ?? 0,
+            registerSpawner: offset =>
+            {
+                if (spawnerRecords.TryGetValue(offset, out var record))
+                    _csacSpawner.Register(record, MissionEntities.ReadSpawnerParameters(_file.Bytes, record));
+            });
+        if (_purchasePads is null)
+            _csacSpawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(_file.Bytes, r));
         if (_purchasePads is not null)
         {
-            // The rescan jitter of 80031DE8.c:149 comes from the same generator as the loaders, which
-            // already drew the node timers of 800319D4.c:142; only a generator handed in later (a load
-            // without the spawner) misses those draws and is caught up here.
-            for (int i = 0; i < _purchasePads.ZoneLoadDraws && !ReferenceEquals(_purchasePads.Random, _csacSpawner.Random); i++)
-                _csacSpawner.Random.Next();
-            _purchasePads.Random = _csacSpawner.Random;
             _purchasePads.VmState.GameSession[RpnsVmState.SessionPlayerCount] = 1;
             // Route RPNS op 56 (func_8004DC64) commands 0x52 (seek/snap) and 0x53 (freeze/unfreeze)
             // to placed type-10 elevators (80041728.c:88-136).
@@ -379,9 +380,13 @@ public sealed class LevelScene
     {
         if (_purchasePads is not { } pads || _objectives is not { } objectives) return;
         _purchaseFrameTime = unchecked(_purchaseFrameTime + dt);
+        // Refresh D_8009FA58 player targets before syncing D_800A8F90 (retail spawns players into
+        // D_8009FA40 with flag 8 in 800579D4.c:207, so gCullActiveEntitiesSolo/Split always place
+        // them in D_800A8F90 for 80031DE8.c:119-144).
+        if (_walker is { }) UpdatePlayerTargets();
         // D_800A8F90 for this frame, in the frame order retail walks it (the node list, 80031DE8.c:90).
         // A table a caller assigned itself stays as it is; the walk below then rescans from it.
-        if (!pads.OwnsTable || pads.TargetCandidatesStale) pads.SyncTargetCandidates(_entities?.Active);
+        if (!pads.OwnsTable) pads.SyncTargetCandidates(_entities?.Active, _playerTargets.Values);
         if (_skyCaptain is { } sky) pads.SyncFromEconomy(sky.Economy);
         pads.SyncFromMatchScore(objectives.Score);
         pads.TickTimers(dt);
@@ -391,7 +396,6 @@ public sealed class LevelScene
             // Type-14 trigger attachments: func_8003151C message 10 tests a pad against the player
             // entity the message carries (8003151C.c:105-122), so the scene walks the D_8009FA58
             // entries it has (80031DE8.c:19) instead of measuring from the P1 body alone.
-            UpdatePlayerTargets();
             var players = _playerTargets.Values;
             foreach (var pad in pads.Pads)
             {
@@ -421,11 +425,10 @@ public sealed class LevelScene
     public IReadOnlyList<PlayerTarget> PlayerTargets => _playerTargets.Values.ToList();
 
     /// <summary>
-    /// Registers a second player entity in D_8009FA58[1] for the type-14 trigger walk
-    /// (8003151C.c:105-122 tests every player entity, not only the P1 walker). The port models no
-    /// player entity besides the attached P1 body, so a caller has to supply the second body itself;
-    /// the message-10 loop over D_8009FA58[1] and the map-zone walk of a node with id == -1
-    /// (80031DE8.c:189-206) stay unmodelled.
+    /// Registers a second player entity in D_8009FA58[1] for both the map-zone candidate table
+    /// (800579D4.c:189,207; 8004E248.c:140) and the type-14 trigger walk (8003151C.c:105-122).
+    /// Replacing an existing second player removes its previous registration so no duplicate entries
+    /// accumulate.
     /// </summary>
     /// <param name="body">The second player's body; only slot 1 accepts it.</param>
     /// <param name="actorId">Its actor record id (obj+0x14): 16 in CONFT.MIS.</param>
@@ -433,9 +436,14 @@ public sealed class LevelScene
     {
         ArgumentNullException.ThrowIfNull(body);
         ArgumentOutOfRangeException.ThrowIfZero(actorId);
-        _playerTargets[actorId] = new PlayerTarget(actorId, body.X, body.Y, body.Z);
+        if (actorId == Actor.Id)
+            throw new ArgumentException($"Second player actor id {actorId} collides with player 1.", nameof(actorId));
+        if (_secondPlayerId != 0 && _secondPlayerId != actorId && _playerTargets.Remove(_secondPlayerId, out var removed))
+            removed.Detach();
         _secondPlayer = body;
         _secondPlayerId = actorId;
+        UpdatePlayerTarget(actorId, body);
+        if (_purchasePads is { } pads) pads.TargetCandidatesStale = true;
     }
 
     /// <summary>
@@ -462,60 +470,74 @@ public sealed class LevelScene
     }
 
     /// <summary>
-    /// func_80031DE8 (80031DE8.c:85-204), the per-frame walk of the map-zone node list D_8009F6F8 for
-    /// one player: every node with <c>node-&gt;id != -1</c> (every CONFT map zone, 80031DE8.c:100-159)
-    /// drops a cached target whose id changed, rescans D_800A8F90 when its timer ran out, and tests
-    /// its cached target against the trigger box every frame while that target exists. A non-zero
-    /// box test does not return the node without flag 2 (:176-184): the node is freed, which the port
-    /// models as <see cref="PurchasePad.Released"/>. The walker stands in for the D_8009FA58 target
-    /// only as a candidate of that scan (:121-144): it never becomes a target by its own right.
-    /// Single-player only: the list order, the prev-pointer unlinking and the two-player fallback of
-    /// :189-206 are not modelled.
+    /// func_80031DE8 (80031DE8.c:87-208), the per-frame walk of the map-zone node list D_8009F6F8:
+    /// every node with <c>node-&gt;id != -1</c> (every CONFT map zone, 80031DE8.c:111-162) drops a
+    /// cached target whose id changed, rescans D_800A8F90 when its timer ran out, and tests its
+    /// cached target against the trigger box every frame while that target exists. Unassigned nodes
+    /// (<c>node-&gt;id == -1</c>) test the D_8009FA58 player targets directly (:164-199). A non-zero
+    /// box test releases the node unless it carries flag 2 (:172-184), modelled as
+    /// <see cref="PurchasePad.Released"/>.
     /// </summary>
 
     private void UpdateMapZoneTriggers(PurchasePadSystem pads, int dt)
     {
-        for (int index = 0; index < pads.Pads.Count; index++)
+        // 800319D4.c:114–119 prepends nodes; 80031DE8.c:102–104 starts at the head.
+        for (int index = pads.Pads.Count - 1; index >= 0; index--)
         {
             var node = pads.Pads[index];
             if (node.Kind != PurchasePadKind.MapZone) continue;
-            if (node.Released) continue;                                   // :101-103 (node unlinked and freed, :176-184)
-            if ((node.Flags & 0x10) != 0) continue;                        // :105-107
+            if (node.Released) continue;                                   // :105-107 (node unlinked and freed, :176-184)
+            if ((node.Flags & 0x10) != 0) continue;                        // :108-110
 
-            // :109-116: a cached target with another id is dropped, the timer is set to 600 and the
-            // node goes straight to the list's next entry (goto next): the frame neither decrements
-            // nor rescans it.
-            if (node.MapZoneTarget is { } cached && node.MapZoneTargetId != cached.RecordId)
+            if (node.TargetId == -1)                                       // :111, :164-199 (unassigned node tests D_8009FA58[0..1])
             {
-                node.MapZoneTarget = null;                                 // :111
-                node.MapZoneTimer = 0x258;                                 // :112 (u16 node->t+0x16)
+                foreach (var player in _playerTargets.Values)
+                {
+                    if (!MapZoneBoxAccepts(node, player)) continue;
+                    _ = pads.FireMapZone(node, player);
+                    if ((node.Flags & 2) == 0)
+                    {
+                        node.Released = true;
+                        break;
+                    }
+                }
                 continue;
             }
 
-            // :118: the timer is compared against delta only; it is never decremented here.
+            // :112-118: drop invalid targets, including a detached scene player. The node resets to
+            // 600 and goes straight to the next entry: this frame neither decrements nor rescans it.
+            if (node.MapZoneTarget is { } cached &&
+                (node.MapZoneTargetId != cached.RecordId || cached is PlayerTarget { IsDetached: true }))
+            {
+                node.MapZoneTarget = null;                                 // :114
+                node.MapZoneTimer = 0x258;                                 // :115 (u16 node->t+0x16)
+                continue;
+            }
+
+            // :119: the timer is compared against delta only; it is never decremented here.
             if (node.MapZoneTimer < dt)
             {
-                var target = PurchasePadSystem.SelectMapZoneTarget(node, pads.TargetCandidates); // :119-140
-                if (!ReferenceEquals(node.MapZoneTarget, target))          // :142-147
+                var target = PurchasePadSystem.SelectMapZoneTarget(node, pads.TargetCandidates); // :120-144
+                if (!ReferenceEquals(node.MapZoneTarget, target))          // :145-150
                 {
                     node.MapZoneTarget = target;
                     if (target is not null) node.MapZoneTargetId = target.RecordId;
                 }
-                // :148-151: 600 plus the random jitter, another 600 when nothing was found (:154-156),
-                // stored in the u16 node->t+0x16.
-                node.MapZoneTimer = unchecked((ushort)(0x258 + (pads.Random.Next() & 0x3F) + (target is null ? 0x258 : 0)));
-                // :157-158: without a target the node goes to next, skipping the box test.
+                // :151-157 (asm/us/main.s:40447-40456): rearm from the existing u16 timer with
+                // +600 + (rand & 0x3F); on a miss store and goto next (no second +600 and no -= delta);
+                // on a hit add another +600 before falling through to -= delta (:159).
+                node.MapZoneTimer = unchecked((ushort)(node.MapZoneTimer + 0x258 + (pads.Random.Next() & 0x3F)));
                 if (target is null) continue;
+                node.MapZoneTimer = unchecked((ushort)(node.MapZoneTimer + 0x258));
             }
-            // :159-160: the u16 node->timer -= delta runs on every frame with a non-zero target, the
-            // rescan frame included (:158 is not a goto next); the subtraction wraps in 16 bits, so a
-            // node whose timer already passed zero keeps rescanning every further frame.
+            // :159-160: u16 node->timer -= delta runs on non-rescan frames and on rescan hits,
+            // wrapping in 16 bits.
             node.MapZoneTimer = unchecked((ushort)(node.MapZoneTimer - dt));
             if (node.MapZoneTarget is not { } nodeTarget) continue;
 
-            // :161-168: the cached target is tested against the box every frame while it exists.
+            // :168-174: the cached target is tested against the box every frame while it exists.
             if (!MapZoneBoxAccepts(node, nodeTarget)) continue;
-            // :110-112: the script of the node runs with arg2 = target id & 0x7FFF, then the node
+            // :106-115: the script of the node runs with arg2 = target id & 0x7FFF, then the node
             // returns 1 and is unlinked and freed unless it carries flag 2 (:115).
             _ = pads.FireMapZone(node, nodeTarget);
             if ((node.Flags & 2) == 0) node.Released = true;
@@ -523,18 +545,18 @@ public sealed class LevelScene
     }
 
     /// <summary>
-    /// The box test of func_80031C74 (80031C74.c:84-100) without the script side: on every axis
-    /// <c>|(node &lt;&lt; 8) - target| - target radius - (node extent &lt;&lt; 4) &lt; 0</c>.
+    /// The box test of func_80031C74 (80031C74.c:84-103) without the script side: on every axis
+    /// <c>|node - target| - target radius - node extent &lt; 0</c>, with both <see cref="PurchasePad"/>
+    /// (<c>WorldX/Y/Z</c>) and <see cref="ICsacNodeId"/> (<c>X/Y/Z</c>) in full world units (retail
+    /// stores <c>node-&gt;x/y/z &gt;&gt; 8</c> in <c>s16</c> and shifts back by <c>&lt;&lt; 8</c>).
     /// </summary>
-    public static bool MapZoneBoxAccepts(PurchasePad node, ICsacNodeId target, int positionScale = 8)
+    public static bool MapZoneBoxAccepts(PurchasePad node, ICsacNodeId target)
     {
         ArgumentNullException.ThrowIfNull(node);
         ArgumentNullException.ThrowIfNull(target);
-        // The entity coordinates are the C ones (pos +0x50/54/58 at <<8 scale, 80031C74.c:84-100);
-        // the scene passes its finer world scale instead.
-        long dx = Math.Abs((long)(node.WorldX << positionScale) - target.X) - target.Radius - node.ExtentX;
-        long dy = Math.Abs((long)(node.WorldZ << positionScale) - target.Z) - target.Radius - node.ExtentZ;
-        long dz = Math.Abs((long)(node.WorldY << positionScale) - target.Y) - target.Radius - node.ExtentY;
+        long dx = Math.Abs((long)node.WorldX - target.X) - target.Radius - node.ExtentX;
+        long dz = Math.Abs((long)node.WorldZ - target.Z) - target.Radius - node.ExtentZ;
+        long dy = Math.Abs((long)node.WorldY - target.Y) - target.Radius - node.ExtentY;
         if (dx >= 0 || dz >= 0 || dy >= 0) return false;
         // 80031C74.c:102: <c>other->unk16 == 1 &amp;&amp; (node->flags &amp; 4) &amp;&amp; other->ptrAC->unk40 != 0</c>
         // rejects any type-1 entity whose control block is busy after the box, before the script of :106.
@@ -683,6 +705,8 @@ public sealed class LevelScene
             GroundObjects = ObjectRegistry.ProbeGroundObjects,
         };
         MechWorld = (body.X, body.Y, body.Z);
+        UpdatePlayerTarget(Actor.Id, body);
+        if (_purchasePads is { } pads) pads.TargetCandidatesStale = true;
         ObjectRegistry.CullActiveElevators(body.X, body.Z);
     }
 
