@@ -80,7 +80,12 @@ public sealed class WeaponPickup
     /// <summary>Descriptor +0x3A: spin rate; <c>((rate &lt;&lt; 4) / 218) &gt;&gt; 4</c> lands in +0xD4.</summary>
     public short Rate { get; init; }
     /// <summary>Last hierarchy entry: the Cobj id of the first aRSL reference, 0 when there is none.</summary>
-    public int ModelId { get; init; }
+    /// <remarks>
+    /// Defaults to <see cref="WeaponPickups.NoModel"/>, not 0: no mission resource is named 0, but a
+    /// lookup by id would still match the first model in a list that carries none, and the pickup
+    /// would then borrow an unrelated model. func_8002ACB4:60-62 draws nothing without a model.
+    /// </remarks>
+    public int ModelId { get; init; } = WeaponPickups.NoModel;
     /// <summary>File offset of the 0x3C-byte placement descriptor (<c>chunk + 0x08</c>).</summary>
     public int RecordOffset { get; init; }
 
@@ -290,6 +295,14 @@ public sealed class WeaponPickups
     public const byte PlacementPayloadType = 0x10;
     /// <summary>Byte offset of the placement record from the chunk start (func_80019C38 - 4).</summary>
     public const int RecordFromChunk = 0x08;
+    /// <summary>
+    /// <see cref="WeaponPickup.ModelId"/> of a record whose aRSL list carries no Cobj entry. -1 can
+    /// never be a model id, so the draw path finds no model and the record draws nothing, exactly
+    /// like the null instance func_8002ACB4:60-62 skips. 0 is not usable as "no model": a task-21
+    /// probe of PA/CONFT.MIS found the port's model list populated with ids 12..66 and no 0, so a
+    /// later loader that does index from 0 would make every missing entry draw a real model.
+    /// </summary>
+    public const int NoModel = -1;
 
     private readonly List<WeaponPickup> _items = new();
     private readonly Dictionary<byte, WeaponSlotLimits> _limits = new();
@@ -328,6 +341,18 @@ public sealed class WeaponPickups
         ArgumentNullException.ThrowIfNull(pickup);
         _items.Add(pickup);
         return pickup;
+    }
+
+    /// <summary>Swaps one item for another in place, keeping its archive position.</summary>
+    /// <param name="current">Item to replace; must be the entry in <see cref="Items"/>.</param>
+    /// <param name="replacement">New item at the same index.</param>
+    public void Replace(WeaponPickup current, WeaponPickup replacement)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(replacement);
+        int index = _items.IndexOf(current);
+        if (index < 0) throw new ArgumentException("item is not part of this field", nameof(current));
+        _items[index] = replacement;
     }
 
     /// <summary>
@@ -579,7 +604,10 @@ public sealed class WeaponPickups
                 ground = LevelGround.PlacementHeight(map, x, z, WeaponPickup.GroundRank(kindType)) ?? 0;
             int y = ground + (height << 4);
 
-            int modelId = 0;
+            // func_8004D6D4:143-150 resolves the record's aRSL pairs through func_80019BF0 and hands the
+            // list to the spawn path; no model is attached when no pair resolves. A record without an
+            // aRSL Cobj entry therefore draws nothing (func_8002ACB4:60-62 skips a null instance).
+            int modelId = NoModel;
             int list = p + length;
             if (list + 12 <= data.Length &&
                 System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(list)) == arsl &&

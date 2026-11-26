@@ -451,6 +451,31 @@ public class WeaponPickupTests
     }
 
     [Fact]
+    public void ARecordWithoutAnArslCobjEntryHasNoModel()
+    {
+        // func_8004D6D4:143-150 only resolves aRSL pairs that name a resource; with none resolved the
+        // spawn path attaches no model, and func_8002ACB4:60-62 then returns 0 without drawing.
+        var withModel = Placement(0x64, 4096, 8192, 0, 81, 819, 819, 2048, 6488064, 0x03000001, -1, 1228, 23);
+        var withoutList = withModel[..0x44].ToArray();               // the tACT chunk alone, no aRSL
+        var nullList = (byte[])withModel.Clone();                    // an aRSL whose only pair is NULL
+        BinaryPrimitives.WriteUInt32LittleEndian(nullList.AsSpan(0x44 + 12), ChunkReader.TagValue("NULL"));
+        BinaryPrimitives.WriteInt32LittleEndian(nullList.AsSpan(0x44 + 16), 23);
+
+        foreach (var data in new[] { withoutList, nullList })
+        {
+            var (archive, registry) = Archive(data);
+            var field = WeaponPickups.FromMission(archive, registry, map: null, difficulty: 0);
+            var item = Assert.Single(field.Items);
+            Assert.Equal(WeaponPickups.NoModel, item.ModelId);
+            // 0 is a valid resource name on a mission that has one, so it must not stand in for "none".
+            Assert.NotEqual(0, item.ModelId);
+            // The placement itself is intact: only the model is missing.
+            Assert.Equal(4096, item.X);
+            Assert.Equal(8192, item.Z);
+        }
+    }
+
+    [Fact]
     public void GroundRankFollowsTheTerrainSelectorOfFunc8002FA20()
     {
         // func_8002FA20:106-110: type 0 -> -1, 1 -> -2, otherwise type - 2.
