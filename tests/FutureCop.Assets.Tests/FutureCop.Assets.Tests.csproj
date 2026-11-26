@@ -16,6 +16,7 @@
     <Compile Include="../../tools/FcLevelTv/BitmapHud.cs" Link="BitmapHud.cs" />
     <Compile Include="../../tools/FcMainMenu/MenuFlow.cs" Link="MenuFlow.cs" />
     <Compile Include="../../tools/FcMainMenu/MenuLabels.cs" Link="MenuLabels.cs" />
+    <Compile Include="../../tools/FcMainMenu/MenuArchive.cs" Link="MenuArchive.cs" />
     <Compile Include="../../tools/FcMainMenu/X11PanelLayout.cs" Link="X11PanelLayout.cs" />
     <Compile Include="../../tools/FcMainMenu/FrameBlit.cs" Link="FrameBlit.cs" />
     <Compile Include="../../tools/FcMainMenu.Tizen/BitmapPanel.cs" Link="BitmapPanel.cs" />

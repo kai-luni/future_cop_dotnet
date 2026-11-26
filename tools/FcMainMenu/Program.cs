@@ -6,7 +6,9 @@ using FcMainMenu;
 
 const int width = 640, height = 480;
 var labels = MenuLabels.Load(args.FirstOrDefault(), AppContext.BaseDirectory, Console.Error);
-string path = labels.ArchivePath;
+// Scene, labels and audio read the same archive: the path is resolved from the program directory
+// (MenuArchive walks up to build/disc/files/CW/FE.MIS), not from the working directory we start in.
+string? path = MenuArchive.Resolve(args.FirstOrDefault(), AppContext.BaseDirectory) ?? labels.ArchivePath;
 var flow = new MenuFlow(path, MenuFlow.SceneKindFrom(Environment.GetEnvironmentVariable("FC_MENU_SCENE")),
     Console.Out, Console.Error, enableLevelMovement: true);
 var menu = flow.Menu;
