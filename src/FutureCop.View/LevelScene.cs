@@ -215,9 +215,16 @@ public sealed class LevelScene
             SinglePlayerTeam = droneTeam,
             Player0Team = _playerTeam,
         };
-        _csacSpawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(_file.Bytes, r));
+        var spawnerRecords = records.Where(r => r.Container == EntityContainer.Csac).ToDictionary(r => r.HeaderOffset);
         _purchasePads = PurchasePadSystem.LoadFromMission(_file.Bytes, _csacSpawner, random: _csacSpawner.Random,
-            world: _entities, groundHeight: (x, z, rank) => LevelGround.PlacementHeight(Map, x, z, rank) ?? 0);
+            world: _entities, groundHeight: (x, z, rank) => LevelGround.PlacementHeight(Map, x, z, rank) ?? 0,
+            registerSpawner: offset =>
+            {
+                if (spawnerRecords.TryGetValue(offset, out var record))
+                    _csacSpawner.Register(record, MissionEntities.ReadSpawnerParameters(_file.Bytes, record));
+            });
+        if (_purchasePads is null)
+            _csacSpawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(_file.Bytes, r));
         if (_purchasePads is not null)
         {
             _purchasePads.VmState.GameSession[RpnsVmState.SessionPlayerCount] = 1;
@@ -431,8 +438,8 @@ public sealed class LevelScene
         ArgumentOutOfRangeException.ThrowIfZero(actorId);
         if (actorId == Actor.Id)
             throw new ArgumentException($"Second player actor id {actorId} collides with player 1.", nameof(actorId));
-        if (_secondPlayerId != 0 && _secondPlayerId != actorId)
-            _playerTargets.Remove(_secondPlayerId);
+        if (_secondPlayerId != 0 && _secondPlayerId != actorId && _playerTargets.Remove(_secondPlayerId, out var removed))
+            removed.Detach();
         _secondPlayer = body;
         _secondPlayerId = actorId;
         UpdatePlayerTarget(actorId, body);
@@ -474,7 +481,8 @@ public sealed class LevelScene
 
     private void UpdateMapZoneTriggers(PurchasePadSystem pads, int dt)
     {
-        for (int index = 0; index < pads.Pads.Count; index++)
+        // 800319D4.c:114–119 prepends nodes; 80031DE8.c:102–104 starts at the head.
+        for (int index = pads.Pads.Count - 1; index >= 0; index--)
         {
             var node = pads.Pads[index];
             if (node.Kind != PurchasePadKind.MapZone) continue;
@@ -496,10 +504,10 @@ public sealed class LevelScene
                 continue;
             }
 
-            // :112-118: a cached target with another id is dropped, the timer is set to 600 and the
-            // node goes straight to the list's next entry (goto next): the frame neither decrements
-            // nor rescans it.
-            if (node.MapZoneTarget is { } cached && node.MapZoneTargetId != cached.RecordId)
+            // :112-118: drop invalid targets, including a detached scene player. The node resets to
+            // 600 and goes straight to the next entry: this frame neither decrements nor rescans it.
+            if (node.MapZoneTarget is { } cached &&
+                (node.MapZoneTargetId != cached.RecordId || cached is PlayerTarget { IsDetached: true }))
             {
                 node.MapZoneTarget = null;                                 // :114
                 node.MapZoneTimer = 0x258;                                 // :115 (u16 node->t+0x16)

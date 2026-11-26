@@ -255,6 +255,7 @@ public sealed class PurchasePadSystem
     private const uint TagSdat = 0x53444154u;
     private const uint TagFill = 0x46494C4Cu;
     private const uint TagCact = 0x43616374u;
+    private const uint TagCsac = 0x43736163u;
     private const uint TagCfun = 0x4366756Eu;
     private const uint TagTact = 0x74414354u;
     private const uint TagTfun = 0x7446554Eu;
@@ -372,7 +373,8 @@ public sealed class PurchasePadSystem
         RpnsVmState? vmState = null,
         RetailRandom? random = null,
         EntityWorld? world = null,
-        Func<int, int, int, int>? groundHeight = null)
+        Func<int, int, int, int>? groundHeight = null,
+        Action<int>? registerSpawner = null)
     {
         var pool = RpnsPool.Extract(missionBytes);
         if (pool is null)
@@ -401,6 +403,12 @@ public sealed class PurchasePadSystem
             }
 
             uint tag = BinaryPrimitives.ReadUInt32LittleEndian(missionBytes[(off + 0x18)..]);
+            if (tag == TagCsac)
+            {
+                // 80024EC8.c:108–202: dispatch Csac and Cact/Cfun in stream order on the same RNG.
+                registerSpawner?.Invoke(off);
+                continue;
+            }
             if (tag != TagCact && tag != TagCfun)
                 continue;
 
@@ -517,7 +525,7 @@ public sealed class PurchasePadSystem
                     short targetId = BinaryPrimitives.ReadInt16LittleEndian(src[0x1C..]);
                     pads.Add(new PurchasePad(
                         recordId, PurchasePadKind.MapZone,
-                        wx, wy, wz,
+                        MapZoneCoordinate(wx), MapZoneCoordinate(wy), MapZoneCoordinate(wz),
                         (rawX / 2) << 4, (rawY / 2) << 4, (rawZ / 2) << 4,
                         flags, targetId, matchSelector: 2,
                         s0, s2)
@@ -554,6 +562,9 @@ public sealed class PurchasePadSystem
         };
         return system;
     }
+
+    // 800319D4.c:117–132 stores signed halfwords; the scan and the box shift them back to world units.
+    private static int MapZoneCoordinate(int value) => unchecked((short)(value >> 8)) << 8;
 
     // Both loaders select the same gQuerySurfaceHeight mode (800319D4.c:121-132, 80030DE0.c:139-150).
     private static int SurfaceRank(int surfaceType) => surfaceType switch { 0 => -1, 1 => -2, _ => surfaceType - 2 };
@@ -854,7 +865,7 @@ public sealed class PurchasePadSystem
         long bestDist = 0;
         foreach (var candidate in candidates)
         {
-            if (candidate is null) continue;
+            if (candidate is null or PlayerTarget { IsDetached: true }) continue;
             if (candidate.RecordId <= 0) continue;                         // :123
             if (candidate.NodeId != node.TargetId) continue;               // :124
             if (candidate.DispatchType is 0x15 or 0x12) continue;          // :125-126

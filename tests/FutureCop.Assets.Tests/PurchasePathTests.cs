@@ -456,7 +456,9 @@ public sealed class PurchasePathTests
             File.WriteAllBytes(path, mission);
             var scene = new LevelScene(path);
             scene.EnableObjectives();
-            Assert.Equal(layeredTile.Y, scene.PurchasePads!.FindPad(106)!.WorldY);
+            // 800319D4.c:131–132 stores the selected surface height in a signed halfword.
+            int mapZoneY = unchecked((short)(layeredTile.Y >> 8)) << 8;
+            Assert.Equal(mapZoneY, scene.PurchasePads!.FindPad(106)!.WorldY);
             Assert.Equal(layeredTile.Y, scene.PurchasePads.FindPad(152)!.WorldY);
         }
         finally
