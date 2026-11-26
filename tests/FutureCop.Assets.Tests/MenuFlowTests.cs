@@ -47,10 +47,72 @@ public class MenuFlowTests
         new MenuFlow(fe, kind, TextWriter.Null, TextWriter.Null, enableLevelMovement: true);
 
     /// <summary>
+    /// docs/todo/12-menue-standardpfad.md: <c>Program.cs:8-9</c> handed the working-directory-relative
+    /// default <c>build/disc/files/CW/FE.MIS</c> to <c>MenuFlow</c> and <c>MenuAudio</c>, while the
+    /// labels already walked up from the program directory. The launcher now asks MenuArchive for the
+    /// path (Program.cs:11). Start from a directory without an archive and pass the program directory
+    /// below it on the same layout as the retail disc: the resolved path must be the disc archive.
+    /// Open gap: with no archive anywhere the launcher still only writes "Menu text unavailable" to
+    /// stderr (MenuLabels.Load) and starts; there is no warning screen yet, that is
+    /// docs/todo/15-fehlende-dateien-melden.md.
+    /// </summary>
+    [RetailFact]
+    public void SceneAndAudioResolveTheArchiveFromTheProgramDirectoryNotTheWorkingDirectory()
+    {
+        string sourceArchive = FrontEndPath()!;
+        string root = Path.Combine(Path.GetTempPath(), "fc-menu-default-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            // Layout only. The disc is created whether this is green or red, so that a failure comes
+            // from the resolution and not from a missing file.
+            string project = Path.Combine(root, "project");
+            string program = Path.Combine(project, "tools", "FcMainMenu", "bin", "Debug", "net10.0");
+            string launch = Path.Combine(root, "elsewhere");
+            string disc = Path.Combine(project, "build", "disc", "files");
+            Directory.CreateDirectory(program);
+            Directory.CreateDirectory(launch);
+            Directory.CreateDirectory(Path.Combine(disc, "CW"));
+            string archive = Path.Combine(disc, "CW", "FE.MIS");
+            File.Copy(sourceArchive, archive);
+
+            // The working directory the launcher may start in. It resolves to
+            // <launch>/build/disc/files/CW/FE.MIS when the archive path stays relative to it, which
+            // without the program-directory search is exactly what scene and audio used to read.
+            string oldDefault = Path.GetFullPath(MenuArchive.DefaultPath, launch);
+            Assert.False(File.Exists(oldDefault));
+            Assert.NotEqual(archive, oldDefault);
+
+            string resolved = MenuArchive.Resolve(null, program, workingDirectory: launch)!;
+
+            Assert.Equal(archive, resolved);
+
+            // The level itself is not copied: this covers the archive handover, not the mission load.
+            // Same path MenuLabels returns, so scene, labels and audio read one archive.
+            var labels = MenuLabels.Load(null, program, TextWriter.Null, workingDirectory: launch);
+            Assert.Equal(archive, labels.ArchivePath);
+            Assert.Equal(labels.ArchivePath, resolved);
+            // Available for the scene's consumers: the menu sounds and music both decode from it.
+            Assert.Contains((byte)0x48, SoundBank.FromMisFile(resolved).HighTable.Keys);
+            Assert.NotEmpty(MenuMusic.Decode(File.ReadAllBytes(resolved)));
+            // And MenuFlow's mission directory comes from that archive's PA sibling, not the cwd.
+            // (The mission itself is not copied, so the load fails; the path is what this asserts.)
+            var flow = NewFlow(resolved);
+            ToLoadout(flow);
+            flow.HandleKey(Enter);
+            Assert.Equal(Path.Combine(disc, "PA", "CONFT.MIS"), flow.LastLoadErrorPath ?? flow.Level?.MissionPath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
     /// Note on coverage limits: this case would also pass without passing <c>workingDirectory</c>,
-    /// because <c>MenuLabels.FindInstalledArchive</c> walks up from <c>programDirectory</c> and
-    /// resolves the same archive via that fallback. In addition, the actual startup wiring in
-    /// <c>tools/FcMainMenu/Program.cs:8-9</c> is not covered by this test.
+    /// because <c>MenuArchive.FindInstalled</c> walks up from <c>programDirectory</c> and resolves
+    /// the same archive via that fallback. The launcher wiring itself (<c>Program.cs:8-13</c>) needs
+    /// a display and is not covered by tests; <see cref="SceneAndAudioResolveTheArchiveFromTheProgramDirectoryNotTheWorkingDirectory"/>
+    /// covers the resolution it calls.
     /// </summary>
     [RetailFact]
     public void DefaultArchiveFromForeignDirectoryDrivesLabelsAudioAndScene()
