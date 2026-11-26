@@ -64,13 +64,53 @@ public sealed class PurchasePad
     public byte MatchSelector { get; }
 
     /// <summary>RPNS offset of the primary trigger script (slot 0, executed on pad activation).</summary>
-    public int Script0Offset { get; }
+    public int Script0Offset { get; set; }
 
     /// <summary>RPNS offset of the enable/capture script (slot 2, executed by cmd 0x7A when flags &amp; 0x20).</summary>
     public int Script2Offset { get; }
 
     /// <summary>Last frame stamp on which this type-14 pad fired (<c>self-&gt;unkA4</c>, <c>8003151C.c:115</c>).</summary>
     public int LastTriggerFrame { get; set; } = -1;
+
+    /// <summary>
+    /// The cached target (<c>node-&gt;target</c>, type 95, <c>80031DE8.c:131,136,178-180</c>), or null.
+    /// A map zone never tests the player on its own: <c>func_80031DE8</c> picks it for the node.
+    /// </summary>
+    public ICsacNodeId? MapZoneTarget { get; set; }
+
+    /// <summary>The cached target's id (<c>node-&gt;targetId</c>, <c>80031DE8.c:103,134,177</c>).</summary>
+    public int MapZoneTargetId { get; set; } = -1;
+
+    /// <summary>
+    /// The re-selection timer (<c>node->t+0x16</c>, a u16: the loader stores a random byte there,
+    /// 800319D4.c:142, and the walk re-arms it with <c>+= 0x258</c>, 80031DE8.c:157). An empty scan
+    /// arms 600 + 600 + (rand &amp; 0x3F), a scan that found a target 600 + (rand &amp; 0x3F)
+    /// (80031DE8.c:148-158) and <c>-= delta</c> of :159 wraps in 16 bits; 600 when the target is
+    /// gone (80031DE8.c:104-105); the loader value is 0..255 (<c>node->t+0x16 = func_80019668() &amp;
+    /// 0xFF</c>, 800319D4.c:142).
+    /// </summary>
+    public ushort MapZoneTimer { get; set; }
+
+    /// <summary>True once <c>80031DE8.c:176-184</c> unlinked and freed the map-zone node.</summary>
+    public bool Released { get; set; }
+
+    /// <summary>
+    /// The last box hit of this node (<c>func_80031C74</c>, 80031C74.c:106-108): the result of the
+    /// node's slot-0 script with the target id <c>&amp; 0x7FFF</c> in arg2, or null before the first.
+    /// Several nodes share a patch and a score slot, so this is the per-node record of a firing.
+    /// </summary>
+    public PurchaseResult? LastFire { get; set; }
+
+    /// <summary>
+    /// Replaces the map-zone script and flags word: <c>node-&gt;script</c> (800319D4.c:137) and the
+    /// request's +0x24 word at <c>node-&gt;f18</c>. Type 95 only; the loader of 800319D4.c:137-149 does
+    /// not read them yet, so a scene supplies them from its own authoring.
+    /// </summary>
+    public void SetMapZoneScript(int scriptOffset)
+    {
+        if (Kind != PurchasePadKind.MapZone) throw new InvalidOperationException($"pad {RecordId} is no map zone");
+        Script0Offset = scriptOffset;
+    }
 
     /// <summary>True when this pad's enable bit is clear (bit 0x10 clear, <c>8003151C.c:106</c>).</summary>
     public bool IsEnabled => (Flags & 0x10) == 0;
@@ -163,6 +203,42 @@ public readonly record struct PurchaseResult(
     int SfxId,
     int ScoreBefore,
     int ScoreAfter);
+
+/// <summary>
+/// The fields the map-zone candidate scan of <c>func_80031DE8</c> (80031DE8.c:121-132) reads from a
+/// target entity: <c>id</c> at +0x08, <c>nodeId</c> at +0x14, <c>type</c> at +0x16 and the position
+/// <c>x</c>/<c>y</c> at +0x50/+0x58 (the struct Target80031DE8 of 80031DE8.c:6-15).
+/// </summary>
+public interface ICsacNodeId
+{
+    /// <summary>obj+0x08: the entity id a node caches as its targetId (80031DE8.c:103,121).</summary>
+    int RecordId { get; }
+
+    /// <summary>obj+0x14: the node id a map zone's node compares with (80031DE8.c:126).</summary>
+    short NodeId { get; }
+
+    /// <summary>obj+0x16: the dispatch type; 0x15 and 0x12 are never candidates (80031DE8.c:127-128).</summary>
+    int DispatchType { get; }
+
+    /// <summary>obj+0x50: world x.</summary>
+    int X { get; }
+
+    /// <summary>obj+0x5C: world y (the <c>unk54</c> field of the struct is unused).</summary>
+    int Y { get; }
+
+    /// <summary>obj+0x58: world z (read as <c>target-&gt;y</c> at 80031DE8.c:133).</summary>
+    int Z { get; }
+
+    /// <summary>obj+0x68: the model instance radius the box test of 80031C74.c:84-100 subtracts.</summary>
+    int Radius { get; }
+
+    /// <summary>
+    /// <c>e-&gt;unkAC-&gt;unk40 != 0</c> for a type-1 entity (the player's control block, 80031C74.c:102):
+    /// true rejects the entity in a flag-4 node and in a flag-4 type-14 pad (8002F8B8.c:122). Every
+    /// other type never reads that word, so an implementation without a control block answers false.
+    /// </summary>
+    bool Busy => false;
+}
 
 /// <summary>
 /// Drives the retail Precinct Assault purchase path: loads <c>RPNS</c>, <c>Cact</c> type-95/14
@@ -306,6 +382,9 @@ public sealed class PurchasePadSystem
             vmState.InitRetailRandomState(rng); // 80069B58.c:47-54
         }
 
+        // The node timers of 800319D4.c:142 draw from the loaders' generator, so the scene has to
+        // take over the generator at this state to keep the retail draw order.
+        byte zoneDraws = 0;
         var pads = new List<PurchasePad>();
         var timers = new List<ScriptTimerEntry>();
         byte[] timerBytecode = Array.Empty<byte>();
@@ -414,12 +493,14 @@ public sealed class PurchasePadSystem
                 byte entityType = src[4];
                 if (entityType != 95 && entityType != 14)
                     break;
-                if ((uint)s0 >= (uint)pool.Length || pool.Bytes[s0] == 0)
-                    break;
-
                 int wx = BinaryPrimitives.ReadInt32LittleEndian(src[8..]);
                 int wz = BinaryPrimitives.ReadInt32LittleEndian(src[16..]);
                 int sourceY = BinaryPrimitives.ReadInt32LittleEndian(src[12..]);
+
+                // func_80031C74 runs node->script only when it is non-zero (80031C74.c:106-108), so a
+                // type-95 record without a script still is a node; only its missing script is dropped.
+                if (s0 != 0 && ((uint)s0 >= (uint)pool.Length || pool.Bytes[s0] == 0))
+                    break;
 
                 if (entityType == 95 && src.Length >= 0x1E)
                 {
@@ -436,7 +517,12 @@ public sealed class PurchasePadSystem
                         wx, wy, wz,
                         (rawX / 2) << 4, (rawY / 2) << 4, (rawZ / 2) << 4,
                         flags, targetId, matchSelector: 2,
-                        s0, s2));
+                        s0, s2)
+                    {
+                        // 800319D4.c:142: node->t16 (u16) = func_80019668() & 0xFF, in record order.
+                        MapZoneTimer = (ushort)(rng.Next() & 0xFF),
+                    });
+                    zoneDraws++;
                 }
                 else if (entityType == 14 && src.Length >= 0x2C)
                 {
@@ -459,7 +545,11 @@ public sealed class PurchasePadSystem
             }
         }
 
-        return new PurchasePadSystem(pool, vmState, spawner, pads, timers, timerBytecode, world);
+        var system = new PurchasePadSystem(pool, vmState, spawner, pads, timers, timerBytecode, world)
+        {
+            ZoneLoadDraws = zoneDraws,
+        };
+        return system;
     }
 
     // Both loaders select the same gQuerySurfaceHeight mode (800319D4.c:121-132, 80030DE0.c:139-150).
@@ -579,57 +669,254 @@ public sealed class PurchasePadSystem
     }
 
     /// <summary>
-    /// Evaluates whether a player entity triggers <paramref name="pad"/> and, if so, executes
-    /// its RPNS purchase script. Mirrors the retail walker-mode gate
-    /// (<c>player-&gt;unkAC-&gt;unk40 == 0</c>) in <c>80031C74.c:102</c> (type 95) and
-    /// <c>8002F8B8.c:122</c> / <c>8003151C.c:105-122</c> (type 14).
+    /// The candidate table D_800A8F90 the map-zone scan of 80031DE8.c:119-144 walks
+    /// (<c>gCommandListHead.count</c> / <c>targets[]</c>), null entries skipped. The owning scene
+    /// publishes <see cref="EntityWorld.Active"/> here each frame through
+    /// <see cref="SyncTargetCandidates"/>; the walker entity D_8009FA58[0] can be listed as well
+    /// (func_80031DE8 tests it as a node of node id -1, never as a candidate).
+    /// </summary>
+    public IReadOnlyList<ICsacNodeId?> TargetCandidates { get; set; } = Array.Empty<ICsacNodeId?>();
+
+    /// <summary>
+    /// True when the frame must rebuild <see cref="TargetCandidates"/> from the active entities and
+    /// <see cref="ExtraCandidates"/>: set again by <see cref="SyncTargetCandidates"/> and by
+    /// <see cref="AddTargetCandidate"/>, cleared when a caller assigns the table itself (the retail
+    /// scan reads gCommandListHead.count every frame, 80031DE8.c:119, so a stale one is never walked).
+    /// </summary>
+    public bool TargetCandidatesStale { get; set; } = true;
+
+    /// <summary>
+    /// True while a caller keeps its own D_800A8F90 in <see cref="TargetCandidates"/> (a test scene
+    /// that supplies the table); the frame then does not rewrite it from the active entities.
+    /// </summary>
+    public bool OwnsTable { get; set; }
+
+    /// <summary>
+    /// Further candidates of the scan D_800A8F90 that no loader can produce yet (a Csac unit spawned
+    /// from a Csac template of the port), appended after the active entities and never dropped, unlike
+    /// the per-frame active list.
+    /// </summary>
+    public List<ICsacNodeId> ExtraCandidates { get; } = new();
+
+    /// <summary>The empty, immutable list a scene exposes before its pads exist.</summary>
+    public static IList<ICsacNodeId> ReadOnlyCandidates => Array.AsReadOnly(Array.Empty<ICsacNodeId>());
+
+    /// <summary>
+    /// One byte of the shared loaders' generator for the node timer of 800319D4.c:142. The pads are
+    /// created before <see cref="Random"/> receives the scene's generator, so the load counts its own
+    /// draws; the scene keeps the count on the published generator.
+    /// </summary>
+    private int _zoneBytes;
+
+    private int NextZoneByte() => Random.Next() & 0xFF;
+
+    /// <summary>
+    /// Generator draws the loader spent on node timers (800319D4.c:142). The scene replaces
+    /// <see cref="Random"/> at load time, so it replays this many draws to keep the retail order.
+    /// </summary>
+    public int ZoneLoadDraws { get; private init; }
+
+    /// <summary>PRNG of the map-zone rescan jitter (<c>func_80019668() &amp; 0x3F</c>, 80031DE8.c:149).</summary>
+    public RetailRandom Random { get; set; } = new();
+
+    /// <summary>
+    /// Publishes the frame's D_800A8F90 as <see cref="TargetCandidates"/>: the active entities, then
+    /// whatever an owner added with <see cref="AddTargetCandidate"/>. Entities that do not expose the
+    /// scan fields (<see cref="ICsacNodeId"/>) are empty slots, which the scan skips.
+    /// </summary>
+    public void SyncTargetCandidates(IReadOnlyList<LiveEntity>? active)
+    {
+        if (OwnsTable) return;
+        var extra = ExtraCandidates.Count > 0 ? ExtraCandidates.ToArray() : Array.Empty<ICsacNodeId?>();
+        if (active is null)
+        {
+            TargetCandidates = extra;
+            return;
+        }
+        var list = new ICsacNodeId?[active.Count + extra.Length];
+        for (int i = 0; i < active.Count; i++)
+            list[i] = active[i] is ICsacNodeId candidate ? candidate : null;
+        extra.CopyTo(list, active.Count);
+        TargetCandidates = list;
+        TargetCandidatesStale = false;
+    }
+
+    /// <summary>
+    /// Adds a candidate to the D_800A8F90 scan besides the active entities; a null entry is an empty
+    /// slot of the retail table and is skipped by the scan.
+    /// </summary>
+    public void AddTargetCandidate(ICsacNodeId? candidate)
+    {
+        if (candidate is not null)
+        {
+            ExtraCandidates.Add(candidate);
+            // Make the candidate visible to a scan that runs before the next frame rebuild.
+            var list = new ICsacNodeId?[TargetCandidates.Count + 1];
+            for (int i = 0; i < TargetCandidates.Count; i++) list[i] = TargetCandidates[i];
+            list[^1] = candidate;
+            TargetCandidates = list;
+        }
+        TargetCandidatesStale = true;
+    }
+
+    /// <summary>
+    /// Re-selects the cached target of a map zone out of the scan of 80031DE8.c:119-155, the same
+    /// call the per-frame walk makes when the node's timer ran out. The scene uses it for a node the
+    /// walk has not reached yet in the frame (a unit placed inside its box): without it the stale
+    /// loader timer (800319D4.c:142) keeps the target empty for up to 1200 ticks. Sets the jittered
+    /// timer (<see cref="MapZoneTimer"/>) from <see cref="Random"/> like :149-151.
+    /// </summary>
+    public ICsacNodeId? RescanMapZoneTarget(PurchasePad node, int delta)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        if (node.Kind != PurchasePadKind.MapZone) throw new ArgumentException($"{node.RecordId} is no map zone", nameof(node));
+        if (node.Released || (node.Flags & 0x10) != 0) return node.MapZoneTarget;
+        var target = SelectMapZoneTarget(node, TargetCandidates);
+        if (!ReferenceEquals(node.MapZoneTarget, target))
+        {
+            node.MapZoneTarget = target;
+            if (target is not null) node.MapZoneTargetId = target.RecordId;
+        }
+        // :151 arms 600 + (rand & 0x3F) and :157 adds another 600 when nothing was found; :159 subtracts
+        // delta — all on the u16 node->t+0x16, so the subtraction wraps in 16 bits.
+        node.MapZoneTimer = unchecked((ushort)(0x258 + (Random.Next() & 0x3F) + (target is null ? 0x258 : 0)));
+        if (target is not null) node.MapZoneTimer = unchecked((ushort)(node.MapZoneTimer - delta));
+        return target;
+    }
+
+    /// <summary>
+    /// Runs the script of a map zone whose box test fired (<c>func_80031C74</c>, 80031C74.c:106-108):
+    /// <c>gInterpretEntityScript(node-&gt;script, 0, other-&gt;unk14 &amp; 0x7FFF, 0)</c>. The VM of the C
+    /// node list is the same one the pads share, so a node the node list owned needs no separate VM.
+    /// The script slot is the record's Cact slot 0 (see <see cref="ResetMapZoneScript"/>); it is 0 for
+    /// every zone of CONFT.MIS except 5, 234 and 240, and a 0 slot skips the call.
+    /// </summary>
+    public PurchaseResult FireMapZone(PurchasePad pad, ICsacNodeId target)
+    {
+        ArgumentNullException.ThrowIfNull(pad);
+        ArgumentNullException.ThrowIfNull(target);
+        int before = VmState.GameSession[RpnsVmState.SessionScoreP1];
+        // 80031C74.c:106-108 runs node->script only when it is non-zero: a node without a script
+        // (CONFT zone 106, slot 0 = 0) hits its box and returns 1 without touching the VM. The node
+        // still passed the box test of :84-100, so it returns 1 (:115); only the script is skipped.
+        // C evidence: node->script sits at +0x1C (80031C74.c:34), and gLoadMapZone (800319D4.c:104-151)
+        // fills it with a constant: sw $zero, 0x1C($s1) (asm/us/main.s:40105). node+0x18 is a different
+        // field, f18 = obj->f24 (asm/us/main.s:40047-40052). So in retail node->script is always 0 and
+        // :106-108 never runs a script. This port models the retail node script through the record's
+        // Cact slot 0 (0 for 106, 0x74 for 234, 0x6C for 5); retail itself always zeroes node->script,
+        // so the Cact +0x24 -> node->script mapping is a port bridge and has no retail counterpart.
+        var result = pad.Script0Offset == 0
+            ? new PurchaseResult(true, false, 0, before, before)
+            : RunPadScript(pad.Script0Offset, target.RecordId, before, RpnsVmState.SessionScoreP1);
+        pad.LastFire = result;
+        return result;
+    }
+
+    /// <summary>
+    /// The candidate scan of 80031DE8.c:119-144 over D_800A8F90: every entity with a positive id
+    /// (:121), <c>candidate-&gt;nodeId == node-&gt;id</c> (:122) and a type other than 0x15 or 0x12 (:123-124);
+    /// of those the nearest by the unsigned octile distance <c>dx + dy - min / 2</c> (:130-140). Null
+    /// slots are empty table entries. The node id of a pad is its <see cref="PurchasePad.TargetId"/>
+    /// (<c>node-&gt;id</c>, tACT +0x1C, 800319D4.c:137); node -1 never enters this scan (:100).
+    /// </summary>
+    public static ICsacNodeId? SelectMapZoneTarget(PurchasePad node, IReadOnlyList<ICsacNodeId?> candidates)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        ArgumentNullException.ThrowIfNull(candidates);
+        ICsacNodeId? target = null;
+        int bestDist = 0;
+        foreach (var candidate in candidates)
+        {
+            if (candidate is null) continue;
+            if (candidate.RecordId <= 0) continue;                         // :121
+            if (candidate.NodeId != node.TargetId) continue;               // :122
+            if (candidate.DispatchType is 0x15 or 0x12) continue;          // :123-124
+            // The node coordinate is a s16 world unit << 8 (:125, :127).
+            int dx = Math.Abs(candidate.X - (node.WorldX << 8));            // :125-126, |dx| = s + (dx >> 31) ^ (dx >> 31)
+            int dy = Math.Abs(candidate.Z - (node.WorldZ << 8));            // :127-128
+            int dist = dx + dy - Math.Min(dx, dy) / 2;                      // :130-134
+            if (target is null || dist < bestDist)                          // :135-140
+            {
+                target = candidate;
+                bestDist = dist;
+            }
+        }
+        return target;
+    }
+
+    /// <summary>
+    /// Points a loaded map zone at another script and flags byte, as the Cact loader would have read
+    /// them (800319D4.c:137-139: <c>node-&gt;script</c> from the request's +0x24, <c>node-&gt;flags</c>
+    /// from tACT +0x1B).
+    /// </summary>
+    public void ResetMapZoneScript(int recordId, int scriptOffset)
+    {
+        var pad = FindPad(recordId) ?? throw new ArgumentException($"no pad {recordId}", nameof(recordId));
+        if (pad.Kind != PurchasePadKind.MapZone) throw new ArgumentException($"{recordId} is no map zone", nameof(recordId));
+        pad.SetMapZoneScript(scriptOffset);
+    }
+
+    /// <summary>
+    /// Tests <paramref name="target"/> against <paramref name="pad"/>'s retail trigger box and, on a
+    /// hit, executes its RPNS script (<c>func_80031C74</c>, 80031C74.c:84-108): every axis needs
+    /// <c>|node &lt;&lt; 8 - target| - target radius - (extent &lt;&lt; 4) &lt; 0</c>; a busy type-1 target is
+    /// rejected when the node has flag 4 (:102); the script runs with <c>arg2 = target id &amp; 0x7FFF</c>.
+    /// The caller owns the target choice (the candidate scan of 80031DE8.c:119-144 for a map zone).
     /// </summary>
     /// <param name="pad">The purchase pad to test.</param>
-    /// <param name="playerEntityId">Player entity id (12 for P1, 16 for P2 in CONFT.MIS).</param>
-    /// <param name="isHoverMode">True when the player mech is in hover form (<c>unkAC-&gt;unk40 != 0</c>).</param>
+    /// <param name="target">The target the node carries (its candidate id, 80031DE8.c:126).</param>
     /// <param name="frameTime">Current frame counter (<c>D_8009FAA4</c>) for type-14 same-frame dedupe.</param>
     /// <param name="scoreSlot">Session score slot to observe for before/after reporting (25 = P1, 26 = P2).</param>
     public PurchaseResult TryTriggerPad(
         PurchasePad pad,
-        int playerEntityId,
-        bool isHoverMode,
+        ICsacNodeId target,
         int frameTime = 0,
         int scoreSlot = RpnsVmState.SessionScoreP1)
     {
         ArgumentNullException.ThrowIfNull(pad);
+        ArgumentNullException.ThrowIfNull(target);
         int before = VmState.GameSession[scoreSlot];
 
         if (pad.IsRetired || !pad.IsEnabled)
             return new PurchaseResult(false, false, 0, before, before);
 
         // Retail walker-mode gate: both type-95 (80031C74.c:102) and type-14 (8002F8B8.c:122)
-        // reject players whose unkAC->unk40 != 0 when flag bit 0x04 is set.
-        if (pad.RequiresWalkerMode && isHoverMode)
+        // reject a type-1 entity whose unkAC->unk40 != 0 when flag bit 0x04 is set. The type half of
+        // the C test (other->unk16 == 1) applies to any type-1 entity, not only to the PlayerTarget.
+        if (pad.RequiresWalkerMode && target.DispatchType == 1 && target.Busy)
             return new PurchaseResult(false, false, 0, before, before);
 
-        // Target entity id match: type-95 node->id (80031DE8.c:124) and type-14 selector 2 (8002F8B8.c:76-81).
-        if (pad.TargetId != -1 && pad.MatchSelector == 2 && pad.TargetId != playerEntityId)
+        // Target entity id match: type-95 node->id (80031DE8.c:126) and type-14 selector 2 (8002F8B8.c:76-81).
+        if (pad.TargetId != -1 && pad.MatchSelector == 2 && pad.TargetId != target.RecordId)
             return new PurchaseResult(false, false, 0, before, before);
+
 
         // Type-14 same-frame dedupe (8003151C.c:115).
-        if (pad.Kind == PurchasePadKind.TriggerAttachment &&
-            pad.LastTriggerFrame == frameTime &&
+        if (pad.LastTriggerFrame == frameTime &&
             (pad.Flags & 0x04) != 0)
         {
             return new PurchaseResult(false, false, 0, before, before);
         }
 
         pad.LastTriggerFrame = frameTime;
+        return RunPadScript(pad.Script0Offset, target.RecordId, before, scoreSlot);
+    }
+
+    /// <summary>
+    /// Runs a trigger script with <c>arg1 = 0</c> and <c>arg2 = target id &amp; 0x7FFF</c>
+    /// (80031C74.c:108, 8003151C.c:115-122) and reports the session score slot and SFX around it.
+    /// </summary>
+    private PurchaseResult RunPadScript(int offset, int targetId, int before, int scoreSlot)
+    {
         VmState.SessionPointerBank[RpnsVmState.PointerBankSfxSlot] = 0;
-        RpnsScriptVm.Execute(Pool.Slice(pad.Script0Offset), VmState, arg1: 0, arg2: playerEntityId & 0x7FFF);
+        RpnsScriptVm.Execute(Pool.Slice(Math.Max(0, offset)), VmState, arg1: 0, arg2: targetId & 0x7FFF);
         int sfx = VmState.SessionPointerBank[RpnsVmState.PointerBankSfxSlot];
-        int after = VmState.GameSession[scoreSlot];
         return new PurchaseResult(
             Triggered: true,
             Accepted: sfx == RpnsVmState.SfxPurchaseAccepted,
             SfxId: sfx,
             ScoreBefore: before,
-            ScoreAfter: after);
+            ScoreAfter: VmState.GameSession[scoreSlot]);
     }
 
     /// <summary>

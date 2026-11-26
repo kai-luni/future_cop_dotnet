@@ -146,11 +146,13 @@ public class LevelSceneGapTests
     /// func_80031DE8 unlink and free the node (80031DE8.c:172-184), so a one-shot MapZone fires once.
     /// A node with flag 2 returns 0, stays linked and is tested again next frame. CONFT has no one-shot
     /// zone aimed at the player (its flag-0 zones 235-244, 5 and 9 target Csac ids), so the test
-    /// clears flag 2 on the player's helipad 106 (flags 0x06, cost 1) and compares with the untouched pad.
+    /// clears flag 2 on the player's helipad 106 (flags 0x06, no script) and compares with the
+    /// untouched node: neither buys anything (that needs a script), both fire, and only the one-shot
+    /// node is freed after its first hit.
     /// </summary>
     [ConftTheory]
-    [InlineData(true, 4, 1)]      // one-shot: bought once, then the node is gone
-    [InlineData(false, 2, 3)]     // stay: bought on each of the three frames
+    [InlineData(true, 5, 0)]      // one-shot: fired once, then the node is gone
+    [InlineData(false, 5, 0)]     // stay: fires on each of the three frames, nothing is bought
     public void OneShotMapZoneFiresOnceAndStayZoneKeepsFiring(bool oneShot, int scoreAfter, int helis)
     {
         string path = LevelSceneRetirementTests.FindMission()!;
@@ -164,19 +166,41 @@ public class LevelSceneGapTests
         scene.AttachWalker(new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 0 });
         scene.Objectives!.Score.Score[0] = 5;
 
+        // func_80031DE8 never tests the player: the node selects its own target out of D_800A8F90
+        // (80031DE8.c:119-144) and this node's id is 12, i.e. the record id of the P1 player entity.
+        // The old test relied on the walker standing on the zone; the player now enters the scan as
+        // the candidate func_80031DE8 would list, standing in the zone centre (octile distance 0).
+        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8));
+        Assert.Equal(12, scene.MapZoneTargetOf(pad)?.RecordId);
+
+        // The loader timer of the node is a random byte (800319D4.c:142); the box test runs every
+        // frame the cached target exists (:159-168), so the three fired frames need no rescan. Cact
+        // 106's slot 0 is 0, so :106-108 runs no script: every frame returns 1 without spending a
+        // point or counting a heli, and only the flag-2 outcome (linked vs freed) differs.
         for (int frame = 0; frame < 3; frame++)
+        {
             scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+            Assert.True(pad.LastFire is { Triggered: true }, $"frame {frame}: the node did not fire");
+            Assert.False(pad.LastFire!.Value.Accepted, $"frame {frame}: a script ran");
+        }
 
         Assert.Equal(scoreAfter, scene.ScoreSession(new HudSession()).Score0);
         Assert.Equal(helis, pads.VmState.GameSession[RpnsVmState.SessionHelisP1]);
+        Assert.Equal(oneShot, scene.IsMapZoneReleased(pad));             // :115 / :176-184
     }
 
     /// <summary>
     /// todo 11. The HUD prints session +0x6C/+0x70 and +0x74/+0x78 as two "aa/bb" lines
     /// (gDrawInGameHud, HudDraw.cs:268/279) and adds +0x84/+0x88 for the score flash. ScoreSession
-    /// copies them from the RPNS session bank words 27..30 and 33/34. The helipad purchase script
-    /// increments word 28 (P1 helis), which must reach Count2; distinct values in every word pin
-    /// each counter to its own slot.
+    /// copies them from the RPNS session bank words 27..30 and 33/34; distinct values in every word
+    /// pin each counter to its own slot.
+    /// The real node walk of CONFT cannot buy here: <c>Cact</c> 106's slot 0 is 0 (800319D4.c:137) and
+    /// 80031C74.c:106-108 runs no script, and no other type-95 body of the pool counts
+    /// <c>gGameSession[28]</c> - only the hand-built pad of
+    /// <see cref="PurchasePathTests.SceneWalkerPurchaseSpawnsHelicopterInTheSameTick"/> drives
+    /// <c>TryTriggerPad</c> into the helipad script. So this test asserts the measured no-script walk
+    /// (100 helis set by hand stay 100, the HUD still reads them into Count2) instead of a purchase
+    /// the retail data does not have here.
     /// </summary>
     [ConftFact]
     public void ScoreSessionCarriesTheUnitCountersOfTheSessionBank()
@@ -184,17 +208,30 @@ public class LevelSceneGapTests
         string path = LevelSceneRetirementTests.FindMission()!;
         var scene = new LevelScene(path) { EnableCsacSpawner = true };
         scene.EnableObjectives();
-        var pad = scene.PurchasePads!.FindPad(106)!;
+        var pads = scene.PurchasePads!;
+        var pad = pads.FindPad(106)!;
         scene.AttachWalker(new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 0 });
         scene.Objectives!.Score.Score[0] = 5;
 
         var start = scene.ScoreSession(new HudSession());
         Assert.Equal((0, 0, 0, 0), (start.Count1, start.Count2, start.Count3, start.Count4));
 
-        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);            // the walker buys one heli
+        // Node 106 selects a D_800A8F90 candidate of its own node id 12 (80031DE8.c:121-140); the P1
+        // player entity is such a candidate and stands in the zone centre. The box test of
+        // 80031C74.c:84-100 accepts it, and :104-115 returns 1 without entering the VM (no script).
+        var words0 = pads.VmState.GameSession;
+        words0[RpnsVmState.SessionHelisP1] = 100;
+        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX << 8, pad.WorldY << 8, pad.WorldZ << 8));
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.True(pad.LastFire is { Triggered: true }, "the node did not fire");
+        Assert.Equal(100, words0[RpnsVmState.SessionHelisP1]);
         var bought = scene.ScoreSession(new HudSession());
-        Assert.Equal((0, 1, 0, 0), (bought.Count1, bought.Count2, bought.Count3, bought.Count4));
-        Assert.Equal(4, bought.Score0);
+        Assert.Equal((0, 100, 0, 0), (bought.Count1, bought.Count2, bought.Count3, bought.Count4));
+        // The score slot and the score session word are the untouched observable of this walk: the
+        // value of 5 set above passes SyncFromMatchScore (LevelScene:386) into word 25 and back out
+        // (:413) without the script (there is none, 80031C74.c:106-108) changing it.
+        Assert.Equal(5, pads.VmState.GameSession[RpnsVmState.SessionScoreP1]);
+        Assert.Equal(5, bought.Score0);
 
         var words = scene.PurchasePads.VmState.GameSession;
         words[RpnsVmState.SessionTanksP1] = 19;                         // the < 20 cap edge

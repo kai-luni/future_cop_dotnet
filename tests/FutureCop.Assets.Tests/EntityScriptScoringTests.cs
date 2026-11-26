@@ -32,7 +32,7 @@ public class EntityScriptScoringTests
         // Trigger the scene's pad for the P2 actor; the viewer only supports attaching a P1 walker.
         var pad = pads.FindPad(108)!;
         pads.SyncFromMatchScore(score);
-        Assert.True(pads.TryTriggerPad(pad, pad.TargetId, isHoverMode: false,
+        Assert.True(pads.TryTriggerPad(pad, new PlayerTarget(pad.TargetId, 0, 0, 0, 0, busy: false),
             scoreSlot: RpnsVmState.SessionScoreP2).Accepted);
         pads.SyncToMatchScore(score);
         scene.AdvanceSkyCaptain(0);
