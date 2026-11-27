@@ -31,10 +31,11 @@ public class EnvironmentVectorTests
         new((short)v[index], (short)v[index + 1], (short)v[index + 2]);
 
     [Theory, MemberData(nameof(Cases), "SINCOS")]
-    public void RenderSinCosMatchesRetail(int[] v)
+    public void GameAndRenderSinCosMatchRetail(int[] v)
     {
         Assert.Equal(3, v.Length);
         Assert.Equal((v[1], v[2]), ScriptRender.SinCos(v[0]));
+        Assert.Equal((v[1], v[2]), MechMath.SinCos(v[0]));
     }
 
     [Theory, MemberData(nameof(Cases), "ROT")]
@@ -78,6 +79,20 @@ public class EnvironmentVectorTests
             var (x, y, z, _) = Gte.Mvmva(loaded, vertex.X, vertex.Y, vertex.Z);
             int expected = 19 + i * 3;
             Assert.Equal((v[expected], v[expected + 1], v[expected + 2]), ((int)x, (int)y, (int)z));
+        }
+    }
+
+    [Theory, MemberData(nameof(Cases), "XF234")]
+    public void TranslatedWorldVerticesMatchRetailMacWords(int[] v)
+    {
+        Assert.Equal(25, v.Length);
+        var loaded = Gte.Load(Matrix(v));
+        Assert.InRange(v[12], 1, 2);
+        for (int i = 0; i < v[12]; i++)
+        {
+            var vertex = VertexAt(v, 13 + i * 3);
+            int j = 19 + i * 3;
+            Assert.Equal((v[j], v[j + 1], v[j + 2]), Gte.TransformWorld(loaded, vertex.X, vertex.Y, vertex.Z));
         }
     }
 

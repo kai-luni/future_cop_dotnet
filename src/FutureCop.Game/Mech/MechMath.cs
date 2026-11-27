@@ -57,15 +57,38 @@ public static class MechMath
     /// <summary>func_8001A6F8 gEaseVectorQuarter: dst = (3 * dst + src) &gt;&gt; 2 per component.</summary>
     public static int EaseQuarter(int dst, int src) => unchecked(dst * 3 + src) >> 2;
 
-    /// <summary>func_8001846C gSinCos: 16.16 sine and cosine of a 4096-step angle (ROM table D_8009A234).</summary>
-    public static (int Sin, int Cos) SinCos(int angle)
+    /// <summary>func_8001A6F8 gEaseVectorQuarter: 3-component in-place quarter easing into <paramref name="dst"/>.</summary>
+    public static void EaseVectorQuarter(int[] src, int[] dst)
     {
-        int a = angle & 0xFFF;
-        int i = a & 0x3FF;
-        int s = MechTables.Sine(i) << 1;
-        int c = MechTables.Sine(0x400 - i) << 1;
-        return (a >> 10) switch { 0 => (s, c), 1 => (c, -s), 2 => (-s, -c), _ => (-c, s) };
+        for (int i = 0; i < 3; i++)
+            dst[i] = EaseQuarter(dst[i], src[i]);
     }
+
+    /// <summary>func_8001A074 gApproximateLength2: two-piece linear 2D Euclidean length approximation.</summary>
+    public static int ApproxLength2(int a, int b)
+    {
+        unchecked
+        {
+            if (a < 0) a = -a;
+            if (b < 0) b = -b;
+            if (a < b) (a, b) = (b, a);
+            int sum = a + b;
+            if ((a >> 1) < b)
+            {
+                sum = (sum << 6) + (sum << 3) + (sum << 1) + a + (b << 5);
+                b = a - b;
+                a = sum >> 7;
+            }
+            return a + (b >> 2) - (b >> 6);
+        }
+    }
+
+    /// <summary>func_8001A100 gVectorLength3D: applies <see cref="ApproxLength2"/> to (x, y) then z.</summary>
+    public static int VectorLength3D(int x, int y, int z) =>
+        ApproxLength2(ApproxLength2(x, y), z);
+
+    /// <summary>func_8001846C gSinCos: 16.16 sine and cosine of a 4096-step angle (ROM table D_8009A234).</summary>
+    public static (int Sin, int Cos) SinCos(int angle) => FutureCop.Assets.RetailAngles.SinCos(angle);
 
     private static readonly ushort[] ReciprocalRootTable = BuildReciprocalRootTable();
 

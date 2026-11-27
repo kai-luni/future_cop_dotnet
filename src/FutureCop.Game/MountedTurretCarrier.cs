@@ -411,9 +411,7 @@ internal static class MapObjectModelMath
     internal static Vec3 ReferenceVertex(int[] basis, Vec3 position, short[] vertex)
     {
         var gte = Gte.Load(new Gte.Mat(basis, position.X, position.Y, position.Z));
-        int RotateRow(int row) => (int)(((long)gte.R[row] * vertex[0] + (long)gte.R[row + 1] * vertex[1]
-            + (long)gte.R[row + 2] * vertex[2]) >> 12);
-        return new Vec3((RotateRow(0) + gte.Trx) << 4, -(RotateRow(3) + gte.Try) << 4,
-            (RotateRow(6) + gte.Trz) << 4);
+        var (x, y, z) = Gte.TransformWorld(gte, vertex[0], vertex[1], vertex[2]);
+        return new Vec3(x, y, z);
     }
 }

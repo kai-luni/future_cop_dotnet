@@ -1,3 +1,5 @@
+using FutureCop.Game.Mech;
+
 namespace FutureCop.Game;
 
 /// <summary>
@@ -142,7 +144,7 @@ public static class DroneStrategy
     }
 
     /// <summary>FMUL (:4): bits 16..47 of the signed product.</summary>
-    private static int Fmul(int a, int b) => unchecked((int)(((long)a * b) >> 16));
+    private static int Fmul(int a, int b) => MechMath.Fmul(a, b);
 
     /// <summary>Scan-pass candidate records (:396-446 locals).</summary>
     private sealed class Scan

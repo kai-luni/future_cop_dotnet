@@ -60,6 +60,22 @@ public static class Gte
         return (ir[0], (short)-ir[1], ir[2], flag);
     }
 
+    /// <summary>
+    /// func_80010234: mvmva sf=1 with translation, reading the unsaturated 32-bit MAC registers
+    /// and returning (MAC1 &lt;&lt; 4, (-MAC2) &lt;&lt; 4, MAC3 &lt;&lt; 4).
+    /// </summary>
+    public static (int X, int Y, int Z) TransformWorld(Loaded r, short vx, short vy, short vz)
+    {
+        unchecked
+        {
+            short[] rm = r.R;
+            long m1 = ((long)r.Trx * 4096 + (long)rm[0] * vx + (long)rm[1] * vy + (long)rm[2] * vz) >> 12;
+            long m2 = ((long)r.Try * 4096 + (long)rm[3] * vx + (long)rm[4] * vy + (long)rm[5] * vz) >> 12;
+            long m3 = ((long)r.Trz * 4096 + (long)rm[6] * vx + (long)rm[7] * vy + (long)rm[8] * vz) >> 12;
+            return ((int)m1 << 4, (-(int)m2) << 4, (int)m3 << 4);
+        }
+    }
+
     /// <summary>GTE unsigned divide (UNR equivalent): q = H*65536/SZ3 rounded, overflow rule.</summary>
     public static int Quotient(int h, int sz3, out bool overflow)
     {
