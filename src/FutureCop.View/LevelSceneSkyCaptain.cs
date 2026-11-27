@@ -449,10 +449,8 @@ public sealed class SkyCaptainSystem
         var score = scene.Objectives?.Score.Score;
         if (Drone is not null && score is not null) Economy.F68 = score[1];
         // Exactly one spawner path may run: when the retail CSAC path is enabled on the scene,
-        // configure its team march headings and suppress the retired BuildOrderSpawner so both
-        // paths can never spawn or move units simultaneously.
-        if (scene.EnableCsacSpawner && scene.CsacSpawner is { } csac)
-            ConfigureCsacHeadings(csac);
+        // suppress the retired BuildOrderSpawner so both paths can never spawn or move units
+        // simultaneously.
         AdvanceCore(dt, pos => LevelGround.Height(scene.Map, pos[0], pos[1], pos[2], out _),
             runBuildOrderSpawner: !scene.EnableCsacSpawner);
         if (Drone is not null && score is not null) score[1] = Economy.F68;
@@ -493,16 +491,6 @@ public sealed class SkyCaptainSystem
     /// <summary>Message 6 with an explicit func_80066F78 probe (testable without a mission).</summary>
     public void Advance(int dt, Func<int[], int> groundHeight) =>
         AdvanceCore(dt, groundHeight, runBuildOrderSpawner: true);
-
-    private void ConfigureCsacHeadings(CsacUnitSpawner csac)
-    {
-        if (Drone is null) return;
-        csac.SetTeamTarget(Team, PosA[0], PosA[2]);
-        if (csac.Player0Team >= 0 && csac.Player0Team != Team)
-            csac.SetTeamTarget(csac.Player0Team, Drone.Ai.Pos[0], Drone.Ai.Pos[2]);
-        if (csac.Player1Team >= 0 && csac.Player1Team != Team)
-            csac.SetTeamTarget(csac.Player1Team, Drone.Ai.Pos[0], Drone.Ai.Pos[2]);
-    }
 
     private void AdvanceCore(int dt, Func<int[], int> groundHeight, bool runBuildOrderSpawner)
     {

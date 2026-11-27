@@ -244,6 +244,8 @@ public sealed class LevelScene
             SinglePlayerTeam = droneTeam,
             Player0Team = _playerTeam,
         };
+        _csacSpawner.LoadPathNetworks(_file.Bytes,
+            (x, z, mode) => LevelGround.PlacementHeight(Map, x, z, mode) ?? 0);
         var spawnerRecords = records.Where(r => r.Container == EntityContainer.Csac).ToDictionary(r => r.HeaderOffset);
         _purchasePads = PurchasePadSystem.LoadFromMission(_file.Bytes, _csacSpawner, random: _csacSpawner.Random,
             world: _entities, groundHeight: (x, z, rank) => LevelGround.PlacementHeight(Map, x, z, rank) ?? 0,
