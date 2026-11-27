@@ -119,6 +119,11 @@ public class WeaponPickupRespawnTests
     public void PrecinctAssaultPickupRespawnTimingAndVisibilityMatchRetailTsacDelays()
     {
         var scene = CreatePrecinctAssaultScene();
+        // Isolate pickup-respawn visibility from Sky Captain's initial army queue: with retail
+        // Cnet rail movers, Csac 77 tanks stay on CONFT's road network and drive into the center
+        // camera frustum near pickup 284 over 30000 ticks.
+        scene.SkyCaptain!.Economy.FB0 = 0;
+        scene.SkyCaptain.Economy.FB4 = 0;
         var pickups = scene.Pickups!;
         var spawner = scene.CsacSpawner!;
         var walker = scene.Walker!;

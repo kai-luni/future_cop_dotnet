@@ -289,7 +289,7 @@ public sealed class BuildOrderSpawner
         return fallback is not null ? new BuiltUnitTemplate(entityType, fallback.Model()) : null;
     }
 
-    internal static (int DirX, int DirZ) ComputeHeading(int fromX, int fromZ, int toX, int toZ)
+    private static (int DirX, int DirZ) ComputeHeading(int fromX, int fromZ, int toX, int toZ)
     {
         double dx = (double)toX - fromX;
         double dz = (double)toZ - fromZ;
