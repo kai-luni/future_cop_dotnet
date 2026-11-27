@@ -117,11 +117,16 @@ public sealed class CsacSpawnerSlot
 /// </remarks>
 public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNodeId
 {
+    private readonly Func<int, int, int?>? _groundSampler;
+
     public SpawnedCsacUnit(
         int id,
         CsacSpawnerSlot sourceSlot,
         int spawnMode,
-        Func<SpawnedCsacUnit, int, int, int, int>? messageHandler = null)
+        Func<SpawnedCsacUnit, int, int, int, int>? messageHandler = null,
+        int dirX = 0x10000,
+        int dirZ = 0,
+        Func<int, int, int?>? groundSampler = null)
     {
         Id = id;
         SourceSlot = sourceSlot;
@@ -132,6 +137,10 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
         X = sourceSlot.Record.X;
         Y = sourceSlot.Record.Y;
         Z = sourceSlot.Record.Z;
+        DirX = dirX;
+        DirZ = dirZ;
+        (Speed, AltitudeOffset) = ResolveMovementProfile(EntityType);
+        _groundSampler = groundSampler;
         SpawnMode = spawnMode;
         MessageHandler = messageHandler;
 
@@ -144,6 +153,19 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
         Flags = record.Flags & 0xFFBFFFFFu;
         if ((Flags & IgnoreHitsFlag) != 0) Flags |= RetiredFlag;
     }
+
+    /// <summary>
+    /// Resolves per-type locomotion speed and hover altitude for mobile retail entity types:
+    /// type 9 flyer (80032F3C.c:72-73 -> 800324E0.c:321-384), type 5 tank (800382B4.c:291-295 ->
+    /// 8003802C.c:92,102,118), and type 28 multi-turret tank (800398EC.c:89-90 -> 800382B4.c).
+    /// </summary>
+    private static (int Speed, int AltitudeOffset) ResolveMovementProfile(int entityType) => entityType switch
+    {
+        BuildOrderSpawner.AircraftEntityType => (BuiltUnit.AircraftSpeed, BuiltUnit.AircraftAltitude),
+        BuildOrderSpawner.TankEntityType => (BuiltUnit.TankSpeed, 0),
+        BuildOrderSpawner.HeavyTankEntityType => (BuiltUnit.TankSpeed, 0),
+        _ => (0, 0),
+    };
 
     /// <inheritdoc/>
     public override int RecordId => SourceSlot.Record.Id;
@@ -191,6 +213,16 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
     public int X { get; set; }
     public int Y { get; set; }
     public int Z { get; set; }
+    /// <summary>Normalized horizontal facing X in 16.16 fixed-point (0x10000 = 1.0).</summary>
+    public int DirX { get; set; }
+    /// <summary>Normalized horizontal facing Z in 16.16 fixed-point (0x10000 = 1.0).</summary>
+    public int DirZ { get; set; }
+    /// <summary>Horizontal speed in world units per clock tick (0 for stationary entity types).</summary>
+    public int Speed { get; }
+    /// <summary>Hover height above sampled terrain in world units (non-zero for aircraft).</summary>
+    public int AltitudeOffset { get; }
+    /// <summary>True when this unit type has built-in locomotion on message 6.</summary>
+    public bool IsMobile => Speed > 0;
     /// <summary>Specialized mission runtime created on spawn (null for other dispatch types).</summary>
     public IRegisteredMapObject? RuntimeObject { get; internal set; }
     /// <summary>Spawn mode argument passed by func_800616A0 to func_8006125C (1 = normal/timer, 0 = high-nibble burst).</summary>
@@ -208,10 +240,33 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
         {
             Message6Count++;
             LastDelta = arg2;
+            if (RuntimeObject is null && IsMobile && arg2 > 0)
+                Advance(arg2);
         }
         int runtimeResult = RuntimeObject?.OnMessage(message, arg2, arg3) ?? 0;
         SyncRuntimePosition();
         return MessageHandler?.Invoke(this, message, arg2, arg3) ?? runtimeResult;
+    }
+
+    /// <summary>
+    /// Advances a mobile unit along its facing vector for <paramref name="dt"/> clock ticks and
+    /// tracks terrain height plus <see cref="AltitudeOffset"/>.
+    /// </summary>
+    public void Advance(int dt, Func<int, int, int>? groundHeight = null)
+    {
+        if (dt <= 0 || Speed == 0) return;
+        long step = (long)Speed * dt;
+        X = unchecked(X + (int)((DirX * step) >> 16));
+        Z = unchecked(Z + (int)((DirZ * step) >> 16));
+        int? ground = groundHeight is not null ? groundHeight(X, Z) : _groundSampler?.Invoke(X, Z);
+        if (ground.HasValue)
+            Y = ground.Value + AltitudeOffset;
+    }
+
+    internal void SnapToGround()
+    {
+        if (_groundSampler?.Invoke(X, Z) is { } ground)
+            Y = ground + AltitudeOffset;
     }
 
     internal void SyncRuntimePosition()
@@ -286,8 +341,16 @@ public sealed class CsacUnitSpawner
     /// <summary>Retail spawner command 0x47: queue a burst spawn in flags bits 8..11 or 12..15 (800614BC.c:57-86).</summary>
     public const int CommandQueueBurst = 0x47;
 
+    /// <summary>
+    /// High-altitude probe Y passed to <see cref="MapObjectRegistry.GroundHeight"/> so
+    /// <c>func_80066F78</c> returns the highest floor surface at (X, Z) rather than trapping units
+    /// beneath rising terrain.
+    /// </summary>
+    public const int GroundProbeY = 0x100000;
+
     private readonly CsacSpawnerSlot?[] _slots = new CsacSpawnerSlot?[Capacity];
     private readonly List<SpawnedCsacUnit> _spawnedUnits = new();
+    private readonly Dictionary<int, (int X, int Z)> _teamTargets = new();
     private readonly MapObjectRegistry? _registry;
     private readonly EntityWorld? _world;
     private int _count;
@@ -340,6 +403,34 @@ public sealed class CsacUnitSpawner
     /// instances when they are created.
     /// </summary>
     public Func<SpawnedCsacUnit, int, int, int, int>? UnitMessageHandler { get; set; }
+
+    /// <summary>
+    /// Optional terrain height sampler <c>(x, z) -&gt; groundY</c> used by mobile spawned units.
+    /// When null, falls back to the attached <see cref="MapObjectRegistry.GroundHeight"/> probed at
+    /// <see cref="GroundProbeY"/>.
+    /// </summary>
+    public Func<int, int, int>? GroundHeight { get; set; }
+
+    /// <summary>
+    /// Sets the horizontal march target for newly spawned mobile units belonging to
+    /// <paramref name="team"/> so their initial facing points toward the opposing base.
+    /// </summary>
+    public void SetTeamTarget(int team, int targetX, int targetZ) =>
+        _teamTargets[team] = (targetX, targetZ);
+
+    private int? SampleGround(int x, int z)
+    {
+        if (GroundHeight is { } sampler)
+            return sampler(x, z);
+        if (_registry?.GroundHeight is { } registrySampler)
+            return registrySampler(new Vec3(x, GroundProbeY, z));
+        return null;
+    }
+
+    private (int DirX, int DirZ) ResolveHeading(EntityRecord record) =>
+        _teamTargets.TryGetValue(record.Team, out var target)
+            ? BuildOrderSpawner.ComputeHeading(record.X, record.Z, target.X, target.Z)
+            : (0x10000, 0);
 
     /// <summary>gGameSession +0x5C: when 1, <see cref="TrySpawn"/> increments per-participant stats (8006125C.c:50).</summary>
     public int SessionActive { get; set; }
@@ -555,9 +646,13 @@ public sealed class CsacUnitSpawner
                 Player1Stats.Increment(infoType);
         }
 
-        var unit = new SpawnedCsacUnit(_nextRuntimeId++, slot, spawnMode, UnitMessageHandler);
+        var (dirX, dirZ) = ResolveHeading(slot.Record);
+        var unit = new SpawnedCsacUnit(_nextRuntimeId++, slot, spawnMode, UnitMessageHandler,
+            dirX, dirZ, SampleGround);
         unit.SlotIndex = (byte)slot.Record.U8(0x20); // 8002A5F4.c:127
         unit.RuntimeObject = _registry?.CreateMissionObject(slot.Record, unit.Id);
+        if (unit.RuntimeObject is null && unit.IsMobile)
+            unit.SnapToGround();
         unit.SyncRuntimePosition();
         _spawnedUnits.Add(unit);
         if (_registry is { LiveObjects.IsAllocated: true })
