@@ -1,3 +1,4 @@
+using FutureCop.Assets;
 using FutureCop.Game.Mech;
 
 namespace FutureCop.Game;
@@ -132,7 +133,8 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
         PathNetwork? pathNetwork = null,
         Func<int>? nextRandom = null,
         Func<int, int, int, int>? querySurfaceHeight = null,
-        EntityWorld? world = null)
+        EntityWorld? world = null,
+        HeightGrid? heightGrid = null)
     {
         Id = id;
         SourceSlot = sourceSlot;
@@ -171,7 +173,7 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
                 ? pos => groundSampler(pos[0], pos[2]) ?? pos[1]
                 : null;
             HoverMover = HoverEnemyInit.Create(record, probe, nextRandom);
-            _hoverWorld = new CsacHoverWorld(nextRandom, groundSampler);
+            _hoverWorld = new CsacHoverWorld(nextRandom, groundSampler, heightGrid);
             SyncFromHoverMover();
         }
         else if ((EntityType == BuildOrderSpawner.TankEntityType || EntityType == BuildOrderSpawner.HeavyTankEntityType)
@@ -239,6 +241,11 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
     public int DirZ { get; set; }
     /// <summary>Retail type-9 hover mover state (<c>80032180.c</c>/<c>800324E0.c</c>), or null for other types.</summary>
     public HoverEnemy? HoverMover { get; }
+    /// <summary>
+    /// Height-grid adapter handed to <see cref="HoverEnemyTick"/> for type-9 units (null for other
+    /// types); exposes the bilinear <c>80069A38</c> result next to the point ground probe.
+    /// </summary>
+    public IHoverEnemyWorld? HoverWorld => _hoverWorld;
     /// <summary>Retail type-5/28 rail path mover (<c>80050E0C.c</c>/<c>8005027C.c</c>/<c>8003802C.c</c>), or null when absent.</summary>
     public RailPathMover? RailMover { get; }
     /// <summary>True when this unit has an initialized retail locomotion mover.</summary>
@@ -328,17 +335,22 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
     {
         private readonly Func<int> _nextRandom;
         private readonly Func<int, int, int?>? _groundSampler;
+        private readonly HeightGrid? _heightGrid;
 
-        public CsacHoverWorld(Func<int> nextRandom, Func<int, int, int?>? groundSampler)
+        public CsacHoverWorld(Func<int> nextRandom, Func<int, int, int?>? groundSampler, HeightGrid? heightGrid)
         {
             _nextRandom = nextRandom;
             _groundSampler = groundSampler;
+            _heightGrid = heightGrid;
         }
 
         public int NextRandom() => _nextRandom();
-        // func_80069A38 is not ported on the scene path; the ground probe func_80066F78 stands in
-        // (same convention as LevelSceneSkyCaptain.cs:784-785).
-        public int SampleHeightBilinear(int[] pos) => _groundSampler?.Invoke(pos[0], pos[2]) ?? 0;
+        // 800324E0.c:330 calls gSampleHeightGridBilinear (80069A38) on the mission's coarse grid;
+        // the point probe func_80066F78 stays the fallback for callers without a grid and for the
+        // separate gGetGroundHeight uses (800324E0.c:368, 8003802C.c:102).
+        public int SampleHeightBilinear(int[] pos) => _heightGrid is not null
+            ? _heightGrid.Sample(pos)
+            : _groundSampler?.Invoke(pos[0], pos[2]) ?? 0;
         public int GetGroundHeight(int[] pos) => _groundSampler?.Invoke(pos[0], pos[2]) ?? 0;
         public HoverEnemyHit? FindTargetEntity(HoverEnemy o) => null;
         public void StepAttackScheduler(HoverEnemy o, int dt) { }
@@ -449,6 +461,13 @@ public sealed class CsacUnitSpawner
 
     /// <summary>PRNG used by func_80060E74:135 to seed positive initial respawn delays.</summary>
     public RetailRandom Random { get; set; }
+
+    /// <summary>
+    /// Coarse height grid of the loaded mission (<c>gBuildCoarseHeightGrid</c>, func_800695A8),
+    /// sampled bilinearly by func_80069A38 for type-9 hover units. Null keeps the point ground
+    /// probe for callers without a mission grid.
+    /// </summary>
+    public HeightGrid? HeightGrid { get; set; }
 
     /// <summary>Number of registered Csac spawner slots (D_8009F800.count).</summary>
     public int Count => _count;
@@ -754,7 +773,7 @@ public sealed class CsacUnitSpawner
 
         var pathNetwork = ResolvePathNetwork(slot.Record);
         var unit = new SpawnedCsacUnit(_nextRuntimeId++, slot, spawnMode, UnitMessageHandler,
-            SampleGround, pathNetwork, Random.Next, QuerySurfaceHeight, _world);
+            SampleGround, pathNetwork, Random.Next, QuerySurfaceHeight, _world, HeightGrid);
         unit.SlotIndex = (byte)slot.Record.U8(0x20); // 8002A5F4.c:127
         unit.RuntimeObject = _registry?.CreateMissionObject(slot.Record, unit.Id);
         unit.SyncRuntimePosition();

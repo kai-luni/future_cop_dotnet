@@ -245,6 +245,8 @@ public sealed class LevelScene
             SessionActive = 1, // D_8009FA94 +0x5C == 1 in Precinct Assault (8006125C.c:50)
             SinglePlayerTeam = droneTeam,
             Player0Team = _playerTeam,
+            // The mission-wide coarse grid built by func_800695A8 (BindMap above).
+            HeightGrid = _skyCaptain.HeightGrid,
         };
         _csacSpawner.LoadPathNetworks(_file.Bytes,
             (x, z, mode) => LevelGround.PlacementHeight(Map, x, z, mode) ?? 0);
