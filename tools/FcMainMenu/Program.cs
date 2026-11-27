@@ -32,7 +32,7 @@ flow.MenuSoundTriggered += id => audio?.PlayMenuSound(id);
 flow.SceneStartSoundTriggered += id => { if (frontEndMixer != null) levelAudio?.PlayMenuSound(id, frontEndMixer); };
 flow.WeaponSoundTriggered += ev => levelAudio?.HandleWeaponSound(ev);
 flow.LevelTicksAdvanced += ticks => levelAudio?.StepTicks(ticks);
-Console.WriteLine("Arrows: navigate / move and turn in the level; Space: jump; Enter: accept; Escape: back; Q: quit.");
+Console.WriteLine("Arrows: navigate / move and turn in the level; Space: jump; Tab: camera; Enter: accept; Escape: back; Q: quit.");
 // The loop holds a 60 Hz frame budget instead of sleeping a fixed 16 ms after the work: that sleep
 // used to add its full length to the render time (a 10-12 ms level frame became a 28 ms frame, i.e.
 // 36 fps). FC_FRAME_LOG=<file> writes one CSV line per frame so pacing is measured, not guessed.

@@ -4,11 +4,31 @@ using FutureCop.Game.Mech;
 
 namespace FutureCop.View;
 
-/// <summary>Camera of the level start view: orbit around the mech pivot.</summary>
-/// <param name="Yaw">Degrees about the world y axis.</param>
-/// <param name="Elevation">Degrees above the horizon.</param>
-/// <param name="Distance">Eye distance from the pivot in model units (world units / 16).</param>
-public sealed record LevelCamera(double Yaw = 30.0, double Elevation = 35.0, int Distance = 0x1C00);
+/// <summary>
+/// Camera of the level view: orbit around the mech pivot layered with the retail chase-camera
+/// preset state (<c>D_8009AEC4[0..6]</c> / <c>D_8009AD08</c>, <c>src/game/800569EC.c:232-246,305-513</c>).
+/// </summary>
+/// <param name="Yaw">Base orbit yaw in degrees about the world y axis.</param>
+/// <param name="Elevation">Base elevation in degrees above the horizon.</param>
+/// <param name="Distance">Base eye distance from the pivot in model units (world units / 16).</param>
+/// <param name="PresetState">Retail chase-camera preset state <c>0..6</c> (<c>info-&gt;state</c>).</param>
+public sealed record LevelCamera(double Yaw = 30.0, double Elevation = 35.0, int Distance = 0x1C00, int PresetState = 0)
+{
+    /// <summary>
+    /// Applies the retail preset offset for <see cref="PresetState"/> on top of this orbit camera.
+    /// Preset 0 returns this camera unchanged.
+    /// </summary>
+    public LevelCamera ResolvePreset()
+    {
+        int state = ((PresetState % ChaseCameraState.PresetCount) + ChaseCameraState.PresetCount) % ChaseCameraState.PresetCount;
+        if (state == 0) return this;
+        var preset = ChaseCameraState.GetPreset(state);
+        double yaw = ((Yaw + preset.YawOffsetDegrees) % 360.0 + 360.0) % 360.0;
+        double elevation = Math.Clamp(Elevation + preset.ElevationOffsetDegrees, 5.0, 85.0);
+        int distance = Math.Max(0x400, Distance + preset.DistanceOffsetModelUnits);
+        return new LevelCamera(yaw, elevation, distance, state);
+    }
+}
 
 /// <summary>
 /// First runnable start of a Precinct Assault map: the retail terrain of the mission (GRDB grid +
@@ -791,6 +811,7 @@ public sealed class LevelScene
         if (body.Port != 0) throw new NotSupportedException("Only player port 0 is integrated");
         _animateWalker = false;
         _walker = body;
+        ChaseCamera.Reset();
         _walkerWorld = new FutureCop.Game.Mech.MechWorld(Map)
         {
             // Dynamic ground-object probe (func_8006320C) over placed type-10 elevators.
@@ -801,6 +822,12 @@ public sealed class LevelScene
         if (_purchasePads is { } pads) pads.TargetCandidatesStale = true;
         ObjectRegistry.CullActiveElevators(body.X, body.Z);
     }
+
+    /// <summary>
+    /// Retail chase-camera preset state (<c>info-&gt;state</c>, <c>src/game/800569EC.c:228-246</c>)
+    /// stepped on every <see cref="AdvanceWalker"/> call from the translated pad word and live MapZones.
+    /// </summary>
+    public ChaseCameraState ChaseCamera { get; } = new();
 
     /// <summary>The attached walker body, so callers can read its health for the HUD.</summary>
     public MechBody? Walker => _walker;
@@ -847,6 +874,11 @@ public sealed class LevelScene
         _weapons?.AdvanceRecoil(RetailClock.TicksPerFrame * frames);
         UpdateWalkerPose();
         _weapons?.Advance(_walker, _parts, padWord, RetailClock.TicksPerFrame * frames);
+        // gUpdatePlayerEntity (800588D4.c:292) calls gUpdateChaseCamera (800569EC.c:228-246)
+        // after gWeaponSlotInput (:290): decode the Select edge (0x40000), cycle info->state 0..6,
+        // and gate states 5 and 6 on gTestCameraZoneOverlap (80031B40.c:74-89).
+        ChaseCamera.Step(padWord, ActiveMapZones, _walker.X, _walker.Z, PlayerCollisionRadius,
+            frozen: _walker.Frozen != 0);
         if (frames > 0) AdvanceRetirement();
         // Tick placed type-10 elevators on the walker clock when EnableCsacSpawner is off; when
         // EnableCsacSpawner is on, AdvanceSkyCaptain broadcasts message 6 over LiveObjects once.
@@ -1059,6 +1091,8 @@ public sealed class LevelScene
     public int MechFaces { get; private set; }
     public IReadOnlyList<int> DrawnSections { get; private set; } = Array.Empty<int>();
     public (int X, int Y, int Z) Eye { get; private set; }
+    /// <summary>View matrix computed by the last <see cref="Render"/> call.</summary>
+    public Gte.Mat? LastView { get; private set; }
 
     /// <summary>
     /// Ramp table D_800A2630 for the k == 6/7 colour variants. Viewer placeholder, not retail:
@@ -1185,9 +1219,11 @@ public sealed class LevelScene
             ? null
             : new PickupItems(pickupField, new PlayerResupplyState(new WeaponSlots()));
         if (Sink is null) Array.Clear(Rgb);
-        // View of the mech-local frame (model units, pivot = walker centre). Viewer camera, not the
-        // retail chase camera func_800569EC.
-        var view = ViewTransform.Turn(camera.Yaw, camera.Elevation, _mechCx, _mechCy, _mechCz, camera.Distance);
+        // View of the mech-local frame (model units, pivot = walker centre), applying the active
+        // retail chase-camera preset offset (D_8009AEC4[PresetState] / D_8009AD08, 800569EC.c:305-513).
+        var effective = camera.ResolvePreset();
+        var view = ViewTransform.Turn(effective.Yaw, effective.Elevation, _mechCx, _mechCy, _mechCz, effective.Distance);
+        LastView = view;
 
         // Eye in mech-local model units: camera = A p + T/16 vanishes at the eye -> e = -A^T T / 16.
         double[] t = { view.Tx / 16.0, view.Ty / 16.0, view.Tz / 16.0 };
