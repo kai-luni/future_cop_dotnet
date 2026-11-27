@@ -775,6 +775,9 @@ public sealed class PurchasePadSystem
     /// <summary>PRNG of the map-zone rescan jitter (<c>func_80019668() &amp; 0x3F</c>, 80031DE8.c:149).</summary>
     public RetailRandom Random { get; set; }
 
+    private readonly List<ICsacNodeId?> _syncedCandidates = new();
+    private readonly HashSet<ICsacNodeId> _seenCandidates = new(ReferenceEqualityComparer.Instance);
+
     /// <summary>
     /// Publishes the frame's D_800A8F90 as <see cref="TargetCandidates"/>: the active entities, the
     /// live player entities (which retail links into D_8009FA40 with flag 8 in 800579D4.c:207 so
@@ -788,8 +791,10 @@ public sealed class PurchasePadSystem
         IEnumerable<ICsacNodeId>? players = null)
     {
         if (OwnsTable) return;
-        var list = new List<ICsacNodeId?>();
-        var seen = new HashSet<ICsacNodeId>(ReferenceEqualityComparer.Instance);
+        var list = _syncedCandidates;
+        var seen = _seenCandidates;
+        list.Clear();
+        seen.Clear();
         if (active is not null)
         {
             for (int i = 0; i < active.Count; i++)
@@ -834,10 +839,17 @@ public sealed class PurchasePadSystem
             if (!TargetCandidates.Any(c => ReferenceEquals(c, candidate)))
             {
                 // Make the candidate visible to a scan that runs before the next frame rebuild.
-                var list = new ICsacNodeId?[TargetCandidates.Count + 1];
-                for (int i = 0; i < TargetCandidates.Count; i++) list[i] = TargetCandidates[i];
-                list[^1] = candidate;
-                TargetCandidates = list;
+                if (ReferenceEquals(TargetCandidates, _syncedCandidates))
+                {
+                    _syncedCandidates.Add(candidate);
+                }
+                else
+                {
+                    var list = new ICsacNodeId?[TargetCandidates.Count + 1];
+                    for (int i = 0; i < TargetCandidates.Count; i++) list[i] = TargetCandidates[i];
+                    list[^1] = candidate;
+                    TargetCandidates = list;
+                }
             }
         }
         TargetCandidatesStale = true;

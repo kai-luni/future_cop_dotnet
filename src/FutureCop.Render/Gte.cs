@@ -78,25 +78,23 @@ public static class Gte
         Loaded r, short vx, short vy, short vz, int h, int ofx, int ofy, int widthMode)
     {
         uint flag = 0;
-        Span<int> ir = stackalloc int[3];
-        Span<long> mac = stackalloc long[3];
-        int[] tr = { r.Trx, r.Try, r.Trz };
-        for (int i = 0; i < 3; i++)
-        {
-            mac[i] = ((long)tr[i] * 4096 + (long)r.R[i * 3] * vx + (long)r.R[i * 3 + 1] * vy +
-                      (long)r.R[i * 3 + 2] * vz) >> 12;
-            ir[i] = Clamp16(mac[i], ref flag, FlagIr1 >> i);
-        }
+        short[] rm = r.R;
+        long mac0 = ((long)r.Trx * 4096 + (long)rm[0] * vx + (long)rm[1] * vy + (long)rm[2] * vz) >> 12;
+        int ir0 = Clamp16(mac0, ref flag, FlagIr1);
+        long mac1 = ((long)r.Try * 4096 + (long)rm[3] * vx + (long)rm[4] * vy + (long)rm[5] * vz) >> 12;
+        int ir1 = Clamp16(mac1, ref flag, FlagIr2);
+        long mac2 = ((long)r.Trz * 4096 + (long)rm[6] * vx + (long)rm[7] * vy + (long)rm[8] * vz) >> 12;
+        _ = Clamp16(mac2, ref flag, FlagIr3);
         int sz3;
-        if (mac[2] > 0xFFFF) { flag |= FlagSz; sz3 = 0xFFFF; }
-        else if (mac[2] < 0) { flag |= FlagSz; sz3 = 0; }
-        else sz3 = (int)mac[2];
+        if (mac2 > 0xFFFF) { flag |= FlagSz; sz3 = 0xFFFF; }
+        else if (mac2 < 0) { flag |= FlagSz; sz3 = 0; }
+        else sz3 = (int)mac2;
 
         int q = Quotient(h, sz3, out bool ovf);
         if (ovf) flag |= FlagDiv;
 
-        int sx = ClampScreen((ofx + (long)ir[0] * q) >> 16, ref flag, FlagSx);
-        int sy = ClampScreen((ofy + (long)ir[1] * q) >> 16, ref flag, FlagSy);
+        int sx = ClampScreen((ofx + (long)ir0 * q) >> 16, ref flag, FlagSx);
+        int sy = ClampScreen((ofy + (long)ir1 * q) >> 16, ref flag, FlagSy);
         int sxy = (sy << 16) | (sx & 0xFFFF);
 
         byte clip;
