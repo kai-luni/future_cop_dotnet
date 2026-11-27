@@ -320,10 +320,10 @@ public sealed class WeaponPickups
     public IReadOnlyList<WeaponPickup> Items => _items;
 
     /// <summary>Number of pickups that already paid out and retired.</summary>
-    public int CollectedCount => _items.Count(i => i.Collected);
+    public int CollectedCount { get; private set; }
 
     /// <summary>Number of pickups still on the map.</summary>
-    public int RemainingCount => _items.Count(i => !i.Collected);
+    public int RemainingCount => _items.Count;
 
     /// <summary>Empty field; <see cref="FromMission"/> fills it from the archive.</summary>
     public WeaponPickups(IReadOnlyDictionary<byte, WeaponRecord> registry, int difficulty = WeaponSlots.DefaultDifficulty,
@@ -339,7 +339,7 @@ public sealed class WeaponPickups
     public WeaponPickup Add(WeaponPickup pickup)
     {
         ArgumentNullException.ThrowIfNull(pickup);
-        _items.Add(pickup);
+        if (!pickup.Collected) _items.Add(pickup);
         return pickup;
     }
 
@@ -352,7 +352,8 @@ public sealed class WeaponPickups
         ArgumentNullException.ThrowIfNull(replacement);
         int index = _items.IndexOf(current);
         if (index < 0) throw new ArgumentException("item is not part of this field", nameof(current));
-        _items[index] = replacement;
+        if (replacement.Collected) _items.RemoveAt(index);
+        else _items[index] = replacement;
     }
 
     /// <summary>
@@ -534,16 +535,33 @@ public sealed class WeaponPickups
         if (target is null || target.EntityType != 1) return 0;
 
         int paid = 0;
-        foreach (var item in _items)
+        for (int i = 0; i < _items.Count;)
         {
-            if (item.Collected) continue;
-            if (!Overlaps(item, x, y, z)) continue;
+            var item = _items[i];
+            if (item.Collected)
+            {
+                _items.RemoveAt(i);
+                continue;
+            }
+            if (!Overlaps(item, x, y, z))
+            {
+                i++;
+                continue;
+            }
             int accumulator = item.Accumulator;
             var outcome = Apply(ctx, target, item.Payload, item.Amount, ref accumulator, item.Period);
             item.Accumulator = accumulator;
-            if (!outcome.Paid) continue;
-            paid++;
-            if (item.RetiresOnCollect) item.Collected = true;
+            if (outcome.Paid) paid++;
+            if (outcome.Paid && item.RetiresOnCollect)
+            {
+                item.Collected = true;
+                _items.RemoveAt(i);
+                CollectedCount++;
+            }
+            else
+            {
+                i++;
+            }
         }
         return paid;
     }
