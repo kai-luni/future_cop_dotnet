@@ -276,6 +276,7 @@ public sealed class PurchasePadSystem
     private readonly List<ScriptTimerEntry> _timers = new();
     private readonly byte[] _timerBytecode;
     private readonly CsacUnitSpawner? _spawner;
+    private readonly EntityWorld _entityWorld;
 
     /// <summary>Extracted RPNS bytecode pool.</summary>
     public RpnsPool Pool { get; }
@@ -310,6 +311,7 @@ public sealed class PurchasePadSystem
         Random = random ?? spawner?.Random ?? new RetailRandom();
 
         var entityWorld = world ?? new EntityWorld();
+        _entityWorld = entityWorld;
         if (pads is not null)
         {
             foreach (var pad in pads)
@@ -892,6 +894,13 @@ public sealed class PurchasePadSystem
         var result = pad.Script0Offset == 0
             ? new PurchaseResult(true, false, 0, before, before)
             : RunPadScript(pad.Script0Offset, target.RecordId, before, RpnsVmState.SessionScoreP1);
+        // 80031C74.c:110-113: flag 1 retires a live non-player target after the script,
+        // setting 0x04000000 (ResetFlag) before gRetireEntity.
+        if ((pad.Flags & 1) != 0 && target.DispatchType != 1 && target is LiveEntity { RuntimeId: > 0 } entity)
+        {
+            entity.Flags |= LiveEntity.ResetFlag;
+            LiveEntity.Retire(entity, _entityWorld);
+        }
         pad.LastFire = result;
         return result;
     }
@@ -911,7 +920,7 @@ public sealed class PurchasePadSystem
         long bestDist = 0;
         foreach (var candidate in candidates)
         {
-            if (candidate is null or PlayerTarget { IsDetached: true }) continue;
+            if (candidate is null or PlayerTarget { IsDetached: true } or LiveEntity { RuntimeId: 0 }) continue;
             if (candidate.RecordId <= 0) continue;                         // :123
             if (candidate.NodeId != node.TargetId) continue;               // :124
             if (candidate.DispatchType is 0x15 or 0x12) continue;          // :125-126
