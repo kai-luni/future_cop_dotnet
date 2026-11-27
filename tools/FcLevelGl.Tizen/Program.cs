@@ -308,7 +308,7 @@ internal sealed class LevelGlApp : NUIApplication
             double dt = now - _lastFrame;
             _lastFrame = now;
             // Fixed-step camera motion keeps the view steady when a frame takes longer.
-            bool moving = _camera.Advance(Math.Min(dt, 0.1));
+            bool moving = _camera.Advance(Math.Min(dt, 0.1), _scene.ActiveMapZones, _scene.MechWorld.X, _scene.MechWorld.Z, _scene.PlayerCollisionRadius);
             if (moving) _renderBurst.Request();
 
             long t0 = Stopwatch.GetTimestamp();
