@@ -91,6 +91,24 @@ END
 W w_flat 0 0000000a 00000014
 O 0 0 0000000a 00000014
 END
+# Four further func_80015AF4 cases from tests/portable/a1-a2.v1.json (case triangle-output, steps
+# 3-6): the cross product uses the signed low half and the arithmetic high half of each packed word.
+# diagonal collinear (5,5)->(10,10): 10*0-10*0 = 0 -> kept, triple written
+W w_collinear_diag 0 00050005 000a000a
+O 0 0 00050005 000a000a
+END
+# (-5,-5),(5,-5),(11,6): 10*0-10*0 = 0 -> kept (the split-half product stays zero)
+W w_neg_ccw fffbfffb fffb0005 0005fffb
+O 0 fffbfffb fffb0005 0005fffb
+END
+# (-5,-5),(-5,5),(5,-5): 0*0-10*10 = -100 -> culled, out untouched
+W w_neg_cw fffbfffb 0005fffb fffb0005
+O 1
+END
+# wide words (-1000,-1000),(1000,-1000),(-1000,1000): 2000*2000-0*0 = 4e6 -> kept
+W w_wide_ccw fc18fc18 fc1803e8 03e8fc18
+O 0 fc18fc18 fc1803e8 03e8fc18
+END
 # P <id> <type> <i0 i1 i2 i3> <bias> <nv> <xy hex z dec clip hex>*nv <w0..w3 hex>
 # O <accepted 0|1> <xy0..xy3 hex> <z dec>
 P p_tri 3 0 1 2 0 0 3 00000000 100 c0 0000000a 200 c0 000a0000 300 c0 0 0 0 0

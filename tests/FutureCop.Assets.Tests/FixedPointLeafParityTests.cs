@@ -23,6 +23,27 @@ public class FixedPointLeafParityTests
     public void SignedDotProduct(int x, int y, int z, int expected) =>
         Assert.Equal(expected, MechMath.Dot(2 * Q16, -3 * Q16, 4 * Q16, x, y, z));
 
+    // func_800187C8 gIntegerRoot: the 15 sqrt-q8 cases of tests/portable/a1-a2.v1.json. The root is
+    // a Q8 square root of the unsigned 32-bit input, so 2 -> 362 and 0xFFFFFFFF saturates at 0xFFFFFF.
+    [Theory]
+    [InlineData(0L, 0u)]
+    [InlineData(1L, 256u)]
+    [InlineData(2L, 362u)]
+    [InlineData(3L, 443u)]
+    [InlineData(4L, 512u)]
+    [InlineData(100L, 2560u)]
+    [InlineData(255L, 4087u)]
+    [InlineData(256L, 4096u)]
+    [InlineData(65535L, 65535u)]
+    [InlineData(65536L, 65536u)]
+    [InlineData(1000000L, 256000u)]
+    [InlineData(2147483647L, 11863283u)]
+    [InlineData(2147483648L, 11863283u)]
+    [InlineData(4294967294L, 16777215u)]
+    [InlineData(4294967295L, 16777215u)]
+    public void IntegerRootMatchesThePortableQ8Cases(long value, uint expected) =>
+        Assert.Equal(expected, MechMath.IntegerRoot((uint)value));
+
     // func_8001A074: all eight cases from leaf_extra_harness.c.
     [Theory]
     [InlineData(0, 0, 0)]
