@@ -82,7 +82,7 @@ internal sealed class LevelApp : NUIApplication
         {
             if (focusTicks-- > 0) Focus();
             double now = clock.Elapsed.TotalSeconds;
-            camera.Advance(Math.Max(0, now - lastTick));
+            camera.Advance(Math.Max(0, now - lastTick), scene.ActiveMapZones, scene.MechWorld.X, scene.MechWorld.Z, scene.PlayerCollisionRadius);
             lastTick = now;
             Present();
             fpsFrames++;

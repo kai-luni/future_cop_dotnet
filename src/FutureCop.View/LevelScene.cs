@@ -347,6 +347,14 @@ public sealed class LevelScene
     /// <summary>The purchase-pad system the mission loaded, with the shared RPNS VM state.</summary>
     public PurchasePadSystem? PurchasePads => _purchasePads;
 
+    /// <summary>Live linked map zones (<c>D_8009F6F8</c>), or an empty list before objectives are enabled.</summary>
+    public IReadOnlyList<PurchasePad> ActiveMapZones =>
+        _purchasePads?.ActiveMapZones ?? Array.Empty<PurchasePad>();
+
+    /// <summary>Player model collision radius (<c>obj+0x68</c>, <c>func_80013AF0</c>).</summary>
+    public int PlayerCollisionRadius =>
+        _parts.Count > 0 ? CoordOf(_parts[0].Model.Id, MechWorld.X, MechWorld.Y, MechWorld.Z).Radius : 0;
+
     /// <summary>
     /// Opt-in flag to advance purchase pads, drain <see cref="CsacSpawner"/> and broadcast
     /// message 6 over <see cref="ObjectRegistry"/> during <see cref="AdvanceSkyCaptain"/>; the drain runs
