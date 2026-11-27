@@ -313,8 +313,8 @@ public sealed class PurchasePathTests
     }
 
     /// <summary>
-    /// The drawn frame after a hit on the player's helipad node: the scene renders the pad markers,
-    /// and the HUD session of that frame carries the play mode. Node 106 stands on
+    /// The normally drawn frame has no debug pad outlines, but the player's helipad node
+    /// still fires and the HUD session carries the play mode. Node 106 stands on
     /// (-480, 0, 871944) with flag 2 and no script (Cact +0x24 = 0, 800319D4.c:137): the box test of
     /// 80031C74.c:84-100 accepts the player every frame, :104-115 returns 1, and without a script
     /// (80031C74.c:106-108) the session bank is untouched - 5 points and 0 helis stay. The bought
@@ -322,20 +322,23 @@ public sealed class PurchasePathTests
     /// test pins the no-script arm of the walk in a real render.
     /// </summary>
     [RetailFact]
-    public void SceneDrawsBoughtUnitPadsAndScoreSession()
+    public void SceneKeepsPadDetectionAndScoreSessionWithoutDebugOutlines()
     {
         string path = LevelSceneRetirementTests.FindMission()!;
         var scene = new LevelScene(path) { EnableCsacSpawner = true };
         scene.EnableObjectives();
         var pads = scene.PurchasePads!;
         var pad = pads.FindPad(106)!;
+        // Original C leaf_systems ls_test_map_zone: the loader frees the source object
+        // after publishing the trigger node; the node survives, not a live actor.
+        Assert.DoesNotContain(scene.ObjectRegistry.LiveObjects.Entries, entry => entry.Id == 106);
         var walker = new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 0 };
         scene.AttachWalker(walker);
         scene.Objectives!.Score.Score[0] = 5;
 
         scene.Render(new LevelCamera(0.0, 20.0, 0x1200));
         Assert.Equal(0, scene.SpawnedUnitPrimitives);
-        Assert.True(scene.PadMarkerLines > 0, "the pad under the walker produced no marker lines");
+        Assert.Equal(0, scene.PadMarkerLines);
 
         // The walker itself is the node-12 candidate (obj+0x14 of the player entity is its record id
         // 12, PlayerTarget), standing on the pad centre.
@@ -360,10 +363,35 @@ public sealed class PurchasePathTests
         Assert.Equal(0, pads.VmState.GameSession[RpnsVmState.SessionHelisP1]);
     }
 
+    [ConftFact]
+    public void TheGreenPadOutlineRequiresExplicitOptInForEachFrame()
+    {
+        var (scene, _) = SceneWithOnlyThisPadMarked(106);
+        var camera = new LevelCamera(0.0, 20.0, 0x1200);
+
+        scene.Render(camera);
+        Assert.Equal(0, scene.PadMarkerLines);
+        byte[] normal = scene.Rgb.ToArray();
+
+        scene.ShowPadMarkers = true;
+        scene.Render(camera);
+        Assert.Equal(4, scene.PadMarkerLines);
+        byte[] green = { 0x40, 0xFF, 0x40 };
+        Assert.Contains(Enumerable.Range(0, LevelScene.Width * LevelScene.Height), i =>
+            scene.Rgb.AsSpan(i * 3, 3).SequenceEqual(green) &&
+            !normal.AsSpan(i * 3, 3).SequenceEqual(green));
+
+        scene.ShowPadMarkers = false;
+        scene.Render(camera);
+        Assert.Equal(0, scene.PadMarkerLines);
+        Assert.Equal(normal, scene.Rgb);
+    }
+
     [RetailFact]
     public void PadMarkersExcludeNonWalkerZones()
     {
         var (scene, zone) = SceneWithOnlyThisPadMarked(235);
+        scene.ShowPadMarkers = true;
         var camera = new LevelCamera(0.0, 20.0, 0x6000);
         Assert.Equal(PurchasePadKind.MapZone, zone.Kind);
         Assert.False(zone.RequiresWalkerMode);
@@ -379,6 +407,7 @@ public sealed class PurchasePathTests
     public void PadMarkersCullAtTheHorizontalDistanceLimit()
     {
         var (scene, pad) = SceneWithOnlyThisPadMarked(152);
+        scene.ShowPadMarkers = true;
         var camera = new LevelCamera(0.0, 70.0, 0x6000);
         foreach (var (dx, dz) in new[] { (1, 0), (0, 1) })
         {
@@ -404,6 +433,7 @@ public sealed class PurchasePathTests
     public void RaisedPadMarkerDrawsAtThePlatformHeight()
     {
         var (scene, _) = SceneWithOnlyThisPadMarked(152);
+        scene.ShowPadMarkers = true;
         var camera = new LevelCamera(0.0, 20.0, 0x1200);
         scene.Render(camera);
         Assert.Equal(6, scene.PadMarkerLines);
@@ -471,6 +501,7 @@ public sealed class PurchasePathTests
     public void RetiredClaimPadDisappearsFromMarkers()
     {
         var (scene, _) = SceneWithOnlyThisPadMarked(152);
+        scene.ShowPadMarkers = true;
         scene.Objectives!.Score.Score[0] = 100;
         var camera = new LevelCamera(0.0, 20.0, 0x1200);
         scene.Render(camera);
