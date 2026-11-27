@@ -75,7 +75,10 @@ public sealed class LevelScene
     }
 
     private LevelWeapons? _weapons;
+    private WeaponPickups? _pickupField;
     private PickupItems? _pickups;
+    private readonly Dictionary<WeaponPickup, LiveEntity> _pickupEntities = new();
+    private bool _pickupsBoundToCsac;
 
     /// <summary>
     /// The weapon pickups lying on this mission's map, or null until firing is enabled. The field is
@@ -106,10 +109,16 @@ public sealed class LevelScene
         _ = Weapons;
         // func_8002FC90:188-199 refills the control block the fire path spends from, and the gauge
         // bits at +0x1C/+0x1E raise the same health word the walker carries.
-        _pickups ??= new PickupItems(_file, Map,
-            PlayerResupplyState.ForWalker(Weapons!.Slots, () => Walker!.Health,
-                v => Walker!.Health = (short)v, 0x7F00));
+        if (_pickups is null)
+        {
+            _pickupField = WeaponPickups.FromMission(_file.Bytes, WeaponCatalog.LoadRegistry(_file), Map);
+            _pickupField.OnRetired = RetirePickupEntity;
+            _pickups = new PickupItems(_pickupField,
+                PlayerResupplyState.ForWalker(Weapons!.Slots, () => Walker!.Health,
+                    v => Walker!.Health = (short)v, 0x7F00));
+        }
         EnableObjectives();
+        BindInitialPickupsToCsacSpawner();
     }
 
     private ObjectiveField? _objectives;
@@ -253,8 +262,14 @@ public sealed class LevelScene
             slot.TotalSpawned++;
             if (slot.RemainingCount > 0) slot.RemainingCount--;
         }
+        BindInitialPickupsToCsacSpawner();
         _csacSpawner.OnPostSpawnScript = (slot, unit) =>
         {
+            if (slot.Record.Type == WeaponPickups.PlacementPayloadType)
+            {
+                SpawnCsacPickup(slot, unit);
+                return;
+            }
             if (slot.Record.Type != CaptureObjective.EntityType)
             {
                 // As for the outposts, use model bounds for the 800620D8.c:58-94 pair test.
@@ -271,6 +286,70 @@ public sealed class LevelScene
         ObjectRegistry.FinishLevelLoad();
         ObjectRegistry.ScreenState = MapObjectRegistry.ScreenStateImmediatePlay;
         ObjectRegistry.CullActiveElevators(MechWorld.X, MechWorld.Z);
+    }
+
+    private void BindInitialPickupsToCsacSpawner()
+    {
+        if (_pickupsBoundToCsac || _pickupField is null || _csacSpawner is null || _entities is null) return;
+        _pickupsBoundToCsac = true;
+        // All Precinct Assault type-0x10 pickups are Csac spawners (maxConcurrent = 1, remainingCount = -1).
+        // Account for the initial placement (8006125C.c:48-49) and attach a targetable LiveEntity
+        // (8004D4F8.c:59) so the retail tSAC countdown (800616A0.c:70-76) only ticks after pickup
+        // retirement and no duplicate Csac model spawns while the item is still uncollected.
+        foreach (var slot in _csacSpawner.Slots)
+        {
+            if (slot.Record.Type != WeaponPickups.PlacementPayloadType) continue;
+            var item = _pickupField.Items.FirstOrDefault(p => p.SectionId == slot.Record.Id && !_pickupEntities.ContainsKey(p));
+            if (item is null) continue;
+            slot.TotalSpawned++;
+            if (slot.RemainingCount > 0) slot.RemainingCount--;
+            var entity = new PickupEntity(slot.Record, item.X, item.Z);
+            _entities.Spawn(entity, targetable: true);
+            _pickupEntities[item] = entity;
+        }
+    }
+
+    private void SpawnCsacPickup(CsacSpawnerSlot slot, SpawnedCsacUnit unit)
+    {
+        // Type-0x10 pickups are driven by WeaponPickups (8002FA20.c / 8002FF6C.c), not the generic
+        // registry wrapper. Keep unit in EntityWorld without a hit coord so contact retirement runs
+        // gRetireEntity (8004D958.c) -> gSweepRetiredEntities (8004D598.c) ->
+        // gRecordSpawnedUnitRetirement (80061020.c) to free the Csac slot for the next respawn.
+        ObjectRegistry.LiveObjects.Unregister(unit);
+        if (_pickupField is null) return;
+        var pickup = WeaponPickups.FromRecord(slot.Record, Map);
+        if (pickup is null) return;
+        unit.Y = pickup.Y;
+        _pickupEntities[pickup] = unit;
+        _pickupField.Add(pickup);
+    }
+
+    private void RetirePickupEntity(WeaponPickup item)
+    {
+        if (_entities is null || !_pickupEntities.Remove(item, out var entity)) return;
+        // gApplyRotatingPropProximityEffect (8002FF6C.c:78) calls gRetireEntity (8004D958.c:48-60).
+        LiveEntity.Retire(entity, _entities);
+    }
+
+    private sealed class PickupEntity : LiveEntity
+    {
+        private readonly int _recordId;
+        private readonly (int X, int Z) _ground;
+
+        public PickupEntity(EntityRecord record, int x, int z)
+        {
+            _recordId = record.Id;
+            _ground = (x, z);
+            DamageScript = record.Scripts.ElementAtOrDefault(0);
+            RetireScript = record.Scripts.ElementAtOrDefault(1);
+            Health = MaxHealth = unchecked((short)record.Health);
+        }
+
+        public override int RecordId => _recordId;
+        public override int DispatchType => WeaponPickups.PlacementPayloadType;
+        public override (int X, int Z) GroundPosition => _ground;
+        public override int HandleMessage(int message, EntityWorld world, object? data) =>
+            BaseHandler(message, this, world, data);
     }
 
     private ElevatorRider? ReadPlayerElevatorRider(int slot)
@@ -369,6 +448,9 @@ public sealed class LevelScene
             // frame's scan, which is why the drain precedes it.
             _csacSpawner.Drain(dt);
             AdvancePurchasePads(dt);
+            // gRunSoloSessionFrame (800271A4.c:210-212) sweeps retired entities after spawners and
+            // timers, decrementing Csac TotalSpawned via gRecordSpawnedUnitRetirement (8004D598.c:51-52).
+            _entities?.SweepRetired();
         }
     }
 
@@ -1216,6 +1298,7 @@ public sealed class LevelScene
         {
             foreach (var item in pickups.Items)
             {
+                if (item.Collected) continue;
                 var model = _file.Models.FirstOrDefault(m => m.Id == item.ModelId);
                 bool hasFrame = model is not null && model.Vertices.TryGetValue(1, out var verts) && verts.Count > 0;
                 if (!hasFrame) model = null;
@@ -1349,6 +1432,9 @@ public sealed class LevelScene
             foreach (var entity in entities.Units)
             {
                 if (entity is not SpawnedCsacUnit unit || unit.RuntimeId == 0) continue;
+                // Type-0x10 pickups are drawn through the _pickups pass above (ground-snapped by
+                // func_8002FA20), never a second time as a generic Csac unit.
+                if (unit.EntityType == WeaponPickups.PlacementPayloadType) continue;
                 if (!_modelsById.TryGetValue(unit.ModelId, out var model)
                     || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
                 var matrix = PlacedMatrix(unit.X, unit.Y, unit.Z, view);
