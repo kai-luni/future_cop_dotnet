@@ -506,7 +506,9 @@ public sealed class LevelScene
             // :112-118: drop invalid targets, including a detached scene player. The node resets to
             // 600 and goes straight to the next entry: this frame neither decrements nor rescans it.
             if (node.MapZoneTarget is { } cached &&
-                (node.MapZoneTargetId != cached.RecordId || cached is PlayerTarget { IsDetached: true }))
+                (node.MapZoneTargetId != cached.RecordId
+                    || cached is PlayerTarget { IsDetached: true }
+                    || cached is LiveEntity { RuntimeId: 0 }))
             {
                 node.MapZoneTarget = null;                                 // :114
                 node.MapZoneTimer = 0x258;                                 // :115 (u16 node->t+0x16)
