@@ -654,6 +654,10 @@ public sealed class PurchasePathTests
         Assert.Equal(retireScript, entity.RetireScript);
         vm.OnCommandByTag!(152, 0x3D, 1);
 
+        // The command only fills the entity's entry slot (8004DA84.c:57-63); the retire runs on the
+        // entry pass of 8004CECC.c:108-114, after the script that issued it returned.
+        Assert.NotEqual(0, entity.RuntimeId);
+        Assert.Equal(1, pads.RunEntityCommands(world));
         Assert.Equal(0, entity.RuntimeId);
         const uint mask = LiveEntity.ResetFlag | LiveEntity.NoRetireScriptFlag;
         Assert.Equal(mask, entity.Flags & mask);
@@ -661,6 +665,7 @@ public sealed class PurchasePathTests
 
         // The same slot-1 script runs if 0x3D does not set the skip flag.
         vm.OnCommandByTag!(151, 0x3D, 0);
+        Assert.Equal(1, pads.RunEntityCommands(world));
         Assert.Equal(63, vm.SessionPointerBank[3]);
     }
 
