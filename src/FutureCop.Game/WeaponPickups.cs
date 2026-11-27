@@ -552,7 +552,9 @@ public sealed class WeaponPickups
             var outcome = Apply(ctx, target, item.Payload, item.Amount, ref accumulator, item.Period);
             item.Accumulator = accumulator;
             if (outcome.Paid) paid++;
-            if (outcome.Paid && item.RetiresOnCollect)
+            // func_8002FF6C:76-79 retires unconditionally on contact when 0x02000000 is set,
+            // even when gApplyPlayerResupply returned early below the interval period.
+            if (item.RetiresOnCollect)
             {
                 item.Collected = true;
                 _items.RemoveAt(i);
