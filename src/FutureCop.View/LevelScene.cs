@@ -106,7 +106,7 @@ public sealed class LevelScene
         _ = Weapons;
         // func_8002FC90:188-199 refills the control block the fire path spends from, and the gauge
         // bits at +0x1C/+0x1E raise the same health word the walker carries.
-        _pickups = new PickupItems(_file, Map,
+        _pickups ??= new PickupItems(_file, Map,
             PlayerResupplyState.ForWalker(Weapons!.Slots, () => Walker!.Health,
                 v => Walker!.Health = (short)v, 0x7F00));
         EnableObjectives();
@@ -1216,7 +1216,6 @@ public sealed class LevelScene
         {
             foreach (var item in pickups.Items)
             {
-                if (item.Collected) continue;
                 var model = _file.Models.FirstOrDefault(m => m.Id == item.ModelId);
                 bool hasFrame = model is not null && model.Vertices.TryGetValue(1, out var verts) && verts.Count > 0;
                 if (!hasFrame) model = null;

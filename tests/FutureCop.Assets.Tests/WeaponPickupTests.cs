@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
 using FutureCop.Assets;
 using FutureCop.Game;
+using FutureCop.Game.Mech;
+using FutureCop.View;
 using Xunit;
 
 namespace FutureCop.Assets.Tests;
@@ -381,16 +383,60 @@ public class WeaponPickupTests
     public void ASelfRetiringPickupLeavesTheFieldAfterOnePayout()
     {
         var (field, player, slots) = Field(WeaponPickups.Instant | WeaponPickups.SelfRetire | 0x0001);
-        slots.Ammo[0] = 0;
-        Assert.Equal(1, field.Update(ResupplyContext.Solo(player, 5), 0, 0, 0));
-        Assert.True(field.Items[0].Collected);
-        Assert.Equal(0, field.RemainingCount);
-        Assert.Equal(1, field.CollectedCount);
+        var first = Assert.Single(field.Items);
+        first.Accumulator = 777;
+        var second = field.Add(new WeaponPickup
+        {
+            HalfX = 1, HalfY = 1, HalfZ = 1,
+            Payload = WeaponPickups.Instant | WeaponPickups.SelfRetire | 0x0002,
+        });
+        var untouched = field.Add(new WeaponPickup { X = 100000, HalfX = 1, HalfY = 1, HalfZ = 1 });
+        var ctx = ResupplyContext.Solo(player, 5);
+        Array.Clear(slots.Ammo);
 
-        // A second frame pays nothing: func_8002FF6C:77-79 retired the entity.
-        slots.Ammo[0] = 0;
-        Assert.Equal(0, field.Update(ResupplyContext.Solo(player, 5), 0, 0, 0));
-        Assert.Equal(0, slots.Ammo[0]);
+        Assert.Equal(2, field.Update(ctx, 0, 0, 0));
+        Assert.True(first.Collected);
+        Assert.True(second.Collected);
+        // Original C leaf gameplay test, instant case: *acc is left unchanged.
+        Assert.Equal(777, first.Accumulator);
+        Assert.Equal(untouched, Assert.Single(field.Items));
+        Assert.Equal(1, field.RemainingCount);
+        Assert.Equal(2, field.CollectedCount);
+
+        Array.Clear(slots.Ammo);
+        Assert.Equal(0, field.Update(ctx, 0, 0, 0));
+        Assert.All(slots.Ammo, ammo => Assert.Equal(0, ammo));
+        Assert.Equal(1, field.RemainingCount);
+    }
+
+    [ConftFact]
+    public void SceneCannotRefillFromTheSamePickupAfterFiringIsEnabledAgain()
+    {
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!);
+        scene.EnableMechMovement();
+        scene.EnableFiring();
+        var pickups = scene.Pickups!;
+        var slots = scene.Weapons!.Slots;
+        var item = pickups.Items.Single(p => p.SectionId == 100);
+        int remaining = pickups.RemainingCount;
+
+        var walker = scene.Walker!;
+        (walker.X, walker.Y, walker.Z) = (item.X, item.Y, item.Z);
+        slots.Ammo[0] = 1;
+        scene.AdvanceWalker(0, 0, AnalogPad.Digital);
+        Assert.Equal(7500, slots.Ammo[0]);
+        Assert.Equal(remaining - 1, pickups.RemainingCount);
+        Assert.Equal(1, pickups.Payouts);
+
+        walker.X = item.X - item.HalfX;
+        scene.AdvanceWalker(0, 0, AnalogPad.Digital);
+        scene.EnableFiring();
+        walker.X = item.X;
+        slots.Ammo[0] = 1;
+        scene.AdvanceWalker(0, 0, AnalogPad.Digital);
+        Assert.Equal(1, slots.Ammo[0]);
+        Assert.Equal(remaining - 1, scene.Pickups!.RemainingCount);
+        Assert.Equal(1, scene.Pickups.Payouts);
     }
 
     [Fact]
