@@ -372,10 +372,6 @@ public sealed class LevelScene
         }
     }
 
-    // 80031DE8.c:176-184 + 80031C74.c:115: a type-95 node whose flags lack bit 2 is unlinked and
-    // freed the first time its box test fires; <see cref="PurchasePad.Released"/> carries that state.
-    // A node with bit 2 stays linked and fires on every box hit.
-
     private void AdvancePurchasePads(int dt)
     {
         if (_purchasePads is not { } pads || _objectives is not { } objectives) return;
@@ -482,12 +478,15 @@ public sealed class LevelScene
     private void UpdateMapZoneTriggers(PurchasePadSystem pads, int dt)
     {
         // 800319D4.c:114–119 prepends nodes; 80031DE8.c:102–104 starts at the head.
-        for (int index = pads.Pads.Count - 1; index >= 0; index--)
+        for (int index = pads.ActiveMapZones.Count - 1; index >= 0; index--)
         {
-            var node = pads.Pads[index];
-            if (node.Kind != PurchasePadKind.MapZone) continue;
-            if (node.Released) continue;                                   // :105-107 (node unlinked and freed, :176-184)
-            if ((node.Flags & 0x10) != 0) continue;                        // :108-110
+            var node = pads.ActiveMapZones[index];
+            if (node.MapZoneReleasePending)                                // :105-107, :176-184
+            {
+                if (pads.ReleaseMapZoneAt(index)) return;
+                continue;
+            }
+            if (!node.IsEnabled) continue;                                 // :108-110
 
             if (node.TargetId == -1)                                       // :111, :164-199 (unassigned node tests D_8009FA58[0..1])
             {
@@ -497,7 +496,7 @@ public sealed class LevelScene
                     _ = pads.FireMapZone(node, player);
                     if ((node.Flags & 2) == 0)
                     {
-                        node.Released = true;
+                        if (pads.ReleaseMapZoneAt(index)) return;
                         break;
                     }
                 }
@@ -540,7 +539,7 @@ public sealed class LevelScene
             // :106-115: the script of the node runs with arg2 = target id & 0x7FFF, then the node
             // returns 1 and is unlinked and freed unless it carries flag 2 (:115).
             _ = pads.FireMapZone(node, nodeTarget);
-            if ((node.Flags & 2) == 0) node.Released = true;
+            if ((node.Flags & 2) == 0 && pads.ReleaseMapZoneAt(index)) return;
         }
     }
 
@@ -589,9 +588,8 @@ public sealed class LevelScene
         // A unit placed inside a zone's box fires on the frame it exists (80031DE8.c:119-144 reads the
         // table of that frame); the walk may already have passed this node, so rescan it here.
         if (_walker is null) return;
-        foreach (var pad in pads.Pads)
-            if (pad.Kind == PurchasePadKind.MapZone && !pad.Released && (pad.Flags & 0x10) == 0)
-                pads.RescanMapZoneTarget(pad, 1);
+        foreach (var node in pads.ActiveMapZones)
+            pads.RescanMapZoneTarget(node, 1);
     }
 
     /// <summary>
@@ -608,9 +606,8 @@ public sealed class LevelScene
         // The table of the current scan changed: the node keeps its cached target where the new scan
         // finds the same entity and drops it where it does not, so no stale candidate outlives it.
         if (_walker is null) return;
-        foreach (var pad in pads.Pads)
-            if (pad.Kind == PurchasePadKind.MapZone && !pad.Released && (pad.Flags & 0x10) == 0)
-                pads.RescanMapZoneTarget(pad, 1);
+        foreach (var node in pads.ActiveMapZones)
+            pads.RescanMapZoneTarget(node, 1);
     }
 
     /// <summary>
