@@ -973,4 +973,180 @@ public class MenuFlowTests
         for (int i = 0; i < frame.Length; i += 4) if (frame[i] != 0 || frame[i + 1] != 0 || frame[i + 2] != 0) lit++;
         Assert.True(lit > 640 * 480 * 9 / 10, $"only {lit} lit pixels in the SLIM window frame");
     }
+
+    private static RadarLinePacket ReadGoldenRadarLine(string directive, string name)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "golden", "radar-markers.vectors");
+        foreach (var raw in File.ReadLines(path))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            var words = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length < 4 || words[0] != directive || words[1] != name) continue;
+            int arrow = Array.IndexOf(words, "->");
+            Assert.True(arrow >= 2, $"Malformed vector row: {line}");
+
+            int offset = directive switch
+            {
+                "LINE" => arrow + 1,
+                "DRAW" => arrow + 3, // skip packet count and leading "L" kind token
+                _ => throw new ArgumentOutOfRangeException(nameof(directive), directive, null),
+            };
+            if (directive == "DRAW") Assert.Equal("L", words[arrow + 2]);
+
+            return new RadarLinePacket(
+                Tag: uint.Parse(words[offset], System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture),
+                CodeWord: uint.Parse(words[offset + 1], System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture),
+                X0: short.Parse(words[offset + 2], System.Globalization.CultureInfo.InvariantCulture),
+                Y0: short.Parse(words[offset + 3], System.Globalization.CultureInfo.InvariantCulture),
+                X1: short.Parse(words[offset + 4], System.Globalization.CultureInfo.InvariantCulture),
+                Y1: short.Parse(words[offset + 5], System.Globalization.CultureInfo.InvariantCulture));
+        }
+        throw new InvalidOperationException($"Vector '{directive} {name}' not found in radar-markers.vectors");
+    }
+
+    private static (byte R, byte G, byte B) HudPixel(byte[] rgb, int x, int y)
+    {
+        int o = (y * LevelScene.Width + x) * 3;
+        return (rgb[o], rgb[o + 1], rgb[o + 2]);
+    }
+
+    /// <summary>
+    /// Binds <see cref="MechBody.Angle"/> (+0xB0) and <see cref="MechBody.Port"/> (+0xC1) through
+    /// <see cref="MenuFlow.BuildHud"/>, <see cref="RadarMarkers.DrawRadarMarkers"/>, and
+    /// <see cref="InGameHud.Paint"/> against C-harness-generated golden vectors from the unchanged
+    /// <c>8005A740.c</c> and <c>8005A9C4.c</c> units for four cardinal headings and both sides.
+    /// </summary>
+    [RetailFact]
+    public void BuildHud_BindsWalkerAngleAndSideToCHarnessHeadingLineCoordinates()
+    {
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var walker = flow.Level!.Walker!;
+
+        var cases = new (sbyte Side, ushort Angle, string LineVector, string DrawVector)[]
+        {
+            (0, 0x000, "heading_left_0x000", "walker_side0_h000"),
+            (0, 0x400, "heading_left_0x400", "walker_side0_h400"),
+            (0, 0x800, "heading_left_0x800", "walker_side0_h800"),
+            (0, 0xC00, "heading_left_0xC00", "walker_side0_hC00"),
+            (1, 0x000, "heading_right_0x000", "walker_side1_h000"),
+            (1, 0x400, "heading_right_0x400", "walker_side1_h400"),
+            (1, 0x800, "heading_right_0x800", "walker_side1_h800"),
+            (1, 0xC00, "heading_right_0xC00", "walker_side1_hC00"),
+        };
+
+        var seenCoords = new HashSet<(short X0, short Y0, short X1, short Y1)>();
+        foreach (var (side, angle, lineVector, drawVector) in cases)
+        {
+            var expectedLine = ReadGoldenRadarLine("LINE", lineVector);
+            var expectedDraw = ReadGoldenRadarLine("DRAW", drawVector);
+            Assert.Equal(expectedLine, expectedDraw);
+
+            walker.Port = side;
+            walker.Angle = angle;
+
+            var hud = flow.BuildHud();
+            Assert.NotNull(hud.Radar);
+            Assert.Equal(unchecked((short)angle), hud.Radar!.Value.Heading);
+            Assert.Equal(side, hud.Player.ValueC1);
+
+            var result = RadarMarkers.DrawRadarMarkers(hud.Radar.Value, hud.Player.ValueC1, frameTime: 0, node: null);
+            Assert.Equal(side == 1 ? RadarMarkers.RightSideOriginX : RadarMarkers.LeftSideOriginX, result.OriginX);
+            Assert.Equal(expectedLine, result.HeadingLine);
+            seenCoords.Add((result.HeadingLine.X0, result.HeadingLine.Y0, result.HeadingLine.X1, result.HeadingLine.Y1));
+
+            var rgb = new byte[LevelScene.Width * LevelScene.Height * 3];
+            InGameHud.Paint(rgb, hud, new HudSession { Mode = 0 }, new HudGlobals { FrameTime = 0 });
+            Assert.Equal((0x80, 0x80, 0x80), HudPixel(rgb, expectedLine.X0, expectedLine.Y0));
+            Assert.Equal((0x80, 0x80, 0x80), HudPixel(rgb, expectedLine.X1, expectedLine.Y1));
+        }
+
+        Assert.Equal(8, seenCoords.Count);
+    }
+
+    /// <summary>
+    /// Verifies that player 2 (<see cref="MechBody.Port"/> == 1, retail <c>unkAC-&gt;unkC1 == 1</c> at
+    /// <c>8005A9C4.c:109</c>) places the radar heading line on the right-side origin (<c>0x780000</c> = 120 px,
+    /// +80 px from player 1), and that any other <c>Port</c> value falls back to the left origin (<c>0x280000</c>).
+    /// </summary>
+    [RetailFact]
+    public void BuildHud_PlayerTwoPortSelectsRightRadarOriginAndNonOnePortFallsBackLeft()
+    {
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var walker = flow.Level!.Walker!;
+        walker.Angle = 0x400;
+
+        var expectedP1 = ReadGoldenRadarLine("DRAW", "walker_side0_h400");
+        var expectedP2 = ReadGoldenRadarLine("DRAW", "walker_side1_h400");
+        var expectedFallback = ReadGoldenRadarLine("DRAW", "side2_fallback_h400");
+
+        walker.Port = 0;
+        var p1Hud = flow.BuildHud();
+        var p1Result = RadarMarkers.DrawRadarMarkers(p1Hud.Radar!.Value, p1Hud.Player.ValueC1, frameTime: 0, node: null);
+        Assert.Equal(0, p1Hud.Player.ValueC1);
+        Assert.Equal(RadarMarkers.LeftSideOriginX, p1Result.OriginX);
+        Assert.Equal(expectedP1, p1Result.HeadingLine);
+
+        walker.Port = 1;
+        var p2Hud = flow.BuildHud();
+        var p2Result = RadarMarkers.DrawRadarMarkers(p2Hud.Radar!.Value, p2Hud.Player.ValueC1, frameTime: 0, node: null);
+        Assert.Equal(1, p2Hud.Player.ValueC1);
+        Assert.Equal(RadarMarkers.RightSideOriginX, p2Result.OriginX);
+        Assert.Equal(expectedP2, p2Result.HeadingLine);
+        Assert.Equal(80, p2Result.HeadingLine.X0 - p1Result.HeadingLine.X0);
+        Assert.Equal(80, p2Result.HeadingLine.X1 - p1Result.HeadingLine.X1);
+
+        var p2Rgb = new byte[LevelScene.Width * LevelScene.Height * 3];
+        InGameHud.Paint(p2Rgb, p2Hud, new HudSession { Mode = 0 }, new HudGlobals { FrameTime = 0 });
+        Assert.Equal((0x80, 0x80, 0x80), HudPixel(p2Rgb, expectedP2.X0, expectedP2.Y0));
+        Assert.Equal((0x80, 0x80, 0x80), HudPixel(p2Rgb, expectedP2.X1, expectedP2.Y1));
+        Assert.Equal((0x00, 0x00, 0x00), HudPixel(p2Rgb, expectedP1.X0, expectedP1.Y0));
+        Assert.Equal((0x00, 0x00, 0x00), HudPixel(p2Rgb, expectedP1.X1, expectedP1.Y1));
+
+        walker.Port = 2;
+        var fallbackHud = flow.BuildHud();
+        var fallbackResult = RadarMarkers.DrawRadarMarkers(fallbackHud.Radar!.Value, fallbackHud.Player.ValueC1, frameTime: 0, node: null);
+        Assert.Equal(2, fallbackHud.Player.ValueC1);
+        Assert.Equal(RadarMarkers.LeftSideOriginX, fallbackResult.OriginX);
+        Assert.Equal(expectedFallback, fallbackResult.HeadingLine);
+    }
+
+    /// <summary>
+    /// Turning the mech through live locomotion input rotates the heading line produced by
+    /// <see cref="MenuFlow.BuildHud"/>; replacing the handed-over angle with a constant turns this red.
+    /// </summary>
+    [RetailFact]
+    public void TurningTheWalkerRotatesTheHudHeadingLine()
+    {
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var walker = flow.Level!.Walker!;
+
+        for (int i = 0; i < 10; i++) flow.Advance(0.033);
+        ushort beforeAngle = walker.Angle;
+        var beforeHud = flow.BuildHud();
+        var beforeLine = RadarMarkers.DrawRadarMarkers(beforeHud.Radar!.Value, beforeHud.Player.ValueC1, frameTime: 0, node: null).HeadingLine;
+
+        flow.HandleKey(Right);
+        for (int i = 0; i < 30; i++) flow.Advance(0.033);
+        flow.HandleKeyRelease(Right);
+
+        ushort afterAngle = walker.Angle;
+        var afterHud = flow.BuildHud();
+        var afterLine = RadarMarkers.DrawRadarMarkers(afterHud.Radar!.Value, afterHud.Player.ValueC1, frameTime: 0, node: null).HeadingLine;
+
+        Assert.NotEqual(beforeAngle, afterAngle);
+        Assert.Equal(unchecked((short)afterAngle), afterHud.Radar!.Value.Heading);
+        Assert.NotEqual(
+            (beforeLine.X0, beforeLine.Y0, beforeLine.X1, beforeLine.Y1),
+            (afterLine.X0, afterLine.Y0, afterLine.X1, afterLine.Y1));
+        Assert.Equal(
+            RadarMarkers.EmitAngledLine(RadarMarkers.OriginXForSide(afterHud.Player.ValueC1), RadarMarkers.HeadingLineAngle(unchecked((short)afterAngle))),
+            afterLine);
+    }
 }

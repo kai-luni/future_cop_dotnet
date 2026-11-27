@@ -31,6 +31,9 @@ public sealed class PurchasePad
     /// <summary>Entity record id (tACT +0x00).</summary>
     public int RecordId { get; }
 
+    /// <summary>Full tACT tag stored at MapZone node +0x08 (800319D4.c:114-119, 80031BEC.c:48-49).</summary>
+    public int MapZoneCommandTag { get; }
+
     /// <summary>Whether this pad is a type-95 map zone or a type-14 trigger attachment.</summary>
     public PurchasePadKind Kind { get; }
 
@@ -93,7 +96,10 @@ public sealed class PurchasePad
     public ushort MapZoneTimer { get; set; }
 
     /// <summary>True once <c>80031DE8.c:176-184</c> unlinked and freed the map-zone node.</summary>
-    public bool Released { get; set; }
+    public bool Released { get; internal set; }
+
+    /// <summary>Node status byte set by command 0x7C and consumed by the next walk (80031BEC.c:56-57, 80031DE8.c:105-107).</summary>
+    public bool MapZoneReleasePending { get; internal set; }
 
     /// <summary>
     /// The last box hit of this node (<c>func_80031C74</c>, 80031C74.c:106-108): the result of the
@@ -153,9 +159,11 @@ public sealed class PurchasePad
         byte matchSelector,
         int script0Offset,
         int script2Offset,
-        int retireScriptOffset = 0)
+        int retireScriptOffset = 0,
+        int? mapZoneCommandTag = null)
     {
         RecordId = recordId;
+        MapZoneCommandTag = mapZoneCommandTag ?? recordId;
         Kind = kind;
         WorldX = worldX;
         WorldY = worldY;
@@ -263,6 +271,7 @@ public sealed class PurchasePadSystem
     private const int SectorStride = 0x6000;
 
     private readonly List<PurchasePad> _pads = new();
+    private readonly List<PurchasePad> _activeMapZones = new();
     private readonly Dictionary<int, PurchasePad> _padsById = new();
     private readonly List<ScriptTimerEntry> _timers = new();
     private readonly byte[] _timerBytecode;
@@ -276,6 +285,9 @@ public sealed class PurchasePadSystem
 
     /// <summary>All purchase pads loaded from the mission.</summary>
     public IReadOnlyList<PurchasePad> Pads => _pads;
+
+    /// <summary>Live map-zone nodes in load order. Retail prepends, so the walk reads them in reverse.</summary>
+    public IReadOnlyList<PurchasePad> ActiveMapZones => _activeMapZones;
 
     /// <summary>All <c>Cfun</c> script timers loaded from the mission.</summary>
     public IReadOnlyList<ScriptTimerEntry> Timers => _timers;
@@ -306,6 +318,8 @@ public sealed class PurchasePadSystem
                 _padsById[pad.RecordId] = pad;
                 if (pad.Kind == PurchasePadKind.TriggerAttachment)
                     pad.SpawnAttachment(entityWorld);
+                else if (pad.Kind == PurchasePadKind.MapZone && !pad.Released)
+                    _activeMapZones.Add(pad);
             }
         }
         if (timers is not null)
@@ -339,7 +353,9 @@ public sealed class PurchasePadSystem
         var prevTag = VmState.OnCommandByTag;
         VmState.OnCommandByTag = (tag, op, arg) =>
         {
-            if (op is not (0x7C or 0x7E or 0x69))
+            if (op == 0x7C)
+                ApplyMapZoneCommand(tag, arg);
+            else if (op is not (0x7E or 0x69))
             {
                 // Scripts can run during dispatch; keep the iteration stable across callbacks.
                 foreach (var entity in entityWorld.Units.ToArray())
@@ -361,6 +377,42 @@ public sealed class PurchasePadSystem
             }
             prevTag?.Invoke(tag, op, arg);
         };
+    }
+
+    // 80031BEC.c:48-60: only the first still-linked node with this id receives the command.
+    private void ApplyMapZoneCommand(int id, int mode)
+    {
+        for (int index = _activeMapZones.Count - 1; index >= 0; index--)
+        {
+            var node = _activeMapZones[index];
+            if (node.MapZoneCommandTag != id) continue;
+            switch (mode)
+            {
+                case 0:
+                    node.Flags |= 0x10;
+                    break;
+                case 1:
+                    node.MapZoneTimer = 0;
+                    node.Flags = (byte)(node.Flags & ~0x10);
+                    break;
+                default:
+                    node.MapZoneReleasePending = true;
+                    break;
+            }
+            return;
+        }
+    }
+
+    /// <summary>Unlinks the indexed MapZone, retaining its mission record and last observation.</summary>
+    /// <returns>True when the released node was the head, ending this frame's walk.</returns>
+    public bool ReleaseMapZoneAt(int index)
+    {
+        // 80031DE8.c:176-184,201-204: releasing the head makes prev null and ends the walk.
+        var node = _activeMapZones[index];
+        _activeMapZones.RemoveAt(index);
+        node.MapZoneReleasePending = false;
+        node.Released = true;
+        return index == _activeMapZones.Count;
     }
 
     /// <summary>
@@ -528,7 +580,7 @@ public sealed class PurchasePadSystem
                         MapZoneCoordinate(wx), MapZoneCoordinate(wy), MapZoneCoordinate(wz),
                         (rawX / 2) << 4, (rawY / 2) << 4, (rawZ / 2) << 4,
                         flags, targetId, matchSelector: 2,
-                        s0, s2)
+                        s0, s2, mapZoneCommandTag: (int)reqId)
                     {
                         // 800319D4.c:142: node->t16 (u16) = func_80019668() & 0xFF, in record order.
                         MapZoneTimer = (ushort)(rng.Next() & 0xFF),
@@ -802,7 +854,7 @@ public sealed class PurchasePadSystem
     {
         ArgumentNullException.ThrowIfNull(node);
         if (node.Kind != PurchasePadKind.MapZone) throw new ArgumentException($"{node.RecordId} is no map zone", nameof(node));
-        if (node.Released || (node.Flags & 0x10) != 0) return node.MapZoneTarget;
+        if (node.Released || node.MapZoneReleasePending || !node.IsEnabled) return node.MapZoneTarget;
         var target = SelectMapZoneTarget(node, TargetCandidates);
         if (!ReferenceEquals(node.MapZoneTarget, target))
         {
@@ -834,15 +886,9 @@ public sealed class PurchasePadSystem
         ArgumentNullException.ThrowIfNull(pad);
         ArgumentNullException.ThrowIfNull(target);
         int before = VmState.GameSession[RpnsVmState.SessionScoreP1];
-        // 80031C74.c:106-108 runs node->script only when it is non-zero: a node without a script
-        // (CONFT zone 106, slot 0 = 0) hits its box and returns 1 without touching the VM. The node
-        // still passed the box test of :84-100, so it returns 1 (:115); only the script is skipped.
-        // C evidence: node->script sits at +0x1C (80031C74.c:34), and gLoadMapZone (800319D4.c:104-151)
-        // fills it with a constant: sw $zero, 0x1C($s1) (asm/us/main.s:40105). node+0x18 is a different
-        // field, f18 = obj->f24 (asm/us/main.s:40047-40052). So in retail node->script is always 0 and
-        // :106-108 never runs a script. This port models the retail node script through the record's
-        // Cact slot 0 (0 for 106, 0x74 for 234, 0x6C for 5); retail itself always zeroes node->script,
-        // so the Cact +0x24 -> node->script mapping is a port bridge and has no retail counterpart.
+        // 80031C74.c:106-115: a missing script only skips the VM call, not the box hit.
+        // The script word is node+0x18 (asm/us/main.s:40283); node+0x1C is the cached target
+        // (80031DE8.c:112-118), which is the word zeroed by the loader (800319D4.c:139).
         var result = pad.Script0Offset == 0
             ? new PurchaseResult(true, false, 0, before, before)
             : RunPadScript(pad.Script0Offset, target.RecordId, before, RpnsVmState.SessionScoreP1);

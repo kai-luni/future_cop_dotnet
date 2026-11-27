@@ -13,7 +13,7 @@
  */
 #include "game/types.h"
 
-#define EXPECTED_CASES 157
+#define EXPECTED_CASES 183
 #define PKT_STRIDE 0x1C
 #define MAX_PKTS 16
 

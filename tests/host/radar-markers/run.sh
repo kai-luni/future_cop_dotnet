@@ -72,4 +72,4 @@ if [ "${1:-}" = print ]; then
     exit 0
 fi
 "$QEMU" "$OUT/radar_markers" < "$DOTNET/tests/golden/radar-markers.vectors"
-printf 'radar-markers: 157 shared vectors PASS (unchanged C, qemu-mipsel)\n'
+printf 'radar-markers: 183 shared vectors PASS (unchanged C, qemu-mipsel)\n'
