@@ -247,13 +247,15 @@ public sealed class MapZoneReleaseTests
         var unit = Assert.Single(scene.CsacSpawner.SpawnedUnits, u => u.SourceSlot.Record.Id == 75);
         Assert.NotEqual(1, unit.DispatchType);
         Assert.True(unit.RuntimeId > 0);
+        Assert.Contains(unit, scene.Entities!.Units);
+        Assert.Equal(1, slot.TotalSpawned);
         unit.X = zone.WorldX;
         unit.Y = zone.WorldY;
         unit.Z = zone.WorldZ;
         unit.RetireScript = 42;
 
         var events = new List<string>();
-        var prevOnScript = scene.Entities!.OnScript;
+        var prevOnScript = scene.Entities.OnScript;
         scene.Entities.OnScript = (entity, script, arg1, arg2) =>
         {
             // Zone script (ScriptVars[16]++) must already have run before gRetireEntity invokes RetireScript.
@@ -271,6 +273,10 @@ public sealed class MapZoneReleaseTests
         Assert.Equal(new[] { "retire:script=42,arg1=0,arg2=-1,var16=1,reset=True" }, events);
         Assert.False(scene.IsMapZoneReleased(zone));
         Assert.Contains(zone, pads.ActiveMapZones);
+        // gRunSoloSessionFrame (800271A4.c:212) runs gSweepRetiredEntities (8004D598.c:50-66)
+        // at the end of the same frame, unlinking unit and decrementing slot.TotalSpawned.
+        Assert.DoesNotContain(unit, scene.Entities.Units);
+        Assert.Equal(0, slot.TotalSpawned);
 
         // On the next frame the stay zone drops the retired target (80031DE8.c:113-116) and stays linked.
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
@@ -279,7 +285,7 @@ public sealed class MapZoneReleaseTests
         Assert.False(scene.IsMapZoneReleased(zone));
         Assert.Equal(1, pads.VmState.ScriptVars[16]);
 
-        Assert.Equal(1, scene.Entities.SweepRetired());
+        Assert.Equal(0, scene.Entities.SweepRetired());
         Assert.DoesNotContain(unit, scene.Entities.Units);
     }
 
