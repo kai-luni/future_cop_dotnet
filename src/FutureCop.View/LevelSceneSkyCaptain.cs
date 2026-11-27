@@ -448,7 +448,11 @@ public sealed class SkyCaptainSystem
         // +0x68 aliases the second score word on the 1P HUD (8002D1A0.c:204-207).
         var score = scene.Objectives?.Score.Score;
         if (Drone is not null && score is not null) Economy.F68 = score[1];
-        Advance(dt, pos => LevelGround.Height(scene.Map, pos[0], pos[1], pos[2], out _));
+        // Exactly one spawner path may run: when the retail CSAC path is enabled on the scene,
+        // suppress the retired BuildOrderSpawner so both paths can never spawn or move units
+        // simultaneously.
+        AdvanceCore(dt, pos => LevelGround.Height(scene.Map, pos[0], pos[1], pos[2], out _),
+            runBuildOrderSpawner: !scene.EnableCsacSpawner);
         if (Drone is not null && score is not null) score[1] = Economy.F68;
         // Message 10 of func_8002D664 hands the touching entity to gTryCaptureObjective. The strategic
         // drone is gSinglePlayerEntity (func_800331CC:243): a type-0x25 candidate whose entity id is
@@ -485,7 +489,10 @@ public sealed class SkyCaptainSystem
     }
 
     /// <summary>Message 6 with an explicit func_80066F78 probe (testable without a mission).</summary>
-    public void Advance(int dt, Func<int[], int> groundHeight)
+    public void Advance(int dt, Func<int[], int> groundHeight) =>
+        AdvanceCore(dt, groundHeight, runBuildOrderSpawner: true);
+
+    private void AdvanceCore(int dt, Func<int[], int> groundHeight, bool runBuildOrderSpawner)
     {
         _frameTime = unchecked(_frameTime + dt);
         // 800357C0.c:141-144: msg 6 returns 0 while +0xFA == 5, the drone tick does not run.
@@ -495,8 +502,9 @@ public sealed class SkyCaptainSystem
             StrategicDroneTick.Tick(d.Drone, new TickWorld(this, d, groundHeight), dt);
         }
         // Opt-in port extension beyond retail: materialize build-order production and keep already
-        // spawned units moving even when the drone is inactive or in state 5.
-        if (_enableBuildOrderSpawner)
+        // spawned units moving even when the drone is inactive or in state 5, unless the live CSAC
+        // spawner owns unit movement on the scene.
+        if (_enableBuildOrderSpawner && runBuildOrderSpawner)
         {
             _activeGroundHeight = groundHeight;
             try

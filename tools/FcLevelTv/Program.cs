@@ -82,7 +82,7 @@ internal sealed class LevelApp : NUIApplication
         {
             if (focusTicks-- > 0) Focus();
             double now = clock.Elapsed.TotalSeconds;
-            camera.Advance(Math.Max(0, now - lastTick));
+            camera.Advance(Math.Max(0, now - lastTick), scene.ActiveMapZones, scene.MechWorld.X, scene.MechWorld.Z, scene.PlayerCollisionRadius);
             lastTick = now;
             Present();
             fpsFrames++;
@@ -105,7 +105,7 @@ internal sealed class LevelApp : NUIApplication
 
     private void Present()
     {
-        scene.Render(new LevelCamera(camera.Yaw));
+        scene.Render(new LevelCamera(camera.Yaw, PresetState: camera.State));
         BitmapHud.Draw(scene.Rgb, LevelScene.Width, LevelScene.Height, fpsText);
         string path = Path.Combine(FrameDir, "frame" + (++frame % 6).ToString(CultureInfo.InvariantCulture) + ".bmp");
         TextureBank.WriteBmp24(path, LevelScene.Width, LevelScene.Height, scene.Rgb);
@@ -122,6 +122,7 @@ internal sealed class LevelApp : NUIApplication
             Log($"key {name} ({code}) yaw={camera.Yaw:0.0}");
             if (name == "Left" || code == 113) camera.Turn(-1);
             else if (name == "Right" || code == 114) camera.Turn(1);
+            else if (name == "Tab" || code == 23) camera.CyclePreset();
             else if (name == "XF86Back" || name == "Escape" || code == 9 || code == 166) Exit();
         }
         catch (Exception ex) { Log("key failed " + ex); }

@@ -59,8 +59,8 @@ public static class HoverEnemyTick
             int[] b = new int[3];
             if (!ChooseChaseTarget(o, b, w))
                 return 0;
-            Steer(o, b, dt, w);
-            SteerTail(o, dt, w);
+            int gL = Steer(o, b, dt, w);
+            SteerTail(o, dt, gL, w);
             return 0;
         }
     }
@@ -223,9 +223,9 @@ public static class HoverEnemyTick
     /// <summary>
     /// The L_AD4 steering spine (:300-356): chases b, honours the turn-away
     /// threshold, applies the altitude band, eases into the accumulator and
-    /// re-normalises the direction.
+    /// re-normalises the direction. Returns <c>gL</c> sampled at :325 for the :368 clamp.
     /// </summary>
-    private static void Steer(HoverEnemy o, int[] b, int dt, IHoverEnemyWorld w)
+    private static int Steer(HoverEnemy o, int[] b, int dt, IHoverEnemyWorld w)
     {
         unchecked
         {
@@ -278,6 +278,7 @@ public static class HoverEnemyTick
             if (dy < -0x8000) o.Dir[1] = -0x8000;
             else if (dy > 0x8000) o.Dir[1] = 0x8000;
             Normalize(o.Dir);
+            return gL;
         }
     }
 
@@ -285,7 +286,7 @@ public static class HoverEnemyTick
     /// L_AD4 tail (:358-377): banking-scaled move, attack-scheduler step and the
     /// basis rebuild from the eased velocity.
     /// </summary>
-    private static void SteerTail(HoverEnemy o, int dt, IHoverEnemyWorld w)
+    private static void SteerTail(HoverEnemy o, int dt, int gL, IHoverEnemyWorld w)
     {
         unchecked
         {
@@ -296,7 +297,6 @@ public static class HoverEnemyTick
             o.Pos[0] += Fmul(spd, o.Dir[0]);
             o.Pos[1] += Fmul(spd, o.Dir[1]);
             o.Pos[2] += Fmul(spd, o.Dir[2]);
-            int gL = w.SampleHeightBilinear(o.Pos) + (o.F6C << 4);
             if (o.Pos[1] < gL)
                 o.Pos[1] = gL;
             if (o.Type == 0x25 || o.FA == 0)

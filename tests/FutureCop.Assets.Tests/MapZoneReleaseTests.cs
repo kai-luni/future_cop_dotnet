@@ -223,4 +223,163 @@ public sealed class MapZoneReleaseTests
             3, (byte)(id >> 8), (byte)id, (byte)(0x80 | command), (byte)(0x80 | mode), 0x38, 0,
         }, vm);
     }
+
+    [ConftFact]
+    public void FlagOneStayZoneRetiresLiveNonPlayerTargetWithoutUnlinking()
+    {
+        // 80031C74.c:106-115: run node->script, then for other->unk16 != 1 with (node->flags & 1)
+        // set 0x04000000 and call gRetireEntity; flag 2 keeps the stay zone linked independently.
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!) { EnableCsacSpawner = true };
+        scene.EnableObjectives();
+        var pads = scene.PurchasePads!;
+        var zone = pads.FindPad(240)!; // TargetId = 75, Script0Offset = 112 (bumps ScriptVars[16])
+        Assert.Equal((PurchasePadKind.MapZone, 75, 112), (zone.Kind, (int)zone.TargetId, zone.Script0Offset));
+        zone.Flags = 0x03; // flag 1 (retire target) + flag 2 (stay zone)
+        foreach (var pad in pads.Pads)
+            if (pad != zone && pad.Kind == PurchasePadKind.MapZone) pad.Flags |= 0x10;
+
+        var slot = Assert.Single(scene.CsacSpawner!.Slots, s => s.Record.Id == 75);
+        slot.Timer = -1;
+        slot.Flags = 0;
+        scene.AttachWalker(new MechBody { X = zone.WorldX, Y = zone.WorldY, Z = zone.WorldZ });
+        scene.AdvanceSkyCaptain(0);
+
+        var unit = Assert.Single(scene.CsacSpawner.SpawnedUnits, u => u.SourceSlot.Record.Id == 75);
+        Assert.NotEqual(1, unit.DispatchType);
+        Assert.True(unit.RuntimeId > 0);
+        Assert.Contains(unit, scene.Entities!.Units);
+        Assert.Equal(1, slot.TotalSpawned);
+        unit.X = zone.WorldX;
+        unit.Y = zone.WorldY;
+        unit.Z = zone.WorldZ;
+        unit.RetireScript = 42;
+
+        var events = new List<string>();
+        var prevOnScript = scene.Entities.OnScript;
+        scene.Entities.OnScript = (entity, script, arg1, arg2) =>
+        {
+            // Zone script (ScriptVars[16]++) must already have run before gRetireEntity invokes RetireScript.
+            events.Add($"retire:script={script},arg1={arg1},arg2={arg2},var16={pads.VmState.ScriptVars[16]},reset={(entity.Flags & LiveEntity.ResetFlag) != 0}");
+            prevOnScript?.Invoke(entity, script, arg1, arg2);
+        };
+
+        scene.Entities.CullActive(zone.WorldX, zone.WorldZ);
+        zone.MapZoneTimer = 0;
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+
+        Assert.Equal(1, pads.VmState.ScriptVars[16]);
+        Assert.True((unit.Flags & LiveEntity.ResetFlag) != 0);
+        Assert.Equal(0, unit.RuntimeId);
+        Assert.Equal(new[] { "retire:script=42,arg1=0,arg2=-1,var16=1,reset=True" }, events);
+        Assert.False(scene.IsMapZoneReleased(zone));
+        Assert.Contains(zone, pads.ActiveMapZones);
+        // gRunSoloSessionFrame (800271A4.c:212) runs gSweepRetiredEntities (8004D598.c:50-66)
+        // at the end of the same frame, unlinking unit and decrementing slot.TotalSpawned.
+        Assert.DoesNotContain(unit, scene.Entities.Units);
+        Assert.Equal(0, slot.TotalSpawned);
+
+        // On the next frame the stay zone drops the retired target (80031DE8.c:113-116) and stays linked.
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.Null(scene.MapZoneTargetOf(zone));
+        Assert.Equal(0x258, zone.MapZoneTimer);
+        Assert.False(scene.IsMapZoneReleased(zone));
+        Assert.Equal(1, pads.VmState.ScriptVars[16]);
+
+        Assert.Equal(0, scene.Entities.SweepRetired());
+        Assert.DoesNotContain(unit, scene.Entities.Units);
+    }
+
+    [ConftFact]
+    public void FlagOneRetiresOnlyNonPlayerLiveTargetsAndRespectsZoneFlags()
+    {
+        // 80031C74.c:110-115: type-1 targets never retire, zones without flag 1 never retire
+        // targets, and a one-shot flag-1 zone retires the target and unlinks itself.
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!) { EnableCsacSpawner = true };
+        scene.EnableObjectives();
+        var pads = scene.PurchasePads!;
+        var world = scene.Entities!;
+        var oneShotZone = pads.FindPad(5)!; // TargetId = 57
+        var stayZone = pads.FindPad(240)!;  // TargetId = 75
+        foreach (var pad in pads.Pads)
+            if (pad != oneShotZone && pad != stayZone && pad.Kind == PurchasePadKind.MapZone) pad.Flags |= 0x10;
+
+        scene.AttachWalker(new MechBody { X = oneShotZone.WorldX, Y = oneShotZone.WorldY, Z = oneShotZone.WorldZ });
+
+        // 1) Type-1 live entity hit by a flag-1 stay zone must not receive ResetFlag or retire.
+        stayZone.Flags = 0x03;
+        stayZone.SetMapZoneScript(0);
+        var playerLike = new LiveMapZoneProbe(recordId: 75, dispatchType: 1, stayZone.WorldX, stayZone.WorldY, stayZone.WorldZ)
+        {
+            RetireScript = 99,
+        };
+        world.Spawn(playerLike);
+        int retireCalls = 0;
+        world.OnScript = (_, _, _, _) => retireCalls++;
+
+        scene.SetMapZoneCandidates(new ICsacNodeId?[] { playerLike });
+        stayZone.MapZoneTimer = 0;
+        oneShotZone.Flags |= 0x10;
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+
+        Assert.True(stayZone.LastFire is { Triggered: true });
+        Assert.Equal(0u, playerLike.Flags & LiveEntity.ResetFlag);
+        Assert.True(playerLike.RuntimeId > 0);
+        Assert.Equal(0, retireCalls);
+        Assert.False(scene.IsMapZoneReleased(stayZone));
+
+        // 2) Non-player live entity hit by a stay zone WITHOUT flag 1 must not retire.
+        stayZone.Flags = 0x02;
+        var nonPlayerStay = new LiveMapZoneProbe(recordId: 75, dispatchType: 5, stayZone.WorldX, stayZone.WorldY, stayZone.WorldZ)
+        {
+            RetireScript = 99,
+        };
+        world.Spawn(nonPlayerStay);
+        scene.SetMapZoneCandidates(new ICsacNodeId?[] { nonPlayerStay });
+        stayZone.MapZoneTimer = 0;
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+
+        Assert.Equal(0u, nonPlayerStay.Flags & LiveEntity.ResetFlag);
+        Assert.True(nonPlayerStay.RuntimeId > 0);
+        Assert.Equal(0, retireCalls);
+
+        // 3) Non-player live entity hit by a one-shot flag-1 zone (flags = 1) retires AND unlinks zone.
+        stayZone.Flags |= 0x10;
+        oneShotZone.Flags = 0x01;
+        var nonPlayerOneShot = new LiveMapZoneProbe(recordId: 57, dispatchType: 5, oneShotZone.WorldX, oneShotZone.WorldY, oneShotZone.WorldZ)
+        {
+            RetireScript = 99,
+        };
+        world.Spawn(nonPlayerOneShot);
+        scene.SetMapZoneCandidates(new ICsacNodeId?[] { nonPlayerOneShot });
+        oneShotZone.MapZoneTimer = 0;
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+
+        Assert.True((nonPlayerOneShot.Flags & LiveEntity.ResetFlag) != 0);
+        Assert.Equal(0, nonPlayerOneShot.RuntimeId);
+        Assert.Equal(1, retireCalls);
+        Assert.True(scene.IsMapZoneReleased(oneShotZone));
+    }
+
+    private sealed class LiveMapZoneProbe : LiveEntity, ICsacNodeId
+    {
+        public LiveMapZoneProbe(int recordId, int dispatchType, int x, int y, int z)
+        {
+            RecordId = recordId;
+            DispatchType = dispatchType;
+            X = x;
+            Y = y;
+            Z = z;
+        }
+
+        public override int RecordId { get; }
+        public short NodeId => unchecked((short)RecordId);
+        public override int DispatchType { get; }
+        public int X { get; }
+        public int Y { get; }
+        public int Z { get; }
+        public int Radius => 0;
+        public override (int X, int Z) GroundPosition => (X, Z);
+        public override int HandleMessage(int message, EntityWorld world, object? data) =>
+            BaseHandler(message, this, world, data);
+    }
 }

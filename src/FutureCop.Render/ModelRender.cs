@@ -44,11 +44,14 @@ public static class ModelRender
     /// <summary>Loaded 32-bit part flags word from the two on-disc flag bytes.</summary>
     public static int LoadedFlags(Polygon p) => (p.Flags1 << 8) | RewriteFlags(p.Flags0);
 
+    private static bool IsWindingCulled(int origin, int first, int second) =>
+        ((short)first - (short)origin) * ((second >> 16) - (origin >> 16)) -
+        ((short)second - (short)origin) * ((first >> 16) - (origin >> 16)) < 0;
+
     /// <summary>func_80015AF4: returns true when culled (negative cross product).</summary>
     public static bool WindingCulled(int origin, int first, int second, int[] out3)
     {
-        if (((short)first - (short)origin) * ((second >> 16) - (origin >> 16)) -
-            ((short)second - (short)origin) * ((first >> 16) - (origin >> 16)) < 0)
+        if (IsWindingCulled(origin, first, second))
             return true;
         out3[0] = origin; out3[1] = first; out3[2] = second;
         return false;
@@ -56,7 +59,12 @@ public static class ModelRender
 
     /// <summary>func_80015B68 for types 3/4/5/6; false = rejected or self-submitting type.</summary>
     public static bool PartPrep(int flags, byte i0, byte i1, byte i2, byte i3,
-        ScreenVertex[] vtx, short[] widths, int bias, out Work work)
+        ScreenVertex[] vtx, short[] widths, int bias, out Work work) =>
+        PartPrep(flags, i0, i1, i2, i3, vtx.AsSpan(), widths, bias, out work);
+
+    /// <summary>func_80015B68 for types 3/4/5/6 over a bounded vertex span; false = rejected or self-submitting type.</summary>
+    public static bool PartPrep(int flags, byte i0, byte i1, byte i2, byte i3,
+        ReadOnlySpan<ScreenVertex> vtx, short[] widths, int bias, out Work work)
     {
         work = default;
         switch ((flags >> 8) & 0xF)
@@ -65,21 +73,21 @@ public static class ModelRender
             {
                 byte or = (byte)(vtx[i0].Clip | vtx[i1].Clip | vtx[i2].Clip);
                 if ((or & 1) != 0 || or != 0xC0) return false;
-                var triple = new int[3];
-                if (WindingCulled(vtx[i0].Xy, vtx[i1].Xy, vtx[i2].Xy, triple)) return false;
+                int xy0 = vtx[i0].Xy, xy1 = vtx[i1].Xy, xy2 = vtx[i2].Xy;
+                if (IsWindingCulled(xy0, xy1, xy2)) return false;
                 int vz = vtx[i0].Z + vtx[i1].Z + vtx[i2].Z;
                 vz += vtx[i0].Z + (vz << 2);
-                work = new Work(triple[0], triple[1], triple[2], 0, (vz >> 4) - bias);
+                work = new Work(xy0, xy1, xy2, 0, (vz >> 4) - bias);
                 return true;
             }
             case 4:
             {
                 byte or = (byte)(vtx[i0].Clip | vtx[i1].Clip | vtx[i2].Clip | vtx[i3].Clip);
                 if ((or & 1) != 0 || or != 0xC0) return false;
-                var triple = new int[3];
-                if (WindingCulled(vtx[i0].Xy, vtx[i1].Xy, vtx[i3].Xy, triple)) return false;
+                int xy0 = vtx[i0].Xy, xy1 = vtx[i1].Xy, xy3 = vtx[i3].Xy;
+                if (IsWindingCulled(xy0, xy1, xy3)) return false;
                 int z = ((vtx[i0].Z + vtx[i1].Z + vtx[i2].Z + vtx[i3].Z) >> 2) - bias;
-                work = new Work(triple[0], triple[1], triple[2], vtx[i2].Xy, z);
+                work = new Work(xy0, xy1, xy3, vtx[i2].Xy, z);
                 return true;
             }
             case 5:
@@ -115,15 +123,28 @@ public static class ModelRender
         short[] widths, int mask, int bias)
     {
         var faces = new List<TexturedFace>();
-        foreach (var p in parts)
+        WalkTextured(parts, vtx, widths, mask, bias, faces);
+        return faces;
+    }
+
+    /// <summary>Masked part walk appending accepted faces to <paramref name="destination"/>.</summary>
+    public static void WalkTextured(IReadOnlyList<Polygon> parts, ScreenVertex[] vtx,
+        short[] widths, int mask, int bias, List<TexturedFace> destination) =>
+        WalkTextured(parts, vtx.AsSpan(), widths, mask, bias, destination);
+
+    /// <summary>Masked part walk over a bounded vertex span appending accepted faces to <paramref name="destination"/>.</summary>
+    public static void WalkTextured(IReadOnlyList<Polygon> parts, ReadOnlySpan<ScreenVertex> vtx,
+        short[] widths, int mask, int bias, List<TexturedFace> destination)
+    {
+        for (int i = 0; i < parts.Count; i++)
         {
+            var p = parts[i];
             int flags = LoadedFlags(p);
             int bit = 1 << ((flags >> 12) & 7);
             if ((mask & bit) == 0) continue;
             if (PartPrep(flags, p.V0, p.V1, p.V2, p.V3, vtx, widths, bias, out var work))
-                faces.Add(new TexturedFace((flags >> 8) & 0xF, (flags >> 12) & 7, work, p.TextureOffset));
+                destination.Add(new TexturedFace((flags >> 8) & 0xF, (flags >> 12) & 7, work, p.TextureOffset));
         }
-        return faces;
     }
 
     /// <summary>func_80013F08 single-list path: rtps + clip byte per source vertex.</summary>
@@ -131,14 +152,21 @@ public static class ModelRender
         int h, int ofx, int ofy, int widthMode)
     {
         var sv = new ScreenVertex[verts.Count];
+        Project(r, verts, h, ofx, ofy, widthMode, sv);
+        return sv;
+    }
+
+    /// <summary>func_80013F08 single-list path writing into a caller-supplied scratch span.</summary>
+    public static void Project(Gte.Loaded r, IReadOnlyList<Vertex> verts,
+        int h, int ofx, int ofy, int widthMode, Span<ScreenVertex> destination)
+    {
         for (int i = 0; i < verts.Count; i++)
         {
             var v = verts[i];
             var (sxy, sz3, clip, _, written) = Gte.Rtps(r, v.X, v.Y, v.Z, h, ofx, ofy, widthMode);
             // Retail leaves stale data when the clip byte is 1; a fresh buffer is zero.
-            sv[i] = written ? new ScreenVertex(sxy, sz3, clip) : new ScreenVertex(0, 0, clip);
+            destination[i] = written ? new ScreenVertex(sxy, sz3, clip) : new ScreenVertex(0, 0, clip);
         }
-        return sv;
     }
 
     /// <summary>Wireframe edges in screen coordinates, outline order b4-b5-b6-b7 for quads.</summary>

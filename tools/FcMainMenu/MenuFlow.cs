@@ -33,7 +33,9 @@ public enum SceneKind
 public sealed class MenuFlow
 {
     // X11 keycodes (evdev + 8) as the window delivers them.
-    private const uint KeyEscape = 9, KeyBackspace = 22, KeyQ = 24, KeyEnter = 36, KeySpace = 65, KeyKpEnter = 104;
+    private const uint KeyEscape = 9, KeyBackspace = 22, KeyTab = 23, KeyQ = 24, KeyEnter = 36, KeySpace = 65, KeyKpEnter = 104;
+    /// <summary>X11 keycode (Tab = evdev 15 + 8) bound to <see cref="PadButtons.Select"/> for chase-camera preset cycling.</summary>
+    public const uint CameraPresetKey = KeyTab;
     private const uint KeyUp = 111, KeyLeft = 113, KeyRight = 114, KeyDown = 116;
     // Fire buttons, mapped to the two pad buttons gWeaponSlotInput reads: X11 keycode 52 is Z and 53 is
     // X on the evdev+8 mapping this window delivers (xmodmap -pk confirms both).
@@ -129,6 +131,7 @@ public sealed class MenuFlow
         "Return" or "XF86Select" => KeyEnter,
         "space" or "Space" => KeySpace,
         "KP_Enter" => KeyKpEnter,
+        "Tab" => KeyTab,
         "Escape" or "XF86Back" => KeyEscape,
         _ => code == KeyTizenBack ? KeyEscape : (uint)code,
     };
@@ -260,6 +263,7 @@ public sealed class MenuFlow
         FrontEnd.ScreenState = 0;
         Preview = null;
         Level = null;
+        Camera = Camera with { PresetState = 0 };
         SceneLeft?.Invoke();
     }
 
@@ -277,6 +281,7 @@ public sealed class MenuFlow
                 if (_enableLevelMovement) level.EnableMechMovement();
                 if (_enableLevelMovement) level.EnableFiring();
                 Level = level;
+                Camera = Camera with { PresetState = level.ChaseCamera.State };
                 _maxHealth = level.Walker?.Health ?? 0;
                 _pendingWalkerTicks = 0;
                 // D_800A8EA4 and the mission's VRAM: what makes the slot sprites real icons instead
@@ -406,6 +411,9 @@ public sealed class MenuFlow
         // bits. Q and E are free next to the movement keys.
         KeyQ => PadButtons.L2,
         KeyEKey => PadButtons.R2,
+        // gResetActorAndPlaceView (800573A4.c:238) binds chase-camera preset cycling to translated
+        // bit 0x40000 (PadButtons.Select via MechInput.cs:44,97,124).
+        KeyTab => PadButtons.Select,
         _ => PadButtons.None,
     };
 
@@ -444,6 +452,7 @@ public sealed class MenuFlow
         Level.AdvanceWalker(steps, flags, externalPad);
         // Message 6 of the Sky Captain with the same tick count the walker ran (800271A4.c:180).
         Level.AdvanceSkyCaptain(steps * RetailClock.LocomotionTicks);
+        Camera = Camera with { PresetState = Level.ChaseCamera.State };
         if (Level.Weapons != null)
         {
             foreach (var ev in Level.Weapons.DrainSoundEvents())
@@ -576,8 +585,9 @@ public sealed class MenuFlow
     }
 
     /// <summary>
-    /// Camera of the level view: the fixed orbit default of <see cref="LevelCamera"/>. Viewer camera,
-    /// not the retail chase camera func_800569EC; the orbit translates with the walker.
+    /// Camera of the level view: orbit around the walker layered with the retail chase-camera
+    /// preset state (<c>info-&gt;state</c> 0..6, <c>src/game/800569EC.c:228-246</c>), synced from
+    /// <see cref="LevelScene.ChaseCamera"/> on every <see cref="Advance"/> call.
     /// </summary>
     public LevelCamera Camera { get; set; } = new LevelCamera();
 

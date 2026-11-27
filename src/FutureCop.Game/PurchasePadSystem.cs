@@ -276,6 +276,7 @@ public sealed class PurchasePadSystem
     private readonly List<ScriptTimerEntry> _timers = new();
     private readonly byte[] _timerBytecode;
     private readonly CsacUnitSpawner? _spawner;
+    private readonly EntityWorld _entityWorld;
 
     /// <summary>Extracted RPNS bytecode pool.</summary>
     public RpnsPool Pool { get; }
@@ -310,6 +311,7 @@ public sealed class PurchasePadSystem
         Random = random ?? spawner?.Random ?? new RetailRandom();
 
         var entityWorld = world ?? new EntityWorld();
+        _entityWorld = entityWorld;
         if (pads is not null)
         {
             foreach (var pad in pads)
@@ -734,14 +736,25 @@ public sealed class PurchasePadSystem
         }
     }
 
+    private IReadOnlyList<ICsacNodeId?> _targetCandidates = Array.Empty<ICsacNodeId?>();
+
     /// <summary>
-    /// The candidate table D_800A8F90 the map-zone scan of 80031DE8.c:119-144 walks
-    /// (<c>gCommandListHead.count</c> / <c>targets[]</c>), null entries skipped. The owning scene
+    /// A read-only snapshot of the candidate table D_800A8F90 the map-zone scan of 80031DE8.c:119-144
+    /// walks (<c>gCommandListHead.count</c> / <c>targets[]</c>), null entries skipped. The owning scene
     /// publishes <see cref="EntityWorld.Active"/> here each frame through
     /// <see cref="SyncTargetCandidates"/>; the walker entity D_8009FA58[0] can be listed as well
-    /// (func_80031DE8 tests it as a node of node id -1, never as a candidate).
+    /// (func_80031DE8 tests it as a node of node id -1, never as a candidate). Reading this property
+    /// returns an isolated read-only snapshot when backed by the internal per-frame buffer, so callers
+    /// holding the table are unaffected by subsequent frame rebuilds or
+    /// <see cref="AddTargetCandidate"/> mutations; caller-assigned tables are returned as assigned.
     /// </summary>
-    public IReadOnlyList<ICsacNodeId?> TargetCandidates { get; set; } = Array.Empty<ICsacNodeId?>();
+    public IReadOnlyList<ICsacNodeId?> TargetCandidates
+    {
+        get => ReferenceEquals(_targetCandidates, _syncedCandidates)
+            ? (_syncedCandidates.Count == 0 ? Array.Empty<ICsacNodeId?>() : Array.AsReadOnly(_syncedCandidates.ToArray()))
+            : _targetCandidates;
+        set => _targetCandidates = value;
+    }
 
     /// <summary>
     /// True when the frame must rebuild <see cref="TargetCandidates"/> from the active entities and
@@ -775,6 +788,9 @@ public sealed class PurchasePadSystem
     /// <summary>PRNG of the map-zone rescan jitter (<c>func_80019668() &amp; 0x3F</c>, 80031DE8.c:149).</summary>
     public RetailRandom Random { get; set; }
 
+    private readonly List<ICsacNodeId?> _syncedCandidates = new();
+    private readonly HashSet<ICsacNodeId> _seenCandidates = new(ReferenceEqualityComparer.Instance);
+
     /// <summary>
     /// Publishes the frame's D_800A8F90 as <see cref="TargetCandidates"/>: the active entities, the
     /// live player entities (which retail links into D_8009FA40 with flag 8 in 800579D4.c:207 so
@@ -788,8 +804,10 @@ public sealed class PurchasePadSystem
         IEnumerable<ICsacNodeId>? players = null)
     {
         if (OwnsTable) return;
-        var list = new List<ICsacNodeId?>();
-        var seen = new HashSet<ICsacNodeId>(ReferenceEqualityComparer.Instance);
+        var list = _syncedCandidates;
+        var seen = _seenCandidates;
+        list.Clear();
+        seen.Clear();
         if (active is not null)
         {
             for (int i = 0; i < active.Count; i++)
@@ -818,9 +836,16 @@ public sealed class PurchasePadSystem
             if (seen.Add(extra))
                 list.Add(extra);
         }
-        TargetCandidates = list;
+        _targetCandidates = list;
         TargetCandidatesStale = false;
     }
+
+    /// <summary>
+    /// Selects the map-zone target for <paramref name="node"/> from the current candidate table
+    /// without allocating a snapshot copy.
+    /// </summary>
+    public ICsacNodeId? SelectMapZoneTarget(PurchasePad node) =>
+        SelectMapZoneTarget(node, _targetCandidates);
 
     /// <summary>
     /// Adds a candidate to the D_800A8F90 scan besides the active entities; a null entry is an empty
@@ -831,13 +856,20 @@ public sealed class PurchasePadSystem
         if (candidate is not null && !ExtraCandidates.Any(c => ReferenceEquals(c, candidate)))
         {
             ExtraCandidates.Add(candidate);
-            if (!TargetCandidates.Any(c => ReferenceEquals(c, candidate)))
+            if (!_targetCandidates.Any(c => ReferenceEquals(c, candidate)))
             {
                 // Make the candidate visible to a scan that runs before the next frame rebuild.
-                var list = new ICsacNodeId?[TargetCandidates.Count + 1];
-                for (int i = 0; i < TargetCandidates.Count; i++) list[i] = TargetCandidates[i];
-                list[^1] = candidate;
-                TargetCandidates = list;
+                if (ReferenceEquals(_targetCandidates, _syncedCandidates))
+                {
+                    _syncedCandidates.Add(candidate);
+                }
+                else
+                {
+                    var list = new ICsacNodeId?[_targetCandidates.Count + 1];
+                    for (int i = 0; i < _targetCandidates.Count; i++) list[i] = _targetCandidates[i];
+                    list[^1] = candidate;
+                    _targetCandidates = list;
+                }
             }
         }
         TargetCandidatesStale = true;
@@ -855,7 +887,7 @@ public sealed class PurchasePadSystem
         ArgumentNullException.ThrowIfNull(node);
         if (node.Kind != PurchasePadKind.MapZone) throw new ArgumentException($"{node.RecordId} is no map zone", nameof(node));
         if (node.Released || node.MapZoneReleasePending || !node.IsEnabled) return node.MapZoneTarget;
-        var target = SelectMapZoneTarget(node, TargetCandidates);
+        var target = SelectMapZoneTarget(node, _targetCandidates);
         if (!ReferenceEquals(node.MapZoneTarget, target))
         {
             node.MapZoneTarget = target;
@@ -892,6 +924,13 @@ public sealed class PurchasePadSystem
         var result = pad.Script0Offset == 0
             ? new PurchaseResult(true, false, 0, before, before)
             : RunPadScript(pad.Script0Offset, target.RecordId, before, RpnsVmState.SessionScoreP1);
+        // 80031C74.c:110-113: flag 1 retires a live non-player target after the script,
+        // setting 0x04000000 (ResetFlag) before gRetireEntity.
+        if ((pad.Flags & 1) != 0 && target.DispatchType != 1 && target is LiveEntity { RuntimeId: > 0 } entity)
+        {
+            entity.Flags |= LiveEntity.ResetFlag;
+            LiveEntity.Retire(entity, _entityWorld);
+        }
         pad.LastFire = result;
         return result;
     }
@@ -911,7 +950,7 @@ public sealed class PurchasePadSystem
         long bestDist = 0;
         foreach (var candidate in candidates)
         {
-            if (candidate is null or PlayerTarget { IsDetached: true }) continue;
+            if (candidate is null or PlayerTarget { IsDetached: true } or LiveEntity { RuntimeId: 0 }) continue;
             if (candidate.RecordId <= 0) continue;                         // :123
             if (candidate.NodeId != node.TargetId) continue;               // :124
             if (candidate.DispatchType is 0x15 or 0x12) continue;          // :125-126

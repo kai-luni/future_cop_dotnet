@@ -53,6 +53,7 @@ internal sealed class LevelGlApp : NUIApplication
     private bool _sceneReady;
     private bool _glReady;
     private int _pendingTurns;
+    private int _pendingPresetCycles;
     private int _width = LevelScene.Width;
     private int _height = LevelScene.Height;
     private long _pendingViewport = ((long)LevelScene.Width << 32) | LevelScene.Height;
@@ -304,16 +305,19 @@ internal sealed class LevelGlApp : NUIApplication
             }
             for (int turns = Interlocked.Exchange(ref _pendingTurns, 0); turns != 0; turns -= Math.Sign(turns))
                 _camera.Turn(turns);
+            int presetCycles = Interlocked.Exchange(ref _pendingPresetCycles, 0);
+            for (int c = 0; c < presetCycles; c++)
+                _camera.CyclePreset();
             double now = _clock.Elapsed.TotalSeconds;
             double dt = now - _lastFrame;
             _lastFrame = now;
             // Fixed-step camera motion keeps the view steady when a frame takes longer.
-            bool moving = _camera.Advance(Math.Min(dt, 0.1));
-            if (moving) _renderBurst.Request();
+            bool moving = _camera.Advance(Math.Min(dt, 0.1), _scene.ActiveMapZones, _scene.MechWorld.X, _scene.MechWorld.Z, _scene.PlayerCollisionRadius);
+            if (moving || presetCycles > 0) _renderBurst.Request();
 
             long t0 = Stopwatch.GetTimestamp();
             _emitter.BeginFrame();
-            _scene.Render(new LevelCamera(_camera.Yaw));
+            _scene.Render(new LevelCamera(_camera.Yaw, PresetState: _camera.State));
             long t1 = Stopwatch.GetTimestamp();
             long uploadStart = Stopwatch.GetTimestamp();
             int uploaded = _emitter.UploadNewTextures(_renderer, _scene.Vram);
@@ -385,6 +389,11 @@ internal sealed class LevelGlApp : NUIApplication
             else if (name == "Right" || code == 114)
             {
                 Interlocked.Increment(ref _pendingTurns);
+                _renderBurst.Request();
+            }
+            else if (name == "Tab" || code == 23)
+            {
+                Interlocked.Increment(ref _pendingPresetCycles);
                 _renderBurst.Request();
             }
             else if (name == "XF86Back" || name == "Escape" || code == 9 || code == 166) Exit();

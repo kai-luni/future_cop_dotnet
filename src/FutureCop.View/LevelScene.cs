@@ -4,11 +4,31 @@ using FutureCop.Game.Mech;
 
 namespace FutureCop.View;
 
-/// <summary>Camera of the level start view: orbit around the mech pivot.</summary>
-/// <param name="Yaw">Degrees about the world y axis.</param>
-/// <param name="Elevation">Degrees above the horizon.</param>
-/// <param name="Distance">Eye distance from the pivot in model units (world units / 16).</param>
-public sealed record LevelCamera(double Yaw = 30.0, double Elevation = 35.0, int Distance = 0x1C00);
+/// <summary>
+/// Camera of the level view: orbit around the mech pivot layered with the retail chase-camera
+/// preset state (<c>D_8009AEC4[0..6]</c> / <c>D_8009AD08</c>, <c>src/game/800569EC.c:232-246,305-513</c>).
+/// </summary>
+/// <param name="Yaw">Base orbit yaw in degrees about the world y axis.</param>
+/// <param name="Elevation">Base elevation in degrees above the horizon.</param>
+/// <param name="Distance">Base eye distance from the pivot in model units (world units / 16).</param>
+/// <param name="PresetState">Retail chase-camera preset state <c>0..6</c> (<c>info-&gt;state</c>).</param>
+public sealed record LevelCamera(double Yaw = 30.0, double Elevation = 35.0, int Distance = 0x1C00, int PresetState = 0)
+{
+    /// <summary>
+    /// Applies the retail preset offset for <see cref="PresetState"/> on top of this orbit camera.
+    /// Preset 0 returns this camera unchanged.
+    /// </summary>
+    public LevelCamera ResolvePreset()
+    {
+        int state = ((PresetState % ChaseCameraState.PresetCount) + ChaseCameraState.PresetCount) % ChaseCameraState.PresetCount;
+        if (state == 0) return this;
+        var preset = ChaseCameraState.GetPreset(state);
+        double yaw = ((Yaw + preset.YawOffsetDegrees) % 360.0 + 360.0) % 360.0;
+        double elevation = Math.Clamp(Elevation + preset.ElevationOffsetDegrees, 5.0, 85.0);
+        int distance = Math.Max(0x400, Distance + preset.DistanceOffsetModelUnits);
+        return new LevelCamera(yaw, elevation, distance, state);
+    }
+}
 
 /// <summary>
 /// First runnable start of a Precinct Assault map: the retail terrain of the mission (GRDB grid +
@@ -41,6 +61,8 @@ public sealed class LevelScene
     private readonly List<DrawItem> _drawQueue = new();
     private readonly byte[] _vertexBuffer = new byte[TerrainRender.VertexBufferBytes];
     private readonly List<uint[]> _packets = new();
+    private ScreenVertex[] _projectedScratch = Array.Empty<ScreenVertex>();
+    private readonly List<TexturedFace> _facesScratch = new();
 
     /// <summary>One queued primitive of the painter's-order pass: a terrain packet or a model face.</summary>
     private struct DrawItem
@@ -75,7 +97,10 @@ public sealed class LevelScene
     }
 
     private LevelWeapons? _weapons;
+    private WeaponPickups? _pickupField;
     private PickupItems? _pickups;
+    private readonly Dictionary<WeaponPickup, LiveEntity> _pickupEntities = new();
+    private bool _pickupsBoundToCsac;
 
     /// <summary>
     /// The weapon pickups lying on this mission's map, or null until firing is enabled. The field is
@@ -106,10 +131,16 @@ public sealed class LevelScene
         _ = Weapons;
         // func_8002FC90:188-199 refills the control block the fire path spends from, and the gauge
         // bits at +0x1C/+0x1E raise the same health word the walker carries.
-        _pickups ??= new PickupItems(_file, Map,
-            PlayerResupplyState.ForWalker(Weapons!.Slots, () => Walker!.Health,
-                v => Walker!.Health = (short)v, 0x7F00));
+        if (_pickups is null)
+        {
+            _pickupField = WeaponPickups.FromMission(_file.Bytes, WeaponCatalog.LoadRegistry(_file), Map);
+            _pickupField.OnRetired = RetirePickupEntity;
+            _pickups = new PickupItems(_pickupField,
+                PlayerResupplyState.ForWalker(Weapons!.Slots, () => Walker!.Health,
+                    v => Walker!.Health = (short)v, 0x7F00));
+        }
         EnableObjectives();
+        BindInitialPickupsToCsacSpawner();
     }
 
     private ObjectiveField? _objectives;
@@ -215,6 +246,8 @@ public sealed class LevelScene
             SinglePlayerTeam = droneTeam,
             Player0Team = _playerTeam,
         };
+        _csacSpawner.LoadPathNetworks(_file.Bytes,
+            (x, z, mode) => LevelGround.PlacementHeight(Map, x, z, mode) ?? 0);
         var spawnerRecords = records.Where(r => r.Container == EntityContainer.Csac).ToDictionary(r => r.HeaderOffset);
         _purchasePads = PurchasePadSystem.LoadFromMission(_file.Bytes, _csacSpawner, random: _csacSpawner.Random,
             world: _entities, groundHeight: (x, z, rank) => LevelGround.PlacementHeight(Map, x, z, rank) ?? 0,
@@ -253,8 +286,14 @@ public sealed class LevelScene
             slot.TotalSpawned++;
             if (slot.RemainingCount > 0) slot.RemainingCount--;
         }
+        BindInitialPickupsToCsacSpawner();
         _csacSpawner.OnPostSpawnScript = (slot, unit) =>
         {
+            if (slot.Record.Type == WeaponPickups.PlacementPayloadType)
+            {
+                SpawnCsacPickup(slot, unit);
+                return;
+            }
             if (slot.Record.Type != CaptureObjective.EntityType)
             {
                 // As for the outposts, use model bounds for the 800620D8.c:58-94 pair test.
@@ -271,6 +310,70 @@ public sealed class LevelScene
         ObjectRegistry.FinishLevelLoad();
         ObjectRegistry.ScreenState = MapObjectRegistry.ScreenStateImmediatePlay;
         ObjectRegistry.CullActiveElevators(MechWorld.X, MechWorld.Z);
+    }
+
+    private void BindInitialPickupsToCsacSpawner()
+    {
+        if (_pickupsBoundToCsac || _pickupField is null || _csacSpawner is null || _entities is null) return;
+        _pickupsBoundToCsac = true;
+        // All Precinct Assault type-0x10 pickups are Csac spawners (maxConcurrent = 1, remainingCount = -1).
+        // Account for the initial placement (8006125C.c:48-49) and attach a targetable LiveEntity
+        // (8004D4F8.c:59) so the retail tSAC countdown (800616A0.c:70-76) only ticks after pickup
+        // retirement and no duplicate Csac model spawns while the item is still uncollected.
+        foreach (var slot in _csacSpawner.Slots)
+        {
+            if (slot.Record.Type != WeaponPickups.PlacementPayloadType) continue;
+            var item = _pickupField.Items.FirstOrDefault(p => p.SectionId == slot.Record.Id && !_pickupEntities.ContainsKey(p));
+            if (item is null) continue;
+            slot.TotalSpawned++;
+            if (slot.RemainingCount > 0) slot.RemainingCount--;
+            var entity = new PickupEntity(slot.Record, item.X, item.Z);
+            _entities.Spawn(entity, targetable: true);
+            _pickupEntities[item] = entity;
+        }
+    }
+
+    private void SpawnCsacPickup(CsacSpawnerSlot slot, SpawnedCsacUnit unit)
+    {
+        // Type-0x10 pickups are driven by WeaponPickups (8002FA20.c / 8002FF6C.c), not the generic
+        // registry wrapper. Keep unit in EntityWorld without a hit coord so contact retirement runs
+        // gRetireEntity (8004D958.c) -> gSweepRetiredEntities (8004D598.c) ->
+        // gRecordSpawnedUnitRetirement (80061020.c) to free the Csac slot for the next respawn.
+        ObjectRegistry.LiveObjects.Unregister(unit);
+        if (_pickupField is null) return;
+        var pickup = WeaponPickups.FromRecord(slot.Record, Map);
+        if (pickup is null) return;
+        unit.Y = pickup.Y;
+        _pickupEntities[pickup] = unit;
+        _pickupField.Add(pickup);
+    }
+
+    private void RetirePickupEntity(WeaponPickup item)
+    {
+        if (_entities is null || !_pickupEntities.Remove(item, out var entity)) return;
+        // gApplyRotatingPropProximityEffect (8002FF6C.c:78) calls gRetireEntity (8004D958.c:48-60).
+        LiveEntity.Retire(entity, _entities);
+    }
+
+    private sealed class PickupEntity : LiveEntity
+    {
+        private readonly int _recordId;
+        private readonly (int X, int Z) _ground;
+
+        public PickupEntity(EntityRecord record, int x, int z)
+        {
+            _recordId = record.Id;
+            _ground = (x, z);
+            DamageScript = record.Scripts.ElementAtOrDefault(0);
+            RetireScript = record.Scripts.ElementAtOrDefault(1);
+            Health = MaxHealth = unchecked((short)record.Health);
+        }
+
+        public override int RecordId => _recordId;
+        public override int DispatchType => WeaponPickups.PlacementPayloadType;
+        public override (int X, int Z) GroundPosition => _ground;
+        public override int HandleMessage(int message, EntityWorld world, object? data) =>
+            BaseHandler(message, this, world, data);
     }
 
     private ElevatorRider? ReadPlayerElevatorRider(int slot)
@@ -347,6 +450,14 @@ public sealed class LevelScene
     /// <summary>The purchase-pad system the mission loaded, with the shared RPNS VM state.</summary>
     public PurchasePadSystem? PurchasePads => _purchasePads;
 
+    /// <summary>Live linked map zones (<c>D_8009F6F8</c>), or an empty list before objectives are enabled.</summary>
+    public IReadOnlyList<PurchasePad> ActiveMapZones =>
+        _purchasePads?.ActiveMapZones ?? Array.Empty<PurchasePad>();
+
+    /// <summary>Player model collision radius (<c>obj+0x68</c>, <c>func_80013AF0</c>).</summary>
+    public int PlayerCollisionRadius =>
+        _parts.Count > 0 ? CoordOf(_parts[0].Model.Id, MechWorld.X, MechWorld.Y, MechWorld.Z).Radius : 0;
+
     /// <summary>
     /// Opt-in flag to advance purchase pads, drain <see cref="CsacSpawner"/> and broadcast
     /// message 6 over <see cref="ObjectRegistry"/> during <see cref="AdvanceSkyCaptain"/>; the drain runs
@@ -369,6 +480,9 @@ public sealed class LevelScene
             // frame's scan, which is why the drain precedes it.
             _csacSpawner.Drain(dt);
             AdvancePurchasePads(dt);
+            // gRunSoloSessionFrame (800271A4.c:210-212) sweeps retired entities after spawners and
+            // timers, decrementing Csac TotalSpawned via gRecordSpawnedUnitRetirement (8004D598.c:51-52).
+            _entities?.SweepRetired();
         }
     }
 
@@ -506,7 +620,9 @@ public sealed class LevelScene
             // :112-118: drop invalid targets, including a detached scene player. The node resets to
             // 600 and goes straight to the next entry: this frame neither decrements nor rescans it.
             if (node.MapZoneTarget is { } cached &&
-                (node.MapZoneTargetId != cached.RecordId || cached is PlayerTarget { IsDetached: true }))
+                (node.MapZoneTargetId != cached.RecordId
+                    || cached is PlayerTarget { IsDetached: true }
+                    || cached is LiveEntity { RuntimeId: 0 }))
             {
                 node.MapZoneTarget = null;                                 // :114
                 node.MapZoneTimer = 0x258;                                 // :115 (u16 node->t+0x16)
@@ -516,7 +632,7 @@ public sealed class LevelScene
             // :119: the timer is compared against delta only; it is never decremented here.
             if (node.MapZoneTimer < dt)
             {
-                var target = PurchasePadSystem.SelectMapZoneTarget(node, pads.TargetCandidates); // :120-144
+                var target = pads.SelectMapZoneTarget(node); // :120-144
                 if (!ReferenceEquals(node.MapZoneTarget, target))          // :145-150
                 {
                     node.MapZoneTarget = target;
@@ -570,9 +686,12 @@ public sealed class LevelScene
     public bool IsMapZoneReleased(PurchasePad node) => node.Released;
 
     /// <summary>
-    /// D_800A8F90 as the map-zone scan reads it (80031DE8.c:119-144): the frame's active entities
-    /// (<see cref="EntityWorld.Active"/>, exactly what the scene publishes to
+    /// A read-only snapshot of D_800A8F90 as the map-zone scan reads it (80031DE8.c:119-144): the
+    /// frame's active entities (<see cref="EntityWorld.Active"/>, published to
     /// <see cref="PurchasePadSystem.TargetCandidates"/>) followed by the candidates an owner added.
+    /// The returned list is isolated from subsequent frame rebuilds and
+    /// <see cref="AddMapZoneCandidate"/> calls (or returns the caller-owned table after
+    /// <see cref="SetMapZoneCandidates"/>).
     /// </summary>
     public IReadOnlyList<ICsacNodeId?> MapZoneCandidates() =>
         _purchasePads?.TargetCandidates ?? Array.Empty<ICsacNodeId?>();
@@ -617,7 +736,9 @@ public sealed class LevelScene
     public ICsacNodeId? MapZoneTarget(PurchasePad node, IReadOnlyList<ICsacNodeId?>? candidates = null)
     {
         ArgumentNullException.ThrowIfNull(node);
-        return PurchasePadSystem.SelectMapZoneTarget(node, candidates ?? MapZoneCandidates());
+        return candidates is not null
+            ? PurchasePadSystem.SelectMapZoneTarget(node, candidates)
+            : _purchasePads?.SelectMapZoneTarget(node);
     }
 
     /// <summary>Faces and marker lines the last <see cref="Render"/> drew for the Sky Captain.</summary>
@@ -699,6 +820,7 @@ public sealed class LevelScene
         if (body.Port != 0) throw new NotSupportedException("Only player port 0 is integrated");
         _animateWalker = false;
         _walker = body;
+        ChaseCamera.Reset();
         _walkerWorld = new FutureCop.Game.Mech.MechWorld(Map)
         {
             // Dynamic ground-object probe (func_8006320C) over placed type-10 elevators.
@@ -709,6 +831,12 @@ public sealed class LevelScene
         if (_purchasePads is { } pads) pads.TargetCandidatesStale = true;
         ObjectRegistry.CullActiveElevators(body.X, body.Z);
     }
+
+    /// <summary>
+    /// Retail chase-camera preset state (<c>info-&gt;state</c>, <c>src/game/800569EC.c:228-246</c>)
+    /// stepped on every <see cref="AdvanceWalker"/> call from the translated pad word and live MapZones.
+    /// </summary>
+    public ChaseCameraState ChaseCamera { get; } = new();
 
     /// <summary>The attached walker body, so callers can read its health for the HUD.</summary>
     public MechBody? Walker => _walker;
@@ -755,6 +883,11 @@ public sealed class LevelScene
         _weapons?.AdvanceRecoil(RetailClock.TicksPerFrame * frames);
         UpdateWalkerPose();
         _weapons?.Advance(_walker, _parts, padWord, RetailClock.TicksPerFrame * frames);
+        // gUpdatePlayerEntity (800588D4.c:292) calls gUpdateChaseCamera (800569EC.c:228-246)
+        // after gWeaponSlotInput (:290): decode the Select edge (0x40000), cycle info->state 0..6,
+        // and gate states 5 and 6 on gTestCameraZoneOverlap (80031B40.c:74-89).
+        ChaseCamera.Step(padWord, ActiveMapZones, _walker.X, _walker.Z, PlayerCollisionRadius,
+            frozen: _walker.Frozen != 0);
         if (frames > 0) AdvanceRetirement();
         // Tick placed type-10 elevators on the walker clock when EnableCsacSpawner is off; when
         // EnableCsacSpawner is on, AdvanceSkyCaptain broadcasts message 6 over LiveObjects once.
@@ -967,6 +1100,8 @@ public sealed class LevelScene
     public int MechFaces { get; private set; }
     public IReadOnlyList<int> DrawnSections { get; private set; } = Array.Empty<int>();
     public (int X, int Y, int Z) Eye { get; private set; }
+    /// <summary>View matrix computed by the last <see cref="Render"/> call.</summary>
+    public Gte.Mat? LastView { get; private set; }
 
     /// <summary>
     /// Ramp table D_800A2630 for the k == 6/7 colour variants. Viewer placeholder, not retail:
@@ -1093,9 +1228,11 @@ public sealed class LevelScene
             ? null
             : new PickupItems(pickupField, new PlayerResupplyState(new WeaponSlots()));
         if (Sink is null) Array.Clear(Rgb);
-        // View of the mech-local frame (model units, pivot = walker centre). Viewer camera, not the
-        // retail chase camera func_800569EC.
-        var view = ViewTransform.Turn(camera.Yaw, camera.Elevation, _mechCx, _mechCy, _mechCz, camera.Distance);
+        // View of the mech-local frame (model units, pivot = walker centre), applying the active
+        // retail chase-camera preset offset (D_8009AEC4[PresetState] / D_8009AD08, 800569EC.c:305-513).
+        var effective = camera.ResolvePreset();
+        var view = ViewTransform.Turn(effective.Yaw, effective.Elevation, _mechCx, _mechCy, _mechCz, effective.Distance);
+        LastView = view;
 
         // Eye in mech-local model units: camera = A p + T/16 vanishes at the eye -> e = -A^T T / 16.
         double[] t = { view.Tx / 16.0, view.Ty / 16.0, view.Tz / 16.0 };
@@ -1176,15 +1313,7 @@ public sealed class LevelScene
             // A model without the requested frame chunk is left out of the frame.
             if (!part.Model.Vertices.TryGetValue(part.Model.IsScripted ? 1 : part.Frame + 1, out var partVerts)) continue;
             var composed = ScriptRender.Compose(part.Matrix, bodyView);
-            var projected = part.Model.IsScripted
-                ? ScriptRender.Project(part.Model, partVerts, part.Frame, composed, Focal, Ofx, Ofy, 1)
-                : ModelRender.Project(Gte.Load(composed), partVerts, Focal, Ofx, Ofy, 1);
-            var widths = part.Model.Widths.TryGetValue(1, out var pw) ? pw.ToArray() : Array.Empty<short>();
-            foreach (var face in ModelRender.WalkTextured(part.Model.Polygons, projected, widths, part.Mask, 0))
-            {
-                _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = part.Model });
-                mechFaces++;
-            }
+            mechFaces += QueueModel(part.Model, partVerts, part.Frame, composed, part.Mask, ref drawOrder);
         }
         MechFaces = mechFaces;
 
@@ -1196,12 +1325,7 @@ public sealed class LevelScene
             {
                 if (!shot.Model.Vertices.TryGetValue(1, out var shotVerts) || shotVerts.Count == 0) continue;
                 var shotMatrix = ShotMatrix(shot, view);
-                var projected = shot.Model.IsScripted
-                    ? ScriptRender.Project(shot.Model, shotVerts, 0, shotMatrix, Focal, Ofx, Ofy, 1)
-                    : ModelRender.Project(Gte.Load(shotMatrix), shotVerts, Focal, Ofx, Ofy, 1);
-                var shotWidths = shot.Model.Widths.TryGetValue(1, out var sw) ? sw.ToArray() : Array.Empty<short>();
-                foreach (var face in ModelRender.WalkTextured(shot.Model.Polygons, projected, shotWidths, 0xFF, 0))
-                    _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = shot.Model });
+                QueueModel(shot.Model, shotVerts, 0, shotMatrix, 0xFF, ref drawOrder);
             }
         }
 
@@ -1216,22 +1340,16 @@ public sealed class LevelScene
         {
             foreach (var item in pickups.Items)
             {
-                var model = _file.Models.FirstOrDefault(m => m.Id == item.ModelId);
-                bool hasFrame = model is not null && model.Vertices.TryGetValue(1, out var verts) && verts.Count > 0;
-                if (!hasFrame) model = null;
+                if (item.Collected) continue;
+                _modelsById.TryGetValue(item.ModelId, out var model);
+                List<Vertex>? frame = null;
+                if (model is not null && (!model.Vertices.TryGetValue(1, out frame) || frame.Count == 0))
+                    model = null;
+
                 _drawnPickupPlacements.Add(new PlacedPickup(model, item.X, item.Y, item.Z));
-                if (model is null) continue;
-                var frame = model.Vertices[1];
+                if (model is null || frame is null) continue;
                 var pickupMatrix = PickupMatrix(item, view);
-                var projected = model.IsScripted
-                    ? ScriptRender.Project(model, frame, 0, pickupMatrix, Focal, Ofx, Ofy, 1)
-                    : ModelRender.Project(Gte.Load(pickupMatrix), frame, Focal, Ofx, Ofy, 1);
-                var widths = model.Widths.TryGetValue(1, out var pw) ? pw.ToArray() : Array.Empty<short>();
-                foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
-                {
-                    _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });
-                    pickupPrims++;
-                }
+                pickupPrims += QueueModel(model, frame, 0, pickupMatrix, 0xFF, ref drawOrder);
             }
         }
         PickupPrimitives = pickupPrims;
@@ -1241,24 +1359,22 @@ public sealed class LevelScene
         if (_objectives is { } objectives)
         {
             foreach (var objective in objectives.Objectives)
-                foreach (int modelId in new[] { objective.ModelId, objective.ChildModelId })
+            {
+                for (int slot = 0; slot < 2; slot++)
                 {
-                    var model = _file.Models.FirstOrDefault(m => m.Id == modelId);
-                    if (model is null || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
+                    int modelId = slot == 0 ? objective.ModelId : objective.ChildModelId;
+                    if (!_modelsById.TryGetValue(modelId, out var model)
+                        || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
                     var matrix = PlacedMatrix(objective.X, objective.Y, objective.Z, view);
-                    var projected = model.IsScripted
-                        ? ScriptRender.Project(model, verts, 0, matrix, Focal, Ofx, Ofy, 1)
-                        : ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1);
-                    var widths = model.Widths.TryGetValue(1, out var ow) ? ow.ToArray() : Array.Empty<short>();
-                    foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
-                        _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });
+                    QueueModel(model, verts, 0, matrix, 0xFF, ref drawOrder);
                 }
+            }
         }
 
         // Sky Captain: its record model placed with the body basis (+0x2C rows) at +0x50. First light;
         // the row/column convention of the basis against the GTE matrix is not verified yet.
         int skyCaptain = 0;
-        if (_skyCaptain is { Visible: true } sky && _file.Models.FirstOrDefault(m => m.Id == sky.ModelId) is { } skyModel
+        if (_skyCaptain is { Visible: true } sky && _modelsById.TryGetValue(sky.ModelId, out var skyModel)
             && skyModel.Vertices.TryGetValue(1, out var skyVerts) && skyVerts.Count > 0)
         {
             var body = sky.Drone!.Body;
@@ -1267,15 +1383,7 @@ public sealed class LevelScene
                 ((body.Pos[0] - MechWorld.X) >> 4) << 4, ((body.Pos[1] - MechWorld.Y) >> 4) << 4,
                 ((body.Pos[2] - MechWorld.Z) >> 4) << 4);
             var matrix = ScriptRender.Compose(local, view);
-            var projected = skyModel.IsScripted
-                ? ScriptRender.Project(skyModel, skyVerts, 0, matrix, Focal, Ofx, Ofy, 1)
-                : ModelRender.Project(Gte.Load(matrix), skyVerts, Focal, Ofx, Ofy, 1);
-            var widths = skyModel.Widths.TryGetValue(1, out var kw) ? kw.ToArray() : Array.Empty<short>();
-            foreach (var face in ModelRender.WalkTextured(skyModel.Polygons, projected, widths, 0xFF, 0))
-            {
-                _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = skyModel });
-                skyCaptain++;
-            }
+            skyCaptain += QueueModel(skyModel, skyVerts, 0, matrix, 0xFF, ref drawOrder);
         }
 
         // Type-10 elevators placed in ObjectRegistry (func_80041488: yaw basis from source +0x36 at
@@ -1290,20 +1398,12 @@ public sealed class LevelScene
                 if (!_modelsById.TryGetValue(modelId, out var model)
                     || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
                 MechWalker.RotationMatrix(lift.Angle, 0, 0, liftBasis);
-                var local = new Gte.Mat(liftBasis.ToArray(),
+                var local = new Gte.Mat(liftBasis,
                     ((lift.X - MechWorld.X) >> 4) << 4,
                     ((lift.Y - MechWorld.Y) >> 4) << 4,
                     ((lift.Z - MechWorld.Z) >> 4) << 4);
                 var matrix = ScriptRender.Compose(local, view);
-                var projected = model.IsScripted
-                    ? ScriptRender.Project(model, verts, 0, matrix, Focal, Ofx, Ofy, 1)
-                    : ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1);
-                var widths = _widthsByModelId.TryGetValue(model.Id, out var lw) ? lw : Array.Empty<short>();
-                foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
-                {
-                    _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });
-                    elevatorPrims++;
-                }
+                elevatorPrims += QueueModel(model, verts, 0, matrix, 0xFF, ref drawOrder);
             }
         }
         ElevatorPrimitives = elevatorPrims;
@@ -1325,15 +1425,7 @@ public sealed class LevelScene
                 }, ((unit.X - MechWorld.X) >> 4) << 4, ((unit.Y - MechWorld.Y) >> 4) << 4,
                     ((unit.Z - MechWorld.Z) >> 4) << 4);
                 var matrix = ScriptRender.Compose(local, view);
-                var projected = model.IsScripted
-                    ? ScriptRender.Project(model, verts, 0, matrix, Focal, Ofx, Ofy, 1)
-                    : ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1);
-                var widths = _widthsByModelId.TryGetValue(model.Id, out var uw) ? uw : Array.Empty<short>();
-                foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
-                {
-                    _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });
-                    builtUnits++;
-                }
+                builtUnits += QueueModel(model, verts, 0, matrix, 0xFF, ref drawOrder);
             }
         }
         BuiltUnitPrimitives = builtUnits;
@@ -1349,18 +1441,13 @@ public sealed class LevelScene
             foreach (var entity in entities.Units)
             {
                 if (entity is not SpawnedCsacUnit unit || unit.RuntimeId == 0) continue;
+                // Type-0x10 pickups are drawn through the _pickups pass above (ground-snapped by
+                // func_8002FA20), never a second time as a generic Csac unit.
+                if (unit.EntityType == WeaponPickups.PlacementPayloadType) continue;
                 if (!_modelsById.TryGetValue(unit.ModelId, out var model)
                     || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
                 var matrix = PlacedMatrix(unit.X, unit.Y, unit.Z, view);
-                var projected = model.IsScripted
-                    ? ScriptRender.Project(model, verts, 0, matrix, Focal, Ofx, Ofy, 1)
-                    : ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1);
-                var widths = _widthsByModelId.TryGetValue(model.Id, out var cw) ? cw : Array.Empty<short>();
-                foreach (var face in ModelRender.WalkTextured(model.Polygons, projected, widths, 0xFF, 0))
-                {
-                    _drawQueue.Add(new DrawItem { Key = face.Work.Z, Order = drawOrder++, Face = face, Model = model });
-                    spawnedUnits++;
-                }
+                spawnedUnits += QueueModel(model, verts, 0, matrix, 0xFF, ref drawOrder);
             }
         }
         SpawnedUnitPrimitives = spawnedUnits;
@@ -1509,7 +1596,7 @@ public sealed class LevelScene
     }
 
     /// <summary>Textured, colour-modulated triangle; xy = packed screen word, uv = low 16 bits (u | v &lt;&lt; 8).</summary>
-    private void Tri(uint xy0, uint uv0, uint c0, uint xy1, uint uv1, uint c1, uint xy2, uint uv2, uint c2,
+    internal void Tri(uint xy0, uint uv0, uint c0, uint xy1, uint uv1, uint c1, uint xy2, uint uv2, uint c2,
         ushort tpage, ushort clut, bool semi)
     {
         int x0 = Sx(xy0), y0 = Sy(xy0), x1 = Sx(xy1), y1 = Sy(xy1), x2 = Sx(xy2), y2 = Sy(xy2);
@@ -1533,47 +1620,84 @@ public sealed class LevelScene
         if (minX > maxX || minY > maxY) return;
         int abr = (tpage >> 5) & 3;
         double inv = 1.0 / area;
-        Span<int> rgb = stackalloc int[3];
         int r0 = (int)(c0 >> 16) & 0xFF, g0 = (int)(c0 >> 8) & 0xFF, b0c = (int)c0 & 0xFF;
         int r1 = (int)(c1 >> 16) & 0xFF, g1 = (int)(c1 >> 8) & 0xFF, b1c = (int)c1 & 0xFF;
         int r2 = (int)(c2 >> 16) & 0xFF, g2 = (int)(c2 >> 8) & 0xFF, b2c = (int)c2 & 0xFF;
+        var (pageX, pageY, depthBits) = Vram.DecodeTpage(tpage);
+        var (clutX, clutY) = Vram.DecodeClut(clut);
+        var vram = _textures.Vram;
+        var cells = vram.Cells;
+        int clutRow = clutY * Vram.Width + clutX;
+        bool fastVram = depthBits switch
+        {
+            0 => pageX + 63 < Vram.Width && pageY + 255 < Vram.Height && clutX + 15 < Vram.Width && clutY < Vram.Height,
+            1 => pageX + 127 < Vram.Width && pageY + 255 < Vram.Height && clutX + 255 < Vram.Width && clutY < Vram.Height,
+            _ => pageX + 255 < Vram.Width && pageY + 255 < Vram.Height,
+        };
+        byte[] rgbBuf = Rgb;
+        int dw0x = y1 - y2, dw0y = x2 - x1;
+        int dw1x = y2 - y0, dw1y = x0 - x2;
+        int dw2x = y0 - y1, dw2y = x1 - x0;
+        int rowW0 = (x1 - minX) * (y2 - minY) - (y1 - minY) * (x2 - minX);
+        int rowW1 = (x2 - minX) * (y0 - minY) - (y2 - minY) * (x0 - minX);
+        int rowW2 = (x0 - minX) * (y1 - minY) - (y0 - minY) * (x1 - minX);
+        bool positiveArea = area > 0;
         for (int y = minY; y <= maxY; y++)
-            for (int x = minX; x <= maxX; x++)
+        {
+            int w0 = rowW0, w1 = rowW1, w2 = rowW2;
+            int rowBase = (y * Width + minX) * 3;
+            for (int x = minX; x <= maxX; x++, w0 += dw0x, w1 += dw1x, w2 += dw2x, rowBase += 3)
             {
-                int w0 = (x1 - x) * (y2 - y) - (y1 - y) * (x2 - x);
-                int w1 = (x2 - x) * (y0 - y) - (y2 - y) * (x0 - x);
-                int w2 = (x0 - x) * (y1 - y) - (y0 - y) * (x1 - x);
-                if (area > 0 ? (w0 < 0 || w1 < 0 || w2 < 0) : (w0 > 0 || w1 > 0 || w2 > 0)) continue;
+                if (positiveArea ? ((w0 | w1 | w2) < 0) : (w0 > 0 || w1 > 0 || w2 > 0)) continue;
                 double b0 = w0 * inv, b1 = w1 * inv, b2 = w2 * inv;
                 int u = (int)Math.Round(b0 * u0 + b1 * u1 + b2 * u2), v = (int)Math.Round(b0 * v0 + b1 * v1 + b2 * v2);
-                ushort raw = _textures.Vram.SampleRaw(tpage, clut, u, v);
-                if (raw == 0) continue; // PS1: texel 0x0000 is fully transparent
-                var (tr, tg, tb, _) = Vram.Abgr1555ToRgb(raw);
-                int o = (y * Width + x) * 3;
-                rgb[0] = tr; rgb[1] = tg; rgb[2] = tb;
-                for (int ch = 0; ch < 3; ch++)
+                ushort raw;
+                if (fastVram)
                 {
-                    double cm = ch switch
+                    int tx = u & 0xFF, ty = v & 0xFF;
+                    int cellRow = (pageY + ty) * Vram.Width + pageX;
+                    raw = depthBits switch
                     {
-                        0 => b0 * r0 + b1 * r1 + b2 * r2,
-                        1 => b0 * g0 + b1 * g1 + b2 * g2,
-                        _ => b0 * b0c + b1 * b1c + b2 * b2c,
+                        0 => cells[clutRow + ((cells[cellRow + (tx >> 2)] >> ((tx & 3) * 4)) & 0x0F)],
+                        1 => cells[clutRow + ((cells[cellRow + (tx >> 1)] >> ((tx & 1) * 8)) & 0xFF)],
+                        _ => cells[cellRow + tx],
                     };
-                    int value = Math.Min(255, (int)(rgb[ch] * cm / 128.0));
-                    if (semi && (raw & 0x8000) != 0)
-                    {
-                        int back = Rgb[o + ch];
-                        value = abr switch
-                        {
-                            0 => (back + value) >> 1,
-                            1 => Math.Min(255, back + value),
-                            2 => Math.Max(0, back - value),
-                            _ => Math.Min(255, back + (value >> 2)),
-                        };
-                    }
-                    Rgb[o + ch] = (byte)value;
                 }
+                else
+                {
+                    raw = vram.SampleRaw(tpage, clut, u, v);
+                }
+                if (raw == 0) continue; // PS1: texel 0x0000 is fully transparent
+                int r5 = raw & 0x1F, g5 = (raw >> 5) & 0x1F, b5 = (raw >> 10) & 0x1F;
+                int tr = (r5 << 3) | (r5 >> 2);
+                int tg = (g5 << 3) | (g5 >> 2);
+                int tb = (b5 << 3) | (b5 >> 2);
+                int vr = Math.Min(255, (int)(tr * (b0 * r0 + b1 * r1 + b2 * r2) / 128.0));
+                int vg = Math.Min(255, (int)(tg * (b0 * g0 + b1 * g1 + b2 * g2) / 128.0));
+                int vb = Math.Min(255, (int)(tb * (b0 * b0c + b1 * b1c + b2 * b2c) / 128.0));
+                if (semi && (raw & 0x8000) != 0)
+                {
+                    int br = rgbBuf[rowBase], bg = rgbBuf[rowBase + 1], bb = rgbBuf[rowBase + 2];
+                    switch (abr)
+                    {
+                        case 0:
+                            vr = (br + vr) >> 1; vg = (bg + vg) >> 1; vb = (bb + vb) >> 1; break;
+                        case 1:
+                            vr = Math.Min(255, br + vr); vg = Math.Min(255, bg + vg); vb = Math.Min(255, bb + vb); break;
+                        case 2:
+                            vr = Math.Max(0, br - vr); vg = Math.Max(0, bg - vg); vb = Math.Max(0, bb - vb); break;
+                        default:
+                            vr = Math.Min(255, br + (vr >> 2)); vg = Math.Min(255, bg + (vg >> 2)); vb = Math.Min(255, bb + (vb >> 2)); break;
+                    }
+                }
+                rgbBuf[rowBase] = (byte)vr;
+                rgbBuf[rowBase + 1] = (byte)vg;
+                rgbBuf[rowBase + 2] = (byte)vb;
             }
+            rowW0 += dw0y;
+            rowW1 += dw1y;
+            rowW2 += dw2y;
+        }
     }
 
     /// <summary>
@@ -1611,6 +1735,31 @@ public sealed class LevelScene
     /// </summary>
     private Gte.Mat PickupMatrix(WeaponPickup item, Gte.Mat view) => PlacedMatrix(item.X, item.Y, item.Z, view);
 
+    internal int QueueModel(Model model, IReadOnlyList<Vertex> verts, int frame, Gte.Mat matrix, int mask, ref int drawOrder)
+    {
+        if (_projectedScratch.Length < verts.Count)
+            _projectedScratch = new ScreenVertex[verts.Count];
+        Span<ScreenVertex> projected = _projectedScratch.AsSpan(0, verts.Count);
+        if (model.IsScripted)
+            ScriptRender.Project(model, verts, frame, matrix, Focal, Ofx, Ofy, 1, projected);
+        else
+            ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1, projected);
+        var widths = _widthsByModelId.TryGetValue(model.Id, out var w) ? w : Array.Empty<short>();
+        _facesScratch.Clear();
+        ModelRender.WalkTextured(model.Polygons, projected, widths, mask, 0, _facesScratch);
+        int count = _facesScratch.Count;
+        for (int i = 0; i < count; i++)
+            _drawQueue.Add(new DrawItem { Key = _facesScratch[i].Work.Z, Order = drawOrder++, Face = _facesScratch[i], Model = model });
+        return count;
+    }
+
+    private static readonly int[] IdentityRotation =
+    {
+        0x10000, 0, 0,
+        0, 0x10000, 0,
+        0, 0, 0x10000,
+    };
+
     /// <summary>Unrotated placement of a model at a world position, relative to the mech origin.</summary>
     private Gte.Mat PlacedMatrix(int x, int y, int z, Gte.Mat view)
     {
@@ -1618,12 +1767,7 @@ public sealed class LevelScene
         int ly = (y - MechWorld.Y) >> 4;
         int lz = (z - MechWorld.Z) >> 4;
         // 0x10000 is 1.0 in engine matrix units (Gte.Load shifts the rotation right by 4).
-        var local = new Gte.Mat(new[]
-        {
-            0x10000, 0, 0,
-            0, 0x10000, 0,
-            0, 0, 0x10000,
-        }, lx << 4, ly << 4, lz << 4);
+        var local = new Gte.Mat(IdentityRotation, lx << 4, ly << 4, lz << 4);
         return ScriptRender.Compose(local, view);
     }
 
@@ -1650,12 +1794,7 @@ public sealed class LevelScene
         int lx = (x - MechWorld.X) >> 4;
         int ly = (y - MechWorld.Y) >> 4;
         int lz = (z - MechWorld.Z) >> 4;
-        var local = new Gte.Mat(new[]
-        {
-            0x10000, 0, 0,
-            0, 0x10000, 0,
-            0, 0, 0x10000,
-        }, lx << 4, ly << 4, lz << 4);
+        var local = new Gte.Mat(IdentityRotation, lx << 4, ly << 4, lz << 4);
         var point = ModelRender.Project(Gte.Load(ScriptRender.Compose(local, view)),
             new[] { new Vertex(0, 0, 0) }, Focal, Ofx, Ofy, 1);
         if (point.Length == 0 || (point[0].Clip & 1) != 0) return null;
@@ -1726,7 +1865,7 @@ public sealed class LevelScene
         }
     }
 
-    private void FlatFace(TexturedFace face, uint colour)
+    internal void FlatFace(TexturedFace face, uint colour)
     {
         void Fill(uint p0, uint p1, uint p2)
         {
@@ -1739,16 +1878,31 @@ public sealed class LevelScene
                     (byte)(colour >> 16), (byte)(colour >> 8), (byte)colour);
                 return;
             }
-            for (int y = Math.Max(0, Math.Min(y0, Math.Min(y1, y2))); y <= Math.Min(Height - 1, Math.Max(y0, Math.Max(y1, y2))); y++)
-                for (int x = Math.Max(0, Math.Min(x0, Math.Min(x1, x2))); x <= Math.Min(Width - 1, Math.Max(x0, Math.Max(x1, x2))); x++)
+            int minX = Math.Max(0, Math.Min(x0, Math.Min(x1, x2))), maxX = Math.Min(Width - 1, Math.Max(x0, Math.Max(x1, x2)));
+            int minY = Math.Max(0, Math.Min(y0, Math.Min(y1, y2))), maxY = Math.Min(Height - 1, Math.Max(y0, Math.Max(y1, y2)));
+            if (minX > maxX || minY > maxY) return;
+            byte cr = (byte)(colour >> 16), cg = (byte)(colour >> 8), cb = (byte)colour;
+            byte[] rgbBuf = Rgb;
+            int dw0x = y1 - y2, dw0y = x2 - x1;
+            int dw1x = y2 - y0, dw1y = x0 - x2;
+            int dw2x = y0 - y1, dw2y = x1 - x0;
+            int rowW0 = (x1 - minX) * (y2 - minY) - (y1 - minY) * (x2 - minX);
+            int rowW1 = (x2 - minX) * (y0 - minY) - (y2 - minY) * (x0 - minX);
+            int rowW2 = (x0 - minX) * (y1 - minY) - (y0 - minY) * (x1 - minX);
+            bool positiveArea = area > 0;
+            for (int y = minY; y <= maxY; y++)
+            {
+                int w0 = rowW0, w1 = rowW1, w2 = rowW2;
+                int rowBase = (y * Width + minX) * 3;
+                for (int x = minX; x <= maxX; x++, w0 += dw0x, w1 += dw1x, w2 += dw2x, rowBase += 3)
                 {
-                    int w0 = (x1 - x) * (y2 - y) - (y1 - y) * (x2 - x);
-                    int w1 = (x2 - x) * (y0 - y) - (y2 - y) * (x0 - x);
-                    int w2 = (x0 - x) * (y1 - y) - (y0 - y) * (x1 - x);
-                    if (area > 0 ? (w0 < 0 || w1 < 0 || w2 < 0) : (w0 > 0 || w1 > 0 || w2 > 0)) continue;
-                    int o = (y * Width + x) * 3;
-                    Rgb[o] = (byte)(colour >> 16); Rgb[o + 1] = (byte)(colour >> 8); Rgb[o + 2] = (byte)colour;
+                    if (positiveArea ? ((w0 | w1 | w2) < 0) : (w0 > 0 || w1 > 0 || w2 > 0)) continue;
+                    rgbBuf[rowBase] = cr; rgbBuf[rowBase + 1] = cg; rgbBuf[rowBase + 2] = cb;
                 }
+                rowW0 += dw0y;
+                rowW1 += dw1y;
+                rowW2 += dw2y;
+            }
         }
         uint a = (uint)face.Work.Xy0, b = (uint)face.Work.Xy1, c = (uint)face.Work.Xy2, d = (uint)face.Work.Xy3;
         Fill(a, b, c);

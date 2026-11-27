@@ -117,11 +117,22 @@ public sealed class CsacSpawnerSlot
 /// </remarks>
 public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNodeId
 {
+    private readonly Func<int, int, int?>? _groundSampler;
+    private readonly Func<int, int, int, int>? _querySurfaceHeight;
+    private readonly Func<int>? _nextRandom;
+    private readonly EntityWorld? _world;
+    private readonly CsacHoverWorld? _hoverWorld;
+
     public SpawnedCsacUnit(
         int id,
         CsacSpawnerSlot sourceSlot,
         int spawnMode,
-        Func<SpawnedCsacUnit, int, int, int, int>? messageHandler = null)
+        Func<SpawnedCsacUnit, int, int, int, int>? messageHandler = null,
+        Func<int, int, int?>? groundSampler = null,
+        PathNetwork? pathNetwork = null,
+        Func<int>? nextRandom = null,
+        Func<int, int, int, int>? querySurfaceHeight = null,
+        EntityWorld? world = null)
     {
         Id = id;
         SourceSlot = sourceSlot;
@@ -132,6 +143,12 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
         X = sourceSlot.Record.X;
         Y = sourceSlot.Record.Y;
         Z = sourceSlot.Record.Z;
+        DirX = 0x10000;
+        DirZ = 0;
+        _groundSampler = groundSampler;
+        _querySurfaceHeight = querySurfaceHeight;
+        _nextRandom = nextRandom;
+        _world = world;
         SpawnMode = spawnMode;
         MessageHandler = messageHandler;
 
@@ -143,6 +160,31 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
         Health = MaxHealth = unchecked((short)record.Health);
         Flags = record.Flags & 0xFFBFFFFFu;
         if ((Flags & IgnoreHitsFlag) != 0) Flags |= RetiredFlag;
+
+        // Per-type retail locomotion setup:
+        // - Type 9 flyer: gHandleTumblingFlyer msg 2 -> gInitHoverEnemy (80032F3C.c:70-71 -> 80032180.c:195-278).
+        // - Type 5 / 28 rail mover: gHandleType5Entity msg 2 -> gInitRailMoverEntity -> gInitRailSegment
+        //   (800382B4.c:176-177 -> 800378BC.c:104 -> 80050E0C.c:198-328; type 28 delegates via 800397AC.c:53).
+        if (EntityType == BuildOrderSpawner.AircraftEntityType && nextRandom is not null)
+        {
+            Func<int[], int>? probe = groundSampler is not null
+                ? pos => groundSampler(pos[0], pos[2]) ?? pos[1]
+                : null;
+            HoverMover = HoverEnemyInit.Create(record, probe, nextRandom);
+            _hoverWorld = new CsacHoverWorld(nextRandom, groundSampler);
+            SyncFromHoverMover();
+        }
+        else if ((EntityType == BuildOrderSpawner.TankEntityType || EntityType == BuildOrderSpawner.HeavyTankEntityType)
+                 && pathNetwork is not null && nextRandom is not null)
+        {
+            var rail = new RailPathMover();
+            rail.Initialize(record, pathNetwork, nextRandom);
+            if (rail.IsInitialized)
+            {
+                RailMover = rail;
+                SyncFromRailMover();
+            }
+        }
     }
 
     /// <inheritdoc/>
@@ -191,6 +233,16 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
     public int X { get; set; }
     public int Y { get; set; }
     public int Z { get; set; }
+    /// <summary>Normalized horizontal facing X in 16.16 fixed-point (0x10000 = 1.0).</summary>
+    public int DirX { get; set; }
+    /// <summary>Normalized horizontal facing Z in 16.16 fixed-point (0x10000 = 1.0).</summary>
+    public int DirZ { get; set; }
+    /// <summary>Retail type-9 hover mover state (<c>80032180.c</c>/<c>800324E0.c</c>), or null for other types.</summary>
+    public HoverEnemy? HoverMover { get; }
+    /// <summary>Retail type-5/28 rail path mover (<c>80050E0C.c</c>/<c>8005027C.c</c>/<c>8003802C.c</c>), or null when absent.</summary>
+    public RailPathMover? RailMover { get; }
+    /// <summary>True when this unit has an initialized retail locomotion mover.</summary>
+    public bool IsMobile => HoverMover is not null || RailMover is { IsInitialized: true };
     /// <summary>Specialized mission runtime created on spawn (null for other dispatch types).</summary>
     public IRegisteredMapObject? RuntimeObject { get; internal set; }
     /// <summary>Spawn mode argument passed by func_800616A0 to func_8006125C (1 = normal/timer, 0 = high-nibble burst).</summary>
@@ -208,10 +260,96 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
         {
             Message6Count++;
             LastDelta = arg2;
+            if (RuntimeObject is null && arg2 > 0)
+                StepRetailMover(arg2);
         }
         int runtimeResult = RuntimeObject?.OnMessage(message, arg2, arg3) ?? 0;
         SyncRuntimePosition();
         return MessageHandler?.Invoke(this, message, arg2, arg3) ?? runtimeResult;
+    }
+
+    private void StepRetailMover(int dt)
+    {
+        if (HoverMover is { } hover && _hoverWorld is not null)
+        {
+            if (X != hover.Pos[0] || Y != hover.Pos[1] || Z != hover.Pos[2])
+            {
+                hover.Pos[0] = X;
+                hover.Pos[1] = Y;
+                hover.Pos[2] = Z;
+            }
+            // 80032F3C.c:72-73 -> 800324E0.c:154-386
+            HoverEnemyTick.Tick(hover, dt, _hoverWorld);
+            SyncFromHoverMover();
+            return;
+        }
+
+        if (RailMover is { IsInitialized: true } rail && _nextRandom is not null)
+        {
+            int offsetX = unchecked(X - rail.X);
+            int offsetY = unchecked(Y - rail.Y);
+            int offsetZ = unchecked(Z - rail.Z);
+            // 800382B4.c:295 -> 8003802C.c:92 -> 80050D14.c:59 -> 8005027C.c:119-427
+            Func<int, int, int>? ground = _groundSampler is not null
+                ? (x, z) => _groundSampler(x, z) ?? Y
+                : null;
+            rail.Step(dt, _nextRandom, ground, _querySurfaceHeight);
+            X = unchecked(rail.X + offsetX);
+            Y = unchecked(rail.Y + offsetY);
+            Z = unchecked(rail.Z + offsetZ);
+            DirX = rail.Dir[0];
+            DirZ = rail.Dir[2];
+            if (rail.Retired && _world is not null)
+                LiveEntity.Retire(this, _world);
+        }
+    }
+
+    private void SyncFromHoverMover()
+    {
+        if (HoverMover is not { } hover) return;
+        X = hover.Pos[0];
+        Y = hover.Pos[1];
+        Z = hover.Pos[2];
+        DirX = hover.Dir[0];
+        DirZ = hover.Dir[2];
+    }
+
+    private void SyncFromRailMover()
+    {
+        if (RailMover is not { } rail) return;
+        X = rail.X;
+        Y = rail.Y;
+        Z = rail.Z;
+        DirX = rail.Dir[0];
+        DirZ = rail.Dir[2];
+    }
+
+    private sealed class CsacHoverWorld : IHoverEnemyWorld
+    {
+        private readonly Func<int> _nextRandom;
+        private readonly Func<int, int, int?>? _groundSampler;
+
+        public CsacHoverWorld(Func<int> nextRandom, Func<int, int, int?>? groundSampler)
+        {
+            _nextRandom = nextRandom;
+            _groundSampler = groundSampler;
+        }
+
+        public int NextRandom() => _nextRandom();
+        // func_80069A38 is not ported on the scene path; the ground probe func_80066F78 stands in
+        // (same convention as LevelSceneSkyCaptain.cs:784-785).
+        public int SampleHeightBilinear(int[] pos) => _groundSampler?.Invoke(pos[0], pos[2]) ?? 0;
+        public int GetGroundHeight(int[] pos) => _groundSampler?.Invoke(pos[0], pos[2]) ?? 0;
+        public HoverEnemyHit? FindTargetEntity(HoverEnemy o) => null;
+        public void StepAttackScheduler(HoverEnemy o, int dt) { }
+        public void SpawnEntitySlotTypes(int tableIndex, HoverEnemy o, int a2, int a3, int a4) { }
+        public void FlagQuartileChange(HoverEnemy o) { }
+        public int SessionWord13() => 0;
+        public int FrameTime() => 0;
+        public void RunDeathScript(HoverEnemy o) { }
+        public bool IsPlayerBlockClass(int id) => false;
+        public void CreditPlayerKill() { }
+        public void AdvanceAnimation(HoverEnemy o, int dt) { }
     }
 
     internal void SyncRuntimePosition()
@@ -286,8 +424,16 @@ public sealed class CsacUnitSpawner
     /// <summary>Retail spawner command 0x47: queue a burst spawn in flags bits 8..11 or 12..15 (800614BC.c:57-86).</summary>
     public const int CommandQueueBurst = 0x47;
 
+    /// <summary>
+    /// High-altitude probe Y passed to <see cref="MapObjectRegistry.GroundHeight"/> so
+    /// <c>func_80066F78</c> returns the highest floor surface at (X, Z) rather than trapping units
+    /// beneath rising terrain.
+    /// </summary>
+    public const int GroundProbeY = 0x100000;
+
     private readonly CsacSpawnerSlot?[] _slots = new CsacSpawnerSlot?[Capacity];
     private readonly List<SpawnedCsacUnit> _spawnedUnits = new();
+    private readonly Dictionary<int, PathNetwork> _pathNetworks = new();
     private readonly MapObjectRegistry? _registry;
     private readonly EntityWorld? _world;
     private int _count;
@@ -340,6 +486,57 @@ public sealed class CsacUnitSpawner
     /// instances when they are created.
     /// </summary>
     public Func<SpawnedCsacUnit, int, int, int, int>? UnitMessageHandler { get; set; }
+
+    /// <summary>
+    /// Optional terrain height sampler <c>(x, z) -&gt; groundY</c> used by spawned units.
+    /// When null, falls back to the attached <see cref="MapObjectRegistry.GroundHeight"/> probed at
+    /// <see cref="GroundProbeY"/>.
+    /// </summary>
+    public Func<int, int, int>? GroundHeight { get; set; }
+
+    /// <summary>
+    /// Optional <c>func_80067684</c> surface-height-by-rank sampler <c>(x, z, mode) -&gt; height</c>
+    /// used by <see cref="RailPathMover"/> vertical transitions (<c>80050B54.c:92</c>) and
+    /// <see cref="LoadPathNetworks"/> (<c>800511E4.c:118</c>).
+    /// </summary>
+    public Func<int, int, int, int>? QuerySurfaceHeight { get; set; }
+
+    /// <summary>Loaded <c>Cnet</c> path networks keyed by resource id for type-5 and type-28 rail movers.</summary>
+    public IDictionary<int, PathNetwork> PathNetworks => _pathNetworks;
+
+    /// <summary>
+    /// Loads all <c>Cnet</c> (<c>0x436E6574</c>) path networks from a mission archive via
+    /// <see cref="PathNetwork.LoadFromMission"/> (<c>800511E4.c</c>) and registers them in
+    /// <see cref="PathNetworks"/>.
+    /// </summary>
+    public int LoadPathNetworks(ReadOnlySpan<byte> missionBytes, Func<int, int, int, int>? querySurfaceHeight = null)
+    {
+        if (querySurfaceHeight is not null)
+            QuerySurfaceHeight = querySurfaceHeight;
+        var loaded = PathNetwork.LoadFromMission(missionBytes, querySurfaceHeight ?? QuerySurfaceHeight);
+        foreach (var (id, net) in loaded)
+            _pathNetworks[id] = net;
+        return loaded.Count;
+    }
+
+    private int? SampleGround(int x, int z)
+    {
+        if (GroundHeight is { } sampler)
+            return sampler(x, z);
+        if (_registry?.GroundHeight is { } registrySampler)
+            return registrySampler(new Vec3(x, GroundProbeY, z));
+        return null;
+    }
+
+    private PathNetwork? ResolvePathNetwork(EntityRecord record)
+    {
+        foreach (var res in record.Resources)
+        {
+            if (res.Type == "Cnet" && _pathNetworks.TryGetValue(res.Id, out var net))
+                return net;
+        }
+        return null;
+    }
 
     /// <summary>gGameSession +0x5C: when 1, <see cref="TrySpawn"/> increments per-participant stats (8006125C.c:50).</summary>
     public int SessionActive { get; set; }
@@ -555,7 +752,9 @@ public sealed class CsacUnitSpawner
                 Player1Stats.Increment(infoType);
         }
 
-        var unit = new SpawnedCsacUnit(_nextRuntimeId++, slot, spawnMode, UnitMessageHandler);
+        var pathNetwork = ResolvePathNetwork(slot.Record);
+        var unit = new SpawnedCsacUnit(_nextRuntimeId++, slot, spawnMode, UnitMessageHandler,
+            SampleGround, pathNetwork, Random.Next, QuerySurfaceHeight, _world);
         unit.SlotIndex = (byte)slot.Record.U8(0x20); // 8002A5F4.c:127
         unit.RuntimeObject = _registry?.CreateMissionObject(slot.Record, unit.Id);
         unit.SyncRuntimePosition();
