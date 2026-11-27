@@ -652,6 +652,9 @@ public sealed class LevelScene
     /// </summary>
     public int PickupPrimitives { get; private set; }
 
+    /// <summary>Explicitly show viewer-only purchase-pad outlines; off in normal play.</summary>
+    public bool ShowPadMarkers { get; set; }
+
     /// <summary>Outline lines the last <see cref="Render"/> drew for the purchase pads (viewer markers).</summary>
     public int PadMarkerLines { get; private set; }
 
@@ -1387,7 +1390,7 @@ public sealed class LevelScene
             skyCaptain++;
         }
         SkyCaptainPrimitives = skyCaptain;
-        PadMarkerLines = PadMarkers(view);
+        PadMarkerLines = ShowPadMarkers ? PadMarkers(view) : 0;
         return _drawQueue.Count;
     }
 
