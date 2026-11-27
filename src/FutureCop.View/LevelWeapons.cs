@@ -430,10 +430,10 @@ public sealed class LevelWeapons
     /// <summary>
     /// The direct-hit callback of gBeamPartUpdate (func_8006B23C:196-201, <c>do_cb</c>, the same
     /// record 8005F018.c:407 builds): a beam whose segment reaches an entity delivers message 14
-    /// with the <see cref="DirectHit"/> payload - damage <c>s3-&gt;unk0C</c> (def + 0x0C), kind
-    /// <c>e-&gt;unk1F</c> (def + 0x1F, the byte gWeaponSlotUpdate passes as gBeamPartUpdate's arg2),
-    /// source <c>self-&gt;unk14</c> - to every entity the segment touches. Returns the number of hits
-    /// delivered this frame.
+    /// with the <see cref="DirectHit"/> payload - damage <c>s3-&gt;unk0C</c> (def + 0x0C, the same
+    /// word the projectile stores at +0x1A), kind <c>e-&gt;unk1F</c> (def + 0x1F, the byte
+    /// gWeaponSlotUpdate passes as gBeamPartUpdate's arg2), source <c>self-&gt;unk14</c> - to every
+    /// entity the segment touches. Returns the number of hits delivered this frame.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -443,7 +443,14 @@ public sealed class LevelWeapons
     /// (<c>s5 &amp; 0xFF</c>); the port's ground clip only shortens the segment (<see cref="Beam.ClipToGround"/>),
     /// so a beam blocked by terrain stops short of the entities behind it as well.
     /// </para>
-    /// <para>The radial spread of the second half (s3-&gt;unk0E, gApplyRadialContactDamage) is not ported.</para>
+    /// <para>
+    /// The radial spread of the second half runs before the callback, per beam and frame: a half-1
+    /// beam whose <c>s3-&gt;unk0E</c> is positive calls gApplyRadialContactDamage at the far end with
+    /// <c>s3-&gt;unk0C</c> as the strength and <c>unk0E &lt;&lt; 4</c> as the radius. The C skips the
+    /// spread when the map trace hit (<c>s5 &amp; 0xFF</c>); the port's ground clip stands in for that
+    /// trace with a sixteen-step sampler, which fires on terrain the retail ray passes through, so
+    /// the port spreads there as well.
+    /// </para>
     /// </remarks>
     /// <param name="world">The entity world the beams deliver into (see <see cref="BeamHitWorld"/>).</param>
     public int DeliverBeamHits(EntityWorld world)
@@ -453,9 +460,20 @@ public sealed class LevelWeapons
         foreach (var beam in Beams)
         {
             var definition = beam.Definition;
+            // func_8006B23C:352-366: a second-half beam (the item + 0x24 record, flag of :240-247)
+            // whose type is not 0x0E and whose s3->unk0E is positive spreads gApplyRadialContactDamage
+            // around its far end, with s3->unk0C as the strength and unk0E << 4 as the radius. Without
+            // a locked target the C takes the c == 0 branch and uses the beam end v38, which is the
+            // branch the port always takes.
+            if (definition.Half == 1 && definition.Action != 0x0E && definition.DamageWord > 0)
+            {
+                RadialContactDamage.Apply(world, new[] { beam.End.X, beam.End.Y, beam.End.Z },
+                    unchecked((short)definition.ObjWord00), definition.DamageWord << 4,
+                    BeamSourceWord, BeamAttacker);
+            }
             var hit = new DirectHit(
                 BeamSourceWord,
-                unchecked((short)definition.DamageWord),
+                unchecked((short)definition.ObjWord00),
                 KindOf(definition),
                 BeamAttacker);
             foreach (var entity in world.Active)

@@ -6,6 +6,9 @@
     <LangVersion>10</LangVersion>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="FutureCop.Assets.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../FutureCop.Assets/FutureCop.Assets.csproj" />
     <ProjectReference Include="../FutureCop.Render/FutureCop.Render.csproj" />
   </ItemGroup>

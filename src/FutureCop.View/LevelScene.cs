@@ -940,7 +940,8 @@ public sealed class LevelScene
         {
             var shotCoord = CollisionCoord.FromFrameBounds(shot.X, shot.Y, shot.Z, shot.Model.FrameBounds);
             var projectile = new ProjectileContact(Actor.Id, unchecked((short)shot.Definition.ObjWord00),
-                (byte)shot.Definition.ObjWord0E, shot.X, shot.Z);
+                (byte)shot.Definition.ObjWord0E, shot.X, shot.Z, shot.Y,
+                ProjectileBlast.FromDefinition(shot.Definition, shot.Muzzle.X, shot.Muzzle.Y, shot.Muzzle.Z));
             DeliverShotContact(world, projectile, shotCoord);
             // A contact that was spawned into the list touched an entity: the shot left the weapon.
             if (projectile.RuntimeId != 0) weapons.Shots.Remove(shot);

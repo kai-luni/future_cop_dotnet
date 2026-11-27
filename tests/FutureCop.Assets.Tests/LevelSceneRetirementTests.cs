@@ -208,8 +208,8 @@ public class LevelSceneRetirementTests
 
         var spawnedHit = Assert.Single(spawned.Hits);
         var movedInHit = Assert.Single(movedIn.Hits);
-        Assert.Equal((short)beamDef.DamageWord, spawnedHit.Damage);
-        Assert.Equal((short)beamDef.DamageWord, movedInHit.Damage);
+        Assert.Equal((short)beamDef.ObjWord00, spawnedHit.Damage);
+        Assert.Equal((short)beamDef.ObjWord00, movedInHit.Damage);
     }
 
     private sealed class BeamTargetEntity : LiveEntity
