@@ -471,7 +471,7 @@ public sealed class MenuFlow
     /// </summary>
     public HudPlayerBlock Player { get; set; } = new() { Value64 = 2 };
 
-    private HudGameBlock BuildHud()
+    internal HudGameBlock BuildHud()
     {
         var walker = Level?.Walker;
         int health = walker?.Health ?? 0;
@@ -481,9 +481,18 @@ public sealed class MenuFlow
         // same two words instead of inventing a third quantity.
         int reciprocal = max > 0 ? 0x600000 / max : 0;
 
+        // object->unkB0 (8005A9C4.c:24,111) is the same 12-bit 0..0xFFF heading updated by
+        // gTickOnFootPhysics (800549F0.c:437,460-462) and gTickHoverPhysics (80053A74.c:281,297-299).
         var radar = Level is not null
             ? new RadarReference(Level.MechWorld.X, Level.MechWorld.Z, unchecked((short)(walker?.Angle ?? 0)))
             : (RadarReference?)null;
+
+        // Retail object->unkAC->unkC1 is a single s8 player-slot field assigned once at spawn
+        // (gInitPlayerUnit, 800579D4.c:190) and shared by analog stick/port reads (800538C8.c:56),
+        // weapon sound voice slots (80046CF0.c:76), surface/invulnerability checks (80053188.c:160-195,223),
+        // HUD layout/scoring (80047F30.c:207,210,214,229), and radar side origin selection
+        // (8005A9C4.c:109: side 1 -> 0x780000, otherwise 0x280000). walker.Port models that +0xC1 field.
+        int side = walker?.Port ?? Player.ValueC1;
 
         // func_8006C080 reads the three slot ids at +0x90 and their counters at +0x84/+0x8A straight
         // out of the player control block, so the bar shows the live loadout of the fire path.
@@ -502,7 +511,7 @@ public sealed class MenuFlow
                     Value84 = slots.Ammo.ToArray(),
                     Value8A = slots.Reserve.ToArray(),
                     Value90 = slots.SlotIds.Select(id => (int)id).ToArray(),
-                    ValueC1 = walker?.Port ?? Player.ValueC1,
+                    ValueC1 = side,
                 },
             };
         }
@@ -516,7 +525,7 @@ public sealed class MenuFlow
             {
                 Value58 = health,
                 Value5C = reciprocal,
-                ValueC1 = walker?.Port ?? Player.ValueC1,
+                ValueC1 = side,
             },
         };
     }
