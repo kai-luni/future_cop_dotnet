@@ -315,6 +315,7 @@ sealed class MenuWindow : IDisposable
     private IntPtr pixmap, windowGc, windowPicture, pixmapPicture;
     private int outWidth, outHeight;
     private bool _needsRedraw;
+    private bool _sizeDirty = true;
 
     /// <summary>
     /// True once after a resize or expose, so the caller knows it must repaint at the new size.
@@ -373,7 +374,8 @@ sealed class MenuWindow : IDisposable
                 case 10: flow.ClearHeldKeys(); break; // FocusOut
                 // ConfigureNotify (22) and Expose (12) mean the window was resized or uncovered:
                 // the frame has to be recomposited at the new size.
-                case 12: case 22: _needsRedraw = true; break;
+                case 12: _needsRedraw = true; break;
+                case 22: _needsRedraw = true; _sizeDirty = true; break;
                 case 17: case 33: return false;
             }
         }
@@ -427,28 +429,34 @@ sealed class MenuWindow : IDisposable
             XFlush(display);
             return;
         }
-        if (XGetGeometry(display, window, out _, out _, out _, out uint w, out uint h, out _, out _) == 0)
+        if (_sizeDirty || outWidth <= 0 || outHeight <= 0)
         {
-            XFlush(display);
-            return;
-        }
-        int targetW = (int)w, targetH = (int)h;
-        if (targetW <= 0 || targetH <= 0) targetW = width;
-        if (targetH <= 0) targetH = height;
-        if (targetW != outWidth || targetH != outHeight)
-        {
-            outWidth = targetW;
-            outHeight = targetH;
-            // XRender applies a picture transform to the *source* sampling coordinates, so the matrix
-            // on the pixmap picture maps destination pixels back to the 640x480 source: scale by
-            // source/target. 16.16 fixed point.
-            int sx = (int)(((long)width << 16) / targetW);
-            int sy = (int)(((long)height << 16) / targetH);
-            XRenderSetPictureTransform(display, pixmapPicture, new[] { sx, 0, 0, 0, sy, 0, 0, 0, 0x10000 });
+            if (XGetGeometry(display, window, out _, out _, out _, out uint w, out uint h, out _, out _) == 0)
+            {
+                XFlush(display);
+                return;
+            }
+            _sizeDirty = false;
+            int targetW = (int)w, targetH = (int)h;
+            if (targetW <= 0) targetW = width;
+            if (targetH <= 0) targetH = height;
+            if (targetW != outWidth || targetH != outHeight)
+            {
+                outWidth = targetW;
+                outHeight = targetH;
+                // XRender applies a picture transform to the *source* sampling coordinates, so the matrix
+                // on the pixmap picture maps destination pixels back to the 640x480 source: scale by
+                // source/target. 16.16 fixed point.
+                int sx = (int)(((long)width << 16) / targetW);
+                int sy = (int)(((long)height << 16) / targetH);
+                XRenderSetPictureTransform(display, pixmapPicture, new[] { sx, 0, 0, 0, sy, 0, 0, 0, 0x10000 });
+                XRenderSetPictureFilter(display, pixmapPicture,
+                    targetW == width && targetH == height ? "nearest" : "bilinear", IntPtr.Zero, 0);
+            }
         }
         // Composite the whole window area; the source transform stretches the 640x480 frame over it.
         XRenderComposite(display, 3 /* PictOpSrc */, pixmapPicture, IntPtr.Zero, windowPicture,
-            0, 0, 0, 0, 0, 0, (uint)targetW, (uint)targetH);
+            0, 0, 0, 0, 0, 0, (uint)outWidth, (uint)outHeight);
         XFlush(display);
     }
 

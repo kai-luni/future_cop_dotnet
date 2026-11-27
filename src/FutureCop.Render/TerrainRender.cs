@@ -210,15 +210,15 @@ public static class TerrainRender
             avg = (SlotZ(verts, o0) + SlotZ(verts, o1) + SlotZ(verts, o2) + SlotZ(verts, o3)) >> 2;
         }
 
-        var o = new byte[PacketWords * 4];
-        void W32(int at, uint value) => BinaryPrimitives.WriteUInt32LittleEndian(o.AsSpan(at), value);
-        void W16(int at, ushort value) => BinaryPrimitives.WriteUInt16LittleEndian(o.AsSpan(at), value);
-        void Grey(int at, byte c) { o[at] = c; o[at + 1] = c; o[at + 2] = c; }
-        W32(0, (uint)avg & 0xFFFFFF);
+        Span<byte> o = stackalloc byte[PacketWords * 4];
+        static void W32(Span<byte> buf, int at, uint value) => BinaryPrimitives.WriteUInt32LittleEndian(buf.Slice(at), value);
+        static void W16(Span<byte> buf, int at, ushort value) => BinaryPrimitives.WriteUInt16LittleEndian(buf.Slice(at), value);
+        static void Grey(Span<byte> buf, int at, byte c) { buf[at] = c; buf[at + 1] = c; buf[at + 2] = c; }
+        W32(o, 0, (uint)avg & 0xFFFFFF);
 
         int descriptor = s.DescriptorOffset + (int)((arg1 >> 21) & 0x7FE);
         int uvAt = s.UvOffset + (int)(arg1 & 0x7FE);
-        var uv = new ushort[4];
+        Span<ushort> uv = stackalloc ushort[4];
         for (int i = 0; i < 4; i++) uv[i] = s.TableU16(uvAt + i * 2);
         uint t3 = s.TableU16(descriptor);
         if ((t3 & 0x800) != 0)
@@ -227,13 +227,13 @@ public static class TerrainRender
         uint k = t3 >> 13;
         uint semi = (t3 & 0x1000) >> 11;
         uint v0w = (uint)SlotW0(verts, o0), v1w = (uint)SlotW0(verts, o1), v2w = (uint)SlotW0(verts, o2), v3w = (uint)SlotW0(verts, o3);
-        void Clut(int at, ushort e)
+        static void Clut(Span<byte> buf, int at, ushort e)
         {
             int sh = e >> 15;
             uint m = 0x1Fu << (sh + 2);
-            o[at] = (byte)(((uint)e >> (8 - sh)) & m);
-            o[at + 1] = (byte)(((uint)e >> (3 - sh)) & m);
-            o[at + 2] = (byte)(((uint)e << (sh + 2)) & m);
+            buf[at] = (byte)(((uint)e >> (8 - sh)) & m);
+            buf[at + 1] = (byte)(((uint)e >> (3 - sh)) & m);
+            buf[at + 2] = (byte)(((uint)e << (sh + 2)) & m);
         }
         ushort Colour(uint i) => s.TableU16(s.ColourOffset + (int)i * 2);
         ushort Desc(int i) => s.TableU16(descriptor + i * 2);
@@ -243,26 +243,26 @@ public static class TerrainRender
             case 0:
             case 1:
             {
-                Grey(4, (byte)(t3 & 0xFC));
-                W32(0xC, uv[0] | (a0 & 0xFFFF0000));
-                W32(0x14, uv[1] | (a0 << 16));
-                W32(8, v0w);
-                W32(0x10, v1w);
+                Grey(o, 4, (byte)(t3 & 0xFC));
+                W32(o, 0xC, uv[0] | (a0 & 0xFFFF0000));
+                W32(o, 0x14, uv[1] | (a0 << 16));
+                W32(o, 8, v0w);
+                W32(o, 0x10, v1w);
                 if (k == 0)
                 {
                     o[3] = 7;
                     o[7] = (byte)(semi | 0x24);
-                    W32(0x18, v2w);
-                    W16(0x1C, uv[2]);
+                    W32(o, 0x18, v2w);
+                    W16(o, 0x1C, uv[2]);
                 }
                 else
                 {
                     o[3] = 9;
                     o[7] = (byte)(semi | 0x2C);
-                    W16(0x24, uv[2]);
-                    W16(0x1C, uv[3]);
-                    W32(0x20, v2w);
-                    W32(0x18, v3w);
+                    W16(o, 0x24, uv[2]);
+                    W16(o, 0x1C, uv[3]);
+                    W32(o, 0x20, v2w);
+                    W32(o, 0x18, v3w);
                 }
                 break;
             }
@@ -272,33 +272,33 @@ public static class TerrainRender
             {
                 o[3] = 9;
                 o[7] = (byte)(semi | 0x34);
-                W32(0xC, uv[0] | (a0 & 0xFFFF0000));
-                W32(0x18, uv[1] | (a0 << 16));
-                W16(0x24, uv[2]);
-                W32(8, v0w);
-                W32(0x14, v1w);
-                W32(0x20, v2w);
+                W32(o, 0xC, uv[0] | (a0 & 0xFFFF0000));
+                W32(o, 0x18, uv[1] | (a0 << 16));
+                W16(o, 0x24, uv[2]);
+                W32(o, 8, v0w);
+                W32(o, 0x14, v1w);
+                W32(o, 0x20, v2w);
                 if (k == 2)
                 {
                     uint g = (t3 << 16) | Desc(1);
-                    Grey(4, (byte)((g >> 16) & 0xFC));
-                    Grey(0x10, (byte)((g >> 10) & 0xFC));
-                    Grey(0x1C, (byte)((g >> 4) & 0xFC));
+                    Grey(o, 4, (byte)((g >> 16) & 0xFC));
+                    Grey(o, 0x10, (byte)((g >> 10) & 0xFC));
+                    Grey(o, 0x1C, (byte)((g >> 4) & 0xFC));
                 }
                 else if (k == 4)
                 {
-                    Clut(4, Colour(t3 & 0xFF));
+                    Clut(o, 4, Colour(t3 & 0xFF));
                     uint next = Desc(1);
-                    Clut(0x10, Colour(next >> 8));
-                    Clut(0x1C, Colour(next & 0xFF));
+                    Clut(o, 0x10, Colour(next >> 8));
+                    Clut(o, 0x1C, Colour(next & 0xFF));
                 }
                 else
                 {
                     uint ty = t3 & 7;
                     byte c = ty != 1 ? ctx.Ramp[arg3 & 0xFF] : ctx.Ramp[hi | lo1];
-                    Grey(4, c);
-                    Grey(0x1C, ctx.Ramp[ty == 3 ? (hi1 | lo1) : (hi1 | lo)]);
-                    Grey(0x10, ctx.Ramp[(ty == 3 || ty == 0) ? (hi | lo1) : (hi1 | lo1)]);
+                    Grey(o, 4, c);
+                    Grey(o, 0x1C, ctx.Ramp[ty == 3 ? (hi1 | lo1) : (hi1 | lo)]);
+                    Grey(o, 0x10, ctx.Ramp[(ty == 3 || ty == 0) ? (hi | lo1) : (hi1 | lo1)]);
                 }
                 break;
             }
@@ -306,42 +306,42 @@ public static class TerrainRender
             {
                 o[3] = 0xC;
                 o[7] = (byte)(semi | 0x3C);
-                W32(0xC, uv[0] | (a0 & 0xFFFF0000));
-                W32(0x18, uv[1] | (a0 << 16));
-                W16(0x30, uv[2]);
-                W16(0x24, uv[3]);
-                W32(8, v0w);
-                W32(0x14, v1w);
-                W32(0x2C, v2w);
-                W32(0x20, v3w);
+                W32(o, 0xC, uv[0] | (a0 & 0xFFFF0000));
+                W32(o, 0x18, uv[1] | (a0 << 16));
+                W16(o, 0x30, uv[2]);
+                W16(o, 0x24, uv[3]);
+                W32(o, 8, v0w);
+                W32(o, 0x14, v1w);
+                W32(o, 0x2C, v2w);
+                W32(o, 0x20, v3w);
                 if (k == 3)
                 {
                     uint g = (t3 << 16) | Desc(1);
-                    Grey(4, (byte)((g >> 16) & 0xFC));
-                    Grey(0x10, (byte)((g >> 10) & 0xFC));
-                    Grey(0x28, (byte)((g >> 4) & 0xFC));
-                    Grey(0x1C, (byte)((g & 0x3F) << 2));
+                    Grey(o, 4, (byte)((g >> 16) & 0xFC));
+                    Grey(o, 0x10, (byte)((g >> 10) & 0xFC));
+                    Grey(o, 0x28, (byte)((g >> 4) & 0xFC));
+                    Grey(o, 0x1C, (byte)((g & 0x3F) << 2));
                 }
                 else if (k == 5)
                 {
-                    Clut(4, Colour(t3 & 0xFF));
+                    Clut(o, 4, Colour(t3 & 0xFF));
                     uint next = Desc(1);
-                    Clut(0x10, Colour(next >> 8));
-                    Clut(0x28, Colour(next & 0xFF));
-                    Clut(0x1C, Colour((uint)Desc(2) >> 8));
+                    Clut(o, 0x10, Colour(next >> 8));
+                    Clut(o, 0x28, Colour(next & 0xFF));
+                    Clut(o, 0x1C, Colour((uint)Desc(2) >> 8));
                 }
                 else
                 {
-                    Grey(4, ctx.Ramp[arg3 & 0xFF]);
-                    Grey(0x10, ctx.Ramp[hi | lo1]);
-                    Grey(0x28, ctx.Ramp[hi1 | lo1]);
-                    Grey(0x1C, ctx.Ramp[hi1 | lo]);
+                    Grey(o, 4, ctx.Ramp[arg3 & 0xFF]);
+                    Grey(o, 0x10, ctx.Ramp[hi | lo1]);
+                    Grey(o, 0x28, ctx.Ramp[hi1 | lo1]);
+                    Grey(o, 0x1C, ctx.Ramp[hi1 | lo]);
                 }
                 break;
             }
         }
         var words = new uint[PacketWords];
-        for (int i = 0; i < PacketWords; i++) words[i] = BinaryPrimitives.ReadUInt32LittleEndian(o.AsSpan(i * 4));
+        for (int i = 0; i < PacketWords; i++) words[i] = BinaryPrimitives.ReadUInt32LittleEndian(o.Slice(i * 4));
         packets.Add(words);
     }
 }

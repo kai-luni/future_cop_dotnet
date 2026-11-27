@@ -555,11 +555,16 @@ public static class RadarMarkers
         RadarMarkerNode? node,
         int playerCount = 1,
         int sessionMode = 0,
-        RadarReference? otherPlayer = null) =>
-        DrawRadarMarkers(
+        RadarReference? otherPlayer = null)
+    {
+        Span<int> colorTable = stackalloc int[MarkerColorTableLength];
+        RetailMarkerColors.CopyTo(colorTable);
+        MarkerPulseColors(frameTime, colorTable.Slice(PulseFirstColorIndex, PulseColorCount));
+        return DrawRadarMarkers(
             reference, side, frameTime, node,
-            ResolveMarkerColorTable(frameTime), RadiusTable,
+            colorTable, RadiusTable,
             playerCount, sessionMode, otherPlayer);
+    }
 
     /// <summary>
     /// Pure port of <c>func_8005A9C4</c> (<c>gDrawRadarMarkers</c>, <c>8005A9C4.c:95-145</c>) with an

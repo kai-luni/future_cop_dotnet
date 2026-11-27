@@ -40,7 +40,10 @@ header), index u32, data[length-12]}` (decomp ref: `func_80012E48`).
 ```bash
 dotnet run --project tools/FcAssetTool -- list build/disc/files/CW/M1A1.MIS
 dotnet run --project tools/FcAssetTool -- dump build/disc/files/CW/M1A1.MIS 11
+dotnet run -c Release --project tools/FcLevelBench -- --frames 400
 ```
+
+`tools/FcLevelBench` benchmarks the headless `MenuFlow` -> `LevelScene` simulation, software rasterizer, HUD, and BGRX blit path with deterministic input (`--zone 0|1|2|3|4|all`, `--mode play|combat|idle`, `--frames`, `--warmup`, `--no-render`, `--no-blit`).
 
 ### Main menu prototype (Linux/X11)
 

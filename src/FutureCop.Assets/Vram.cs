@@ -31,6 +31,9 @@ public sealed class Vram
         destination.Revision = Revision;
     }
 
+    /// <summary>Backing 1024x512 VRAM cells for callers that hoist page/CLUT decoding out of pixel loops.</summary>
+    public ReadOnlySpan<ushort> Cells => _cells;
+
     /// <summary>Reads a 16-bit little-endian cell at VRAM coordinates (<paramref name="x"/>, <paramref name="y"/>).</summary>
     public ushort ReadCell(int x, int y)
     {
