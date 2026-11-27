@@ -59,7 +59,12 @@ public static class ModelRender
 
     /// <summary>func_80015B68 for types 3/4/5/6; false = rejected or self-submitting type.</summary>
     public static bool PartPrep(int flags, byte i0, byte i1, byte i2, byte i3,
-        ScreenVertex[] vtx, short[] widths, int bias, out Work work)
+        ScreenVertex[] vtx, short[] widths, int bias, out Work work) =>
+        PartPrep(flags, i0, i1, i2, i3, vtx.AsSpan(), widths, bias, out work);
+
+    /// <summary>func_80015B68 for types 3/4/5/6 over a bounded vertex span; false = rejected or self-submitting type.</summary>
+    public static bool PartPrep(int flags, byte i0, byte i1, byte i2, byte i3,
+        ReadOnlySpan<ScreenVertex> vtx, short[] widths, int bias, out Work work)
     {
         work = default;
         switch ((flags >> 8) & 0xF)
@@ -124,6 +129,11 @@ public static class ModelRender
 
     /// <summary>Masked part walk appending accepted faces to <paramref name="destination"/>.</summary>
     public static void WalkTextured(IReadOnlyList<Polygon> parts, ScreenVertex[] vtx,
+        short[] widths, int mask, int bias, List<TexturedFace> destination) =>
+        WalkTextured(parts, vtx.AsSpan(), widths, mask, bias, destination);
+
+    /// <summary>Masked part walk over a bounded vertex span appending accepted faces to <paramref name="destination"/>.</summary>
+    public static void WalkTextured(IReadOnlyList<Polygon> parts, ReadOnlySpan<ScreenVertex> vtx,
         short[] widths, int mask, int bias, List<TexturedFace> destination)
     {
         for (int i = 0; i < parts.Count; i++)
@@ -146,9 +156,9 @@ public static class ModelRender
         return sv;
     }
 
-    /// <summary>func_80013F08 single-list path writing into a caller-supplied scratch buffer.</summary>
+    /// <summary>func_80013F08 single-list path writing into a caller-supplied scratch span.</summary>
     public static void Project(Gte.Loaded r, IReadOnlyList<Vertex> verts,
-        int h, int ofx, int ofy, int widthMode, ScreenVertex[] destination)
+        int h, int ofx, int ofy, int widthMode, Span<ScreenVertex> destination)
     {
         for (int i = 0; i < verts.Count; i++)
         {

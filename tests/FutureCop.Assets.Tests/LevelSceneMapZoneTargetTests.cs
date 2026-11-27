@@ -721,6 +721,73 @@ public class LevelSceneMapZoneTargetTests
         Assert.Equal(1, pads.VmState.GameSession[RpnsVmState.SessionHelisP2]);
     }
 
+    /// <summary>
+    /// Snapshot semantics for <see cref="LevelScene.MapZoneCandidates"/> and
+    /// <see cref="PurchasePadSystem.TargetCandidates"/>: holding a returned table across subsequent
+    /// <see cref="PurchasePadSystem.SyncTargetCandidates"/> rebuilds or
+    /// <see cref="LevelScene.AddMapZoneCandidate"/> / <see cref="PurchasePadSystem.AddTargetCandidate"/>
+    /// mutations keeps the original snapshot intact, never throws <see cref="InvalidOperationException"/>
+    /// during enumeration, and rejects in-place mutation.
+    /// </summary>
+    [ConftFact]
+    public void MapZoneCandidatesAndTargetCandidatesReturnIsolatedReadOnlySnapshots()
+    {
+        var scene = LoadScene();
+        var pads = scene.PurchasePads!;
+
+        var initialExtra = new SyntheticEntity(8101) { RecordId = 57, NodeId = 57, DispatchType = 5 };
+        scene.AddMapZoneCandidate(initialExtra);
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+
+        var sceneSnapshot = scene.MapZoneCandidates();
+        var propSnapshot = pads.TargetCandidates;
+        var originalItems = sceneSnapshot.ToArray();
+        Assert.NotEmpty(originalItems);
+        Assert.Equal(originalItems.Length, propSnapshot.Count);
+        Assert.Contains(sceneSnapshot, c => ReferenceEquals(c, initialExtra));
+
+        // Returned snapshots must reject list mutation.
+        if (sceneSnapshot is IList<ICsacNodeId?> sceneList)
+        {
+            Assert.True(sceneList.IsReadOnly);
+            Assert.Throws<NotSupportedException>(() => sceneList.Add(null));
+        }
+        if (propSnapshot is IList<ICsacNodeId?> propList)
+        {
+            Assert.True(propList.IsReadOnly);
+            Assert.Throws<NotSupportedException>(() => propList.Add(null));
+        }
+
+        // Mutate the internal buffer while actively enumerating both snapshots.
+        var addedLater = new SyntheticEntity(8102) { RecordId = 75, NodeId = 75, DispatchType = 5 };
+        var seenFromScene = new List<ICsacNodeId?>();
+        foreach (var item in sceneSnapshot)
+        {
+            if (seenFromScene.Count == 0)
+            {
+                scene.AddMapZoneCandidate(addedLater);
+                pads.SyncTargetCandidates(Array.Empty<LiveEntity>(), Array.Empty<ICsacNodeId>());
+            }
+            seenFromScene.Add(item);
+        }
+
+        var seenFromProp = new List<ICsacNodeId?>();
+        foreach (var item in propSnapshot)
+        {
+            if (seenFromProp.Count == 0)
+                pads.AddTargetCandidate(new SyntheticEntity(8103) { RecordId = 7, NodeId = 7, DispatchType = 5 });
+            seenFromProp.Add(item);
+        }
+
+        Assert.Equal(originalItems, seenFromScene);
+        Assert.Equal(originalItems, seenFromProp);
+        Assert.DoesNotContain(sceneSnapshot, c => ReferenceEquals(c, addedLater));
+
+        // Fresh reads reflect the new state after SyncTargetCandidates + AddTargetCandidate.
+        var fresh = scene.MapZoneCandidates();
+        Assert.Contains(fresh, c => ReferenceEquals(c, addedLater));
+    }
+
     private static string Dump(LevelScene scene, PurchasePad pad, MechBody walker) =>
         $"zone={pad.RecordId} nodeId={pad.TargetId} flags=0x{pad.Flags:X2} " +
         $"walker=({walker.X},{walker.Y},{walker.Z}) target={scene.MapZoneTargetOf(pad)?.RecordId.ToString() ?? "none"} " +

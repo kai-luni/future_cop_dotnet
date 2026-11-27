@@ -518,7 +518,7 @@ public sealed class LevelScene
             // :119: the timer is compared against delta only; it is never decremented here.
             if (node.MapZoneTimer < dt)
             {
-                var target = PurchasePadSystem.SelectMapZoneTarget(node, pads.TargetCandidates); // :120-144
+                var target = pads.SelectMapZoneTarget(node); // :120-144
                 if (!ReferenceEquals(node.MapZoneTarget, target))          // :145-150
                 {
                     node.MapZoneTarget = target;
@@ -572,9 +572,12 @@ public sealed class LevelScene
     public bool IsMapZoneReleased(PurchasePad node) => node.Released;
 
     /// <summary>
-    /// D_800A8F90 as the map-zone scan reads it (80031DE8.c:119-144): the frame's active entities
-    /// (<see cref="EntityWorld.Active"/>, exactly what the scene publishes to
+    /// A read-only snapshot of D_800A8F90 as the map-zone scan reads it (80031DE8.c:119-144): the
+    /// frame's active entities (<see cref="EntityWorld.Active"/>, published to
     /// <see cref="PurchasePadSystem.TargetCandidates"/>) followed by the candidates an owner added.
+    /// The returned list is isolated from subsequent frame rebuilds and
+    /// <see cref="AddMapZoneCandidate"/> calls (or returns the caller-owned table after
+    /// <see cref="SetMapZoneCandidates"/>).
     /// </summary>
     public IReadOnlyList<ICsacNodeId?> MapZoneCandidates() =>
         _purchasePads?.TargetCandidates ?? Array.Empty<ICsacNodeId?>();
@@ -619,7 +622,9 @@ public sealed class LevelScene
     public ICsacNodeId? MapZoneTarget(PurchasePad node, IReadOnlyList<ICsacNodeId?>? candidates = null)
     {
         ArgumentNullException.ThrowIfNull(node);
-        return PurchasePadSystem.SelectMapZoneTarget(node, candidates ?? MapZoneCandidates());
+        return candidates is not null
+            ? PurchasePadSystem.SelectMapZoneTarget(node, candidates)
+            : _purchasePads?.SelectMapZoneTarget(node);
     }
 
     /// <summary>Faces and marker lines the last <see cref="Render"/> drew for the Sky Captain.</summary>
@@ -719,6 +724,8 @@ public sealed class LevelScene
     public int AdvanceWalker(int steps, uint flags, AnalogPad pad)
     {
         if (_walker is null || _walkerWorld is null) throw new InvalidOperationException("Attach a walker first");
+        // D_800A8F90 membership for the map-zone scan of this frame (80031DE8.c:119-144).
+        _entities?.CullActive(_walker.X, _walker.Z);
         ObjectRegistry.CullActiveElevators(_walker.X, _walker.Z);
         _walkerWorld.Pads[0] = pad;
         // func_800588D4:259 runs the player unit update, not the bare walker: func_80055988 applies the
@@ -755,10 +762,7 @@ public sealed class LevelScene
         _weapons?.AdvanceRecoil(RetailClock.TicksPerFrame * frames);
         UpdateWalkerPose();
         _weapons?.Advance(_walker, _parts, padWord, RetailClock.TicksPerFrame * frames);
-        // AdvanceRetirement already runs CullActive at the updated walker position; when no whole
-        // frame elapsed, still refresh D_800A8F90 membership for the map-zone scan (80031DE8.c:119-144).
         if (frames > 0) AdvanceRetirement();
-        else _entities?.CullActive(_walker.X, _walker.Z);
         // Tick placed type-10 elevators on the walker clock when EnableCsacSpawner is off; when
         // EnableCsacSpawner is on, AdvanceSkyCaptain broadcasts message 6 over LiveObjects once.
         if (!EnableCsacSpawner && ticks > 0 && ObjectRegistry.Elevators.Count > 0)
@@ -1457,7 +1461,7 @@ public sealed class LevelScene
     }
 
     /// <summary>Textured, colour-modulated triangle; xy = packed screen word, uv = low 16 bits (u | v &lt;&lt; 8).</summary>
-    private void Tri(uint xy0, uint uv0, uint c0, uint xy1, uint uv1, uint c1, uint xy2, uint uv2, uint c2,
+    internal void Tri(uint xy0, uint uv0, uint c0, uint xy1, uint uv1, uint c1, uint xy2, uint uv2, uint c2,
         ushort tpage, ushort clut, bool semi)
     {
         int x0 = Sx(xy0), y0 = Sy(xy0), x1 = Sx(xy1), y1 = Sy(xy1), x2 = Sx(xy2), y2 = Sy(xy2);
@@ -1596,17 +1600,18 @@ public sealed class LevelScene
     /// </summary>
     private Gte.Mat PickupMatrix(WeaponPickup item, Gte.Mat view) => PlacedMatrix(item.X, item.Y, item.Z, view);
 
-    private int QueueModel(Model model, IReadOnlyList<Vertex> verts, int frame, Gte.Mat matrix, int mask, ref int drawOrder)
+    internal int QueueModel(Model model, IReadOnlyList<Vertex> verts, int frame, Gte.Mat matrix, int mask, ref int drawOrder)
     {
         if (_projectedScratch.Length < verts.Count)
             _projectedScratch = new ScreenVertex[verts.Count];
+        Span<ScreenVertex> projected = _projectedScratch.AsSpan(0, verts.Count);
         if (model.IsScripted)
-            ScriptRender.Project(model, verts, frame, matrix, Focal, Ofx, Ofy, 1, _projectedScratch);
+            ScriptRender.Project(model, verts, frame, matrix, Focal, Ofx, Ofy, 1, projected);
         else
-            ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1, _projectedScratch);
+            ModelRender.Project(Gte.Load(matrix), verts, Focal, Ofx, Ofy, 1, projected);
         var widths = _widthsByModelId.TryGetValue(model.Id, out var w) ? w : Array.Empty<short>();
         _facesScratch.Clear();
-        ModelRender.WalkTextured(model.Polygons, _projectedScratch, widths, mask, 0, _facesScratch);
+        ModelRender.WalkTextured(model.Polygons, projected, widths, mask, 0, _facesScratch);
         int count = _facesScratch.Count;
         for (int i = 0; i < count; i++)
             _drawQueue.Add(new DrawItem { Key = _facesScratch[i].Work.Z, Order = drawOrder++, Face = _facesScratch[i], Model = model });
@@ -1725,7 +1730,7 @@ public sealed class LevelScene
         }
     }
 
-    private void FlatFace(TexturedFace face, uint colour)
+    internal void FlatFace(TexturedFace face, uint colour)
     {
         void Fill(uint p0, uint p1, uint p2)
         {

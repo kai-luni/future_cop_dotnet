@@ -180,11 +180,11 @@ public static class ScriptRender
         return sv;
     }
 
-    /// <summary>func_80013F08 scripted path writing into a caller-supplied scratch buffer.</summary>
+    /// <summary>func_80013F08 scripted path writing into a caller-supplied scratch span.</summary>
     public static void Project(Model model, IReadOnlyList<Vertex> verts, int frame,
-        Gte.Mat instance, int h, int ofx, int ofy, int widthMode, ScreenVertex[] destination)
+        Gte.Mat instance, int h, int ofx, int ofy, int widthMode, Span<ScreenVertex> destination)
     {
-        Array.Clear(destination, 0, verts.Count);
+        destination.Slice(0, verts.Count).Clear();
         foreach (var bone in Bones(model, frame, instance))
         {
             var loaded = Gte.Load(bone.Matrix);

@@ -734,14 +734,25 @@ public sealed class PurchasePadSystem
         }
     }
 
+    private IReadOnlyList<ICsacNodeId?> _targetCandidates = Array.Empty<ICsacNodeId?>();
+
     /// <summary>
-    /// The candidate table D_800A8F90 the map-zone scan of 80031DE8.c:119-144 walks
-    /// (<c>gCommandListHead.count</c> / <c>targets[]</c>), null entries skipped. The owning scene
+    /// A read-only snapshot of the candidate table D_800A8F90 the map-zone scan of 80031DE8.c:119-144
+    /// walks (<c>gCommandListHead.count</c> / <c>targets[]</c>), null entries skipped. The owning scene
     /// publishes <see cref="EntityWorld.Active"/> here each frame through
     /// <see cref="SyncTargetCandidates"/>; the walker entity D_8009FA58[0] can be listed as well
-    /// (func_80031DE8 tests it as a node of node id -1, never as a candidate).
+    /// (func_80031DE8 tests it as a node of node id -1, never as a candidate). Reading this property
+    /// returns an isolated read-only snapshot when backed by the internal per-frame buffer, so callers
+    /// holding the table are unaffected by subsequent frame rebuilds or
+    /// <see cref="AddTargetCandidate"/> mutations; caller-assigned tables are returned as assigned.
     /// </summary>
-    public IReadOnlyList<ICsacNodeId?> TargetCandidates { get; set; } = Array.Empty<ICsacNodeId?>();
+    public IReadOnlyList<ICsacNodeId?> TargetCandidates
+    {
+        get => ReferenceEquals(_targetCandidates, _syncedCandidates)
+            ? (_syncedCandidates.Count == 0 ? Array.Empty<ICsacNodeId?>() : Array.AsReadOnly(_syncedCandidates.ToArray()))
+            : _targetCandidates;
+        set => _targetCandidates = value;
+    }
 
     /// <summary>
     /// True when the frame must rebuild <see cref="TargetCandidates"/> from the active entities and
@@ -823,9 +834,16 @@ public sealed class PurchasePadSystem
             if (seen.Add(extra))
                 list.Add(extra);
         }
-        TargetCandidates = list;
+        _targetCandidates = list;
         TargetCandidatesStale = false;
     }
+
+    /// <summary>
+    /// Selects the map-zone target for <paramref name="node"/> from the current candidate table
+    /// without allocating a snapshot copy.
+    /// </summary>
+    public ICsacNodeId? SelectMapZoneTarget(PurchasePad node) =>
+        SelectMapZoneTarget(node, _targetCandidates);
 
     /// <summary>
     /// Adds a candidate to the D_800A8F90 scan besides the active entities; a null entry is an empty
@@ -836,19 +854,19 @@ public sealed class PurchasePadSystem
         if (candidate is not null && !ExtraCandidates.Any(c => ReferenceEquals(c, candidate)))
         {
             ExtraCandidates.Add(candidate);
-            if (!TargetCandidates.Any(c => ReferenceEquals(c, candidate)))
+            if (!_targetCandidates.Any(c => ReferenceEquals(c, candidate)))
             {
                 // Make the candidate visible to a scan that runs before the next frame rebuild.
-                if (ReferenceEquals(TargetCandidates, _syncedCandidates))
+                if (ReferenceEquals(_targetCandidates, _syncedCandidates))
                 {
                     _syncedCandidates.Add(candidate);
                 }
                 else
                 {
-                    var list = new ICsacNodeId?[TargetCandidates.Count + 1];
-                    for (int i = 0; i < TargetCandidates.Count; i++) list[i] = TargetCandidates[i];
+                    var list = new ICsacNodeId?[_targetCandidates.Count + 1];
+                    for (int i = 0; i < _targetCandidates.Count; i++) list[i] = _targetCandidates[i];
                     list[^1] = candidate;
-                    TargetCandidates = list;
+                    _targetCandidates = list;
                 }
             }
         }
@@ -867,7 +885,7 @@ public sealed class PurchasePadSystem
         ArgumentNullException.ThrowIfNull(node);
         if (node.Kind != PurchasePadKind.MapZone) throw new ArgumentException($"{node.RecordId} is no map zone", nameof(node));
         if (node.Released || node.MapZoneReleasePending || !node.IsEnabled) return node.MapZoneTarget;
-        var target = SelectMapZoneTarget(node, TargetCandidates);
+        var target = SelectMapZoneTarget(node, _targetCandidates);
         if (!ReferenceEquals(node.MapZoneTarget, target))
         {
             node.MapZoneTarget = target;
