@@ -16,7 +16,7 @@ namespace FutureCop.Assets.Tests;
 /// </summary>
 public sealed class RadarMarkerGoldenTests
 {
-    private const int ExpectedCases = 157;
+    private const int ExpectedCases = 183;
 
     public static IEnumerable<object[]> Rows()
     {
@@ -53,10 +53,10 @@ public sealed class RadarMarkerGoldenTests
         Assert.Equal(ExpectedCases, rows.Count);
         Assert.Equal(32, rows.Count(r => (string)r[0] == "COLOR"));
         Assert.Equal(74, rows.Count(r => (string)r[0] == "PULSE"));
-        Assert.Equal(12, rows.Count(r => (string)r[0] == "LINE"));
+        Assert.Equal(23, rows.Count(r => (string)r[0] == "LINE"));
         Assert.Equal(12, rows.Count(r => (string)r[0] == "TRI"));
-        Assert.Equal(13, rows.Count(r => (string)r[0] == "BEARING"));
-        Assert.Equal(14, rows.Count(r => (string)r[0] == "DRAW"));
+        Assert.Equal(17, rows.Count(r => (string)r[0] == "BEARING"));
+        Assert.Equal(25, rows.Count(r => (string)r[0] == "DRAW"));
     }
 
     /// <summary>
