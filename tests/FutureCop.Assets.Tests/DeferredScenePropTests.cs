@@ -10,7 +10,7 @@ namespace FutureCop.Assets.Tests;
 /// Tests the Cact type-0x60 deferred-scene asset branch
 /// (<c>gLoadActorChunk.c:109-110</c>, <c>func_80084110</c> -> <c>gSpawnSceneNode</c>) on the
 /// shipped PA/CONFT.MIS: the 89 static scene nodes, their Cobj model resolution, the ground snap of
-/// <c>gSpawnSceneNode.c:292-299</c>, the (x &gt;&gt; 17, z &gt;&gt; 17) bucket of <c>:429</c>, the 5x5
+/// the 3DBB-centred (x &gt;&gt; 17, z &gt;&gt; 17) bucket of <c>:360-431</c>, the 5x5
 /// cell-window cull the viewer shares with <c>gDrawCellWindowModels.c:91-146</c>, and the two
 /// home-base purchase pad volumes that are now part of the normal frame.
 /// </summary>
@@ -114,12 +114,14 @@ public sealed class DeferredScenePropTests
         return registry.SceneProps;
     }
 
-    private static string HkMission()
+    private static string PaMission(string name)
     {
-        string hk = Path.Combine(Path.GetDirectoryName(Mission())!, "HK.MIS");
-        Assert.True(File.Exists(hk), "PA/HK.MIS is missing from the retail disc.");
-        return hk;
+        string path = Path.Combine(Path.GetDirectoryName(Mission())!, name);
+        Assert.True(File.Exists(path), $"PA/{name} is missing from the retail disc.");
+        return path;
     }
+
+    private static string HkMission() => PaMission("HK.MIS");
 
     /// <summary>
     /// Record 86 is one of the twelve CONFT records whose flag byte +0x1D has bit 0x40. Retail then
@@ -170,9 +172,30 @@ public sealed class DeferredScenePropTests
     }
 
     /// <summary>
-    /// HK is the one shipped map where the raw <c>x &gt;&gt; 17</c> origin bucket is wrong: the model
-    /// bound centre rotates 13 of the 151 props into a neighbouring cell. Every prop must match the
-    /// bucket retail computes from <c>FrameBounds[0][0..2] &lt;&lt; 4</c> through the node basis
+    /// Retail bucket of <paramref name="prop"/>: the first 3DBB bound centre
+    /// (<c>Model.FrameBounds[0][0..2]</c>) through <c>gGteLoadRotation</c> (func_80010820, which
+    /// stores <c>R = F * M^T</c>) and <c>gGteTransformWords</c> (func_8001006C: mvmva over V0,
+    /// IR1..IR3 out, <c>&lt;&lt; 4</c>), plus the node origin, bucketed <c>&gt;&gt; 17</c>
+    /// (<c>gSpawnSceneNode.c:360-431</c>). Rebuilding the path from the two GTE primitives keeps the
+    /// test independent of the registry's bucket code and pins the load transpose: the x offset comes
+    /// from column 0 of the engine matrix (<c>basis[0]</c>, <c>basis[3]</c>, <c>basis[6]</c>), not
+    /// from row 0.
+    /// </summary>
+    private static (int Row, int Column) CentreBucket(SceneProp prop, IReadOnlyList<short[]> bounds)
+    {
+        var basis = new int[9];
+        prop.Basis(basis);
+        var rotation = Gte.Load(new Gte.Mat(basis, 0, 0, 0));
+        var (offsetX, _, offsetZ, _) = Gte.Mvmva(rotation, bounds[0][0], bounds[0][1], bounds[0][2]);
+        return ((prop.X + (offsetX << 4)) >> 17, (prop.Z + (offsetZ << 4)) >> 17);
+    }
+
+    /// <summary>
+    /// Three shipped maps carry type-0x60 records whose rotated bound centre leaves the raw
+    /// <c>x &gt;&gt; 17</c> origin bucket: 14 of HK's 151 props, and 4 of JOKE's and 4 of SLIM's 75
+    /// (see <see cref="JokeAndSlimBucketFourOfSeventyFivePropsByTheRotatedBoundCentre"/>). CONFT and
+    /// OVMP move none, which is why the CONFT raster goldens cannot see this. Every prop must match
+    /// the bucket retail computes from <c>FrameBounds[0][0..2] &lt;&lt; 4</c> through the node basis
     /// (<c>gSpawnSceneNode.c:360-431</c>).
     /// </summary>
     [RetailFact]
@@ -189,27 +212,69 @@ public sealed class DeferredScenePropTests
         registry.InitMissionSpawnState();
         Assert.Equal(151, registry.PlaceDeferredSceneAssets(MissionEntities.Load(file)));
 
-        var basis = new int[9];
         int drifted = 0;
         foreach (var prop in registry.SceneProps)
         {
-            var centre = models[prop.ModelId].FrameBounds[0];
-            prop.Basis(basis);
-            int offsetX = (basis[0] * (centre[0] << 4) + basis[1] * (centre[1] << 4)
-                + basis[2] * (centre[2] << 4)) >> 16;
-            int offsetZ = (basis[6] * (centre[0] << 4) + basis[7] * (centre[1] << 4)
-                + basis[8] * (centre[2] << 4)) >> 16;
-            Assert.Equal((prop.X + offsetX) >> 17, prop.Row);
-            Assert.Equal((prop.Z + offsetZ) >> 17, prop.Column);
-            if (prop.Row != prop.X >> 17 || prop.Column != prop.Z >> 17) drifted++;
+            var expected = CentreBucket(prop, models[prop.ModelId].FrameBounds);
+            Assert.Equal(expected.Row, prop.Row);
+            Assert.Equal(expected.Column, prop.Column);
+            if (expected != (prop.X >> 17, prop.Z >> 17)) drifted++;
         }
 
-        // Non-vacuous: the centre moves 13 props off their origin bucket, e.g. id 325 from cell
-        // (8, 7) to (9, 7).
-        Assert.Equal(13, drifted);
-        var spot = registry.SceneProps.Single(p => p.Id == 325);
-        Assert.Equal((8, 7), (spot.X >> 17, spot.Z >> 17));
-        Assert.Equal((9, 7), (spot.Row, spot.Column));
+        // Non-vacuous: the centre moves 14 props off their origin bucket. The pair below is the
+        // transposition probe: id 303 crosses the row edge to (6, 9) and id 347 keeps its cell,
+        // while a row-wise multiply puts them at (6, 10) and (7, 5).
+        Assert.Equal(14, drifted);
+        var shifted = registry.SceneProps.Single(p => p.Id == 303);
+        Assert.Equal((6, 10), (shifted.X >> 17, shifted.Z >> 17));
+        Assert.Equal((6, 9), (shifted.Row, shifted.Column));
+
+        var kept = registry.SceneProps.Single(p => p.Id == 347);
+        Assert.Equal((8, 5), (kept.X >> 17, kept.Z >> 17));
+        Assert.Equal((8, 5), (kept.Row, kept.Column));
+    }
+
+    /// <summary>
+    /// JOKE and SLIM each file four of their 75 type-0x60 props under a neighbouring cell, the same
+    /// four records: 129, 130 and 131 cross column 5 to 6 and 196 crosses row 6 to 5. Both maps are
+    /// asserted so the centred bucket is pinned on three maps, not only on HK.
+    /// </summary>
+    [RetailFact]
+    public void JokeAndSlimBucketFourOfSeventyFivePropsByTheRotatedBoundCentre()
+    {
+        foreach (var name in new[] { "JOKE.MIS", "SLIM.MIS" })
+        {
+            var file = new MisFile(PaMission(name));
+            var map = LevelMap.FromBytes(file.Bytes);
+            var models = file.Models.ToDictionary(m => m.Id);
+            var registry = new MapObjectRegistry
+            {
+                PlacementHeight = (x, z, rank) => LevelGround.PlacementHeight(map, x, z, rank) ?? 0,
+                ResolveModel = id => models.TryGetValue(id, out var model) ? model : null,
+            };
+            registry.InitMissionSpawnState();
+            Assert.Equal(75, registry.PlaceDeferredSceneAssets(MissionEntities.Load(file)));
+
+            int drifted = 0;
+            foreach (var prop in registry.SceneProps)
+            {
+                var expected = CentreBucket(prop, models[prop.ModelId].FrameBounds);
+                Assert.Equal(expected.Row, prop.Row);
+                Assert.Equal(expected.Column, prop.Column);
+                if (expected != (prop.X >> 17, prop.Z >> 17)) drifted++;
+            }
+            Assert.Equal(4, drifted);
+
+            foreach (var id in new[] { 129, 130, 131 })
+            {
+                var prop = registry.SceneProps.Single(p => p.Id == id);
+                Assert.Equal((4, 5), (prop.X >> 17, prop.Z >> 17));
+                Assert.Equal((5, 5), (prop.Row, prop.Column));
+            }
+            var rowEdge = registry.SceneProps.Single(p => p.Id == 196);
+            Assert.Equal((4, 6), (rowEdge.X >> 17, rowEdge.Z >> 17));
+            Assert.Equal((4, 5), (rowEdge.Row, rowEdge.Column));
+        }
     }
 
     /// <summary>

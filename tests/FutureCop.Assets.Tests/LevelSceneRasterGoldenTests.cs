@@ -25,25 +25,31 @@ namespace FutureCop.Assets.Tests;
 /// still the pre-blend digests of <c>aa1d386</c> and the probe pins the blend alone. Zone 0's
 /// no-blend values (<c>52B29872…</c>, <c>B597E0C6…</c>) are not <c>aa1d386</c>'s: they were recorded
 /// with the props present, and they differ from the pre-todo-50 no-blend values
-/// (<c>D756CAE9…</c>, <c>53C1A939…</c>) by the props.
+/// (<c>D756CAE9…</c>, <c>4A9D690F…</c>) by the props and the two pad outlines.
 ///
 /// todo 50 added the 89 Cact type-0x60 static scene nodes (the P1 base props around the spawn) and
 /// the two home-base purchase pad outlines to the normal frame.
-/// <see cref="LevelScene.ScenePropsDisabled"/> leaves the prop pass out and reproduces the
-/// pre-todo-50 frames exactly: frame 0 becomes <c>C8ACDF08…</c> blended and <c>D756CAE9…</c> without
-/// the blend (D756CAE9 is <c>aa1d386</c>'s frame 0, where neither the props nor the blend existed),
-/// frame 120 becomes <c>53C1A939…</c> both ways. Hence at frame 120 the blend changes nothing outside
-/// the props (<c>58292EA4…</c> vs <c>B597E0C6…</c> are 8190 prop pixels), while at frame 0 the pad
-/// outlines paint nothing in the spawn view and the 14 blend pixels are the player mech's, so the
-/// remaining delta is the props'. Both are asserted by
-/// <see cref="WithoutTheDeferredScenePropsTheConftFrameIsThePreTodo50Frame"/>.
+/// <see cref="LevelScene.ScenePropsDisabled"/> leaves the prop pass out and
+/// <see cref="LevelScene.BasePadOutlinesDisabled"/> the pad outlines; together they reproduce the
+/// pre-todo-50 image, which is what
+/// <see cref="WithoutTheDeferredScenePropsAndPadOutlinesTheConftFrameIsThePreTodo50Frame"/> asserts:
+/// frame 0 becomes <c>C8ACDF08…</c> blended and <c>D756CAE9…</c> without the blend (D756CAE9 is
+/// <c>aa1d386</c>'s frame 0, where neither the props nor the blend existed), frame 120 becomes
+/// <c>4A9D690F…</c> both ways - the frame-120 digest <c>cf7e6cf</c> recorded before todo 50, which
+/// the blend did not change there either, because once the props are gone no semi-transparent texel
+/// is left. With the props off but the pad outlines still on, frame 120 is <c>53C1A939…</c> in
+/// either blend mode, the outlines' share of that frame, while frame 0 stays <c>C8ACDF08…</c>: the
+/// two outlines project nothing into the spawn view. That makes the frame-120 blend delta of the
+/// full frame (<c>58292EA4…</c> vs <c>B597E0C6…</c>, 8190 prop pixels) and the 14 frame-0 pixels the
+/// props'.
 ///
 /// The rework of the scene-prop review findings (the +0x1D bit-0x40 sound form now keeps the third
-/// angle at 0, buckets come from the rotated 3DBB bound centre) left both hashed frames unchanged:
-/// neither frame draws one of the 12 sound-form props (the visible set is 194-197 and 223 at frame 0
-/// and those plus 225, 249, 262 and 368 at frame 120, all model 62 pads; the sound-form buckets are
-/// outside the 5x5 window or rejected by its mask), and CONFT has no prop whose centred bucket
-/// differs from its origin bucket. Re-hashing with the old unrestricted third angle reproduces
+/// angle at 0, buckets come from the 3DBB bound centre through the GTE load/transform pair) left
+/// both hashed frames unchanged: neither frame draws one of the 12 sound-form props (the visible set
+/// is 194-197 and 223 at frame 0 and those plus 225, 249, 262 and 368 at frame 120, all model 62
+/// pads; the sound-form buckets are outside the 5x5 window or rejected by its mask), and CONFT has
+/// no prop whose centred bucket differs from its origin bucket (HK moves 14, JOKE and SLIM 4 each,
+/// OVMP none). Re-hashing with the old unrestricted third angle reproduces
 /// <c>F4739454…</c> / <c>58292EA4…</c> byte for byte.
 /// </summary>
 public class LevelSceneRasterGoldenTests
@@ -200,30 +206,61 @@ public class LevelSceneRasterGoldenTests
     }
 
     /// <summary>
-    /// Automated counterpart of the attribution claim: the same CONFT open with
-    /// <see cref="LevelScene.ScenePropsDisabled"/> set, i.e. the frame the port produced before todo 50
-    /// placed the 89 static scene nodes. The expected values are the pre-todo-50 digests
-    /// (<c>C8ACDF08…</c> blended, <c>D756CAE9…</c> without the blend - the latter is also
-    /// <c>aa1d386</c>'s frame, which had neither the props nor the blend). The 89 nodes stay placed:
-    /// the switch leaves out the draw pass, which is pixel-equivalent because placement has no other
-    /// side effect.
+    /// Automated counterpart of the attribution claim: the same CONFT open with both todo-50
+    /// additions switched off - <see cref="LevelScene.ScenePropsDisabled"/> for the 89 static scene
+    /// nodes and <see cref="LevelScene.BasePadOutlinesDisabled"/> for the two home-base pad outlines.
+    /// The expected values are the pre-todo-50 goldens of <c>cf7e6cf</c>: <c>C8ACDF08…</c> blended
+    /// and <c>D756CAE9…</c> without the blend at frame 0 (<c>D756CAE9</c> is also <c>aa1d386</c>'s
+    /// frame, which had neither the props nor the blend), <c>4A9D690F…</c> at frame 120 both ways.
+    /// The 89 nodes stay placed: the switches leave out draw passes only, which is pixel-equivalent
+    /// because placement has no other side effect.
     /// </summary>
     [ConftFact]
-    public void WithoutTheDeferredScenePropsTheConftFrameIsThePreTodo50Frame()
+    public void WithoutTheDeferredScenePropsAndPadOutlinesTheConftFrameIsThePreTodo50Frame()
     {
         var (flow, level) = OpenLevel(0, "CONFT.MIS");
         Assert.Equal(89, level.ObjectRegistry.SceneProps.Count);
         level.ScenePropsDisabled = true;
 
+        // Frame 0 with the props off: the twelve pad outline lines are drawn yet change no pixel, so
+        // this is already the pre-todo-50 frame 0 of cf7e6cf.
         level.Render(flow.Camera);
         Assert.Equal(0, level.ScenePropPrimitives);
         Assert.Equal(0, level.VisibleSceneProps);
+        Assert.Equal(12, level.BasePadLines);
+        Assert.Equal("C8ACDF087AFC8E7F674E6155004BB027C5D9696D30436D41C79661A2449AB324",
+            Sha256Hex(level.Rgb));
+
+        level.BasePadOutlinesDisabled = true;
+        level.Render(flow.Camera);
+        Assert.Equal(0, level.BasePadLines);
         Assert.Equal("C8ACDF087AFC8E7F674E6155004BB027C5D9696D30436D41C79661A2449AB324",
             Sha256Hex(level.Rgb));
 
         level.SemiBlendDisabled = true;
         level.Render(flow.Camera);
         Assert.Equal("D756CAE99866A944B67649D9DB0F61DA0AE591A0E967AFFEA8BBFC450ECE0452",
+            Sha256Hex(level.Rgb));
+
+        Replay(flow);
+        level.Render(flow.Camera);
+        Assert.Equal("4A9D690FDFE8E795ADD89CC1AB591C8AB2BF29FEC848BD93C777A55C25466982",
+            Sha256Hex(level.Rgb));
+
+        // Without the props nothing semi-transparent is left, so the blend changes no pixel of the
+        // pre-todo-50 frame 120 and the value holds with the blend re-enabled.
+        level.SemiBlendDisabled = false;
+        level.Render(flow.Camera);
+        Assert.Equal("4A9D690FDFE8E795ADD89CC1AB591C8AB2BF29FEC848BD93C777A55C25466982",
+            Sha256Hex(level.Rgb));
+
+        // The pad outlines alone: not a pre-todo-50 value (both blend modes measure 53C1A939…), but
+        // it pins their share of the frame-120 image, which is what the props-only switch measured.
+        level.BasePadOutlinesDisabled = false;
+        level.SemiBlendDisabled = true;
+        level.Render(flow.Camera);
+        Assert.Equal(12, level.BasePadLines);
+        Assert.Equal("53C1A939653EFD3D6359BCFDBE44D4F9B1D795E26627F94CD5EBFFACCA82595F",
             Sha256Hex(level.Rgb));
     }
 
