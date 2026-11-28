@@ -602,19 +602,19 @@ public sealed class WireframeScene
 
         if (face.Type == 3)
         {
-            RasterizeTriangle(x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u2, v2, hasRec, rec);
+            RasterizeTriangle(x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u2, v2, hasRec, rec, face.Semi);
         }
         else if (face.Type == 4)
         {
             // Work holds (v0, v1, v3, v2) in (Xy0, Xy1, Xy2, Xy3).
-            RasterizeTriangle(x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u3, v3, hasRec, rec);
-            RasterizeTriangle(x1, y1, u1, v1, x3, y3, u2, v2, x2, y2, u3, v3, hasRec, rec);
+            RasterizeTriangle(x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u3, v3, hasRec, rec, face.Semi);
+            RasterizeTriangle(x1, y1, u1, v1, x3, y3, u2, v2, x2, y2, u3, v3, hasRec, rec, face.Semi);
         }
         else
         {
             // Billboards (type 5/6) store (top-left, top-right, bottom-left, bottom-right).
-            RasterizeTriangle(x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u2, v2, hasRec, rec);
-            RasterizeTriangle(x1, y1, u1, v1, x3, y3, u3, v3, x2, y2, u2, v2, hasRec, rec);
+            RasterizeTriangle(x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u2, v2, hasRec, rec, face.Semi);
+            RasterizeTriangle(x1, y1, u1, v1, x3, y3, u3, v3, x2, y2, u2, v2, hasRec, rec, face.Semi);
         }
     }
 
@@ -622,7 +622,7 @@ public sealed class WireframeScene
         int x0, int y0, int u0, int v0,
         int x1, int y1, int u1, int v1,
         int x2, int y2, int u2, int v2,
-        bool hasRec, TextureRecord rec)
+        bool hasRec, TextureRecord rec, bool semi = false)
     {
         int area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
         if (area == 0) return;
@@ -664,10 +664,28 @@ public sealed class WireframeScene
                 double b2 = w2 * invArea;
                 int u = (int)Math.Round(b0 * u0 + b1 * u1 + b2 * u2);
                 int v = (int)Math.Round(b0 * v0 + b1 * v1 + b2 * v2);
-                var (r, g, b, transparent) = _textures!.Vram.SampleRgb(rec.Tpage, rec.Clut, u, v);
+                ushort raw = _textures!.Vram.SampleRaw(rec.Tpage, rec.Clut, u, v);
+                var (r, g, b, transparent) = Vram.Abgr1555ToRgb(raw);
                 if (transparent) continue;
 
                 int dst = (y * Width + x) * 3;
+                // Semi-transparent face: PS1 blends the texel when its STP bit (15) is set, using the
+                // ABR mode of the texture page (tpage bits 5..6). See LevelScene.Tri for the same table.
+                if (semi && (raw & 0x8000) != 0)
+                {
+                    int br = Rgb[dst], bg = Rgb[dst + 1], bb = Rgb[dst + 2];
+                    switch ((rec.Tpage >> 5) & 3)
+                    {
+                        case 0:
+                            r = (byte)((br + r) >> 1); g = (byte)((bg + g) >> 1); b = (byte)((bb + b) >> 1); break;
+                        case 1:
+                            r = (byte)Math.Min(255, br + r); g = (byte)Math.Min(255, bg + g); b = (byte)Math.Min(255, bb + b); break;
+                        case 2:
+                            r = (byte)Math.Max(0, br - r); g = (byte)Math.Max(0, bg - g); b = (byte)Math.Max(0, bb - b); break;
+                        default:
+                            r = (byte)Math.Min(255, br + (r >> 2)); g = (byte)Math.Min(255, bg + (g >> 2)); b = (byte)Math.Min(255, bb + (b >> 2)); break;
+                    }
+                }
                 Rgb[dst] = r;
                 Rgb[dst + 1] = g;
                 Rgb[dst + 2] = b;
