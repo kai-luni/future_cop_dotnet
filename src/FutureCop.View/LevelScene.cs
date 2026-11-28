@@ -481,6 +481,10 @@ public sealed class LevelScene
             // list walk of func_80031DE8 (:90): a unit due this frame stands in D_800A8F90 for this
             // frame's scan, which is why the drain precedes it.
             _csacSpawner.Drain(dt);
+            // gCullActiveEntitiesSolo (800271A4.c:178) rebuilds D_800A8F90 before the zone scan (:90)
+            // and the command pass (func_8004CECC) read it. AdvanceWalker normally ran it already for
+            // this frame; this path can also run without the walker step, so it culls on its own.
+            _entities?.CullActive(_walker?.X ?? MechWorld.X, _walker?.Z ?? MechWorld.Z);
             AdvancePurchasePads(dt);
             // gRunSoloSessionFrame (800271A4.c:210-212) sweeps retired entities after spawners and
             // timers, decrementing Csac TotalSpawned via gRecordSpawnedUnitRetirement (8004D598.c:51-52).
