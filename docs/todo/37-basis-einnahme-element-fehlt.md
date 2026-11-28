@@ -12,6 +12,8 @@ In the capturable bases an element is presumably missing that the player trigger
 
 Assessment by Kai during the playtest of PR #22 (Precinct Assault, 1 player, Sky Captain). Not yet proven whether such an object exists in the original and which one it is.
 
+Confirmed again in Kai's playtest report during the review of batch PR #27 (Precinct Assault, 1 player, build before that batch): a base still cannot be captured, and the activating element is still not visible.
+
 ## Task
 
 Determine from the PS1 original and the retail map data how a base is captured and which object is provided for it. If it is missing in the port, add loading, rendering and triggering faithful to the original.
