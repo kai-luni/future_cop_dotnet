@@ -561,7 +561,8 @@ public sealed class MenuFlow
             if (!Profile)
             {
                 Level.Render(Camera);
-                InGameHud.Paint(Level.Rgb, BuildHud(), Level.ScoreSession(Session), Globals, Level.Vram);
+                InGameHud.Paint(Level.Rgb, BuildHud(), Level.ScoreSession(Session),
+                    Level.HudGlobals(Globals), Level.Vram);
                 FrameBlit.RgbToBgrx(Level.Rgb, LevelScene.Width, LevelScene.Height, bgrx, scale);
                 return;
             }
@@ -574,7 +575,8 @@ public sealed class MenuFlow
             Cells = Level.VisibleCells;
             t = Stopwatch.GetTimestamp();
             a = GC.GetAllocatedBytesForCurrentThread();
-            InGameHud.Paint(Level.Rgb, BuildHud(), Level.ScoreSession(Session), Globals, Level.Vram);
+            InGameHud.Paint(Level.Rgb, BuildHud(), Level.ScoreSession(Session),
+                Level.HudGlobals(Globals), Level.Vram);
             BytesHud = GC.GetAllocatedBytesForCurrentThread() - a;
             MsHud = Stopwatch.GetElapsedTime(t).TotalMilliseconds;
             t = Stopwatch.GetTimestamp();

@@ -257,6 +257,23 @@ public interface ICsacNodeId
 /// <see cref="CsacUnitSpawner.ApplyCommandById"/>, and routes op 56 (<c>cmd 0x7A</c>) pad-enable
 /// commands (<c>func_80031004</c>).
 /// </summary>
+/// <remarks>
+/// A pad buys one unit at a time, not one per mission. The four dreadnought scripts of CONFT.MIS
+/// latch their offer in a <c>gScriptVmVars</c> word (<c>ScriptVars[18]</c> at pool 0x63F for Cact 47,
+/// <c>[20]</c> at 0x65F for Cact 51, <c>[19]</c>/<c>[21]</c> at 0x67F/0x69F for the P2 sides):
+/// <c>push 1; push latch; op 32</c> stores exactly 1 (80069D68.c:240-241), and the gate is
+/// <c>op 37</c> = <c>a = (b &lt; a)</c> (80069D68.c:340-341) with <c>a = 1</c>, so a stored 1 refuses
+/// the next attempt (the else arm stores 73 through op 30, <c>gGameSession[a + 0x39] = b</c>,
+/// 80069D68.c:234-235, with a = 3, i.e. session word 60: the port's <c>SfxPurchaseDenied</c>).
+/// Nothing in the RPNS pool raises that word back -
+/// the Cact record's second script slot does: the unit the pad queues (Csac 7/8/57/6) carries a
+/// retire script that stores 0 in the same word (pool 0x6CB / 0x6E3 / 0x6BF / 0x6D7) and pays 5 to
+/// the opposing score words. <c>gRetireEntity</c> runs the entity's +0x98 script through
+/// <c>gInterpretEntityScript</c> (8004D958.c:54); that +0x98 word is the record's second script slot,
+/// the same word the loader fills from request +0x24/+0x28 (the zone loader documents the request's
+/// +0x24 word as the script it stores at node +0x18, gLoadMapZone.c:95). So the pad re-arms only when
+/// its bought unit is destroyed - never on a timer and never by the Cfun blob.
+/// </remarks>
 public sealed class PurchasePadSystem
 {
     private const uint TagShoc = 0x53484F43u;

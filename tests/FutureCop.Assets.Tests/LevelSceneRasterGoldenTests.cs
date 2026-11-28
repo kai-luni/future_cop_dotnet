@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using FcMainMenu;
+using FutureCop.Game;
 using FutureCop.Game.Mech;
 using FutureCop.View;
 using Xunit;
@@ -10,23 +11,12 @@ namespace FutureCop.Assets.Tests;
 /// <summary>
 /// Pixel-level regression tests for <see cref="LevelScene.Rgb"/> and its software triangle
 /// rasterizer (<see cref="LevelScene.Tri"/> / <see cref="LevelScene.FlatFace"/>), plus scratch
-/// projection bounds (<see cref="LevelScene.QueueModel"/>). Golden SHA-256 digests were recorded
-/// on the pre-optimization baseline commit (<c>c574c46</c>).
+/// projection bounds (<see cref="LevelScene.QueueModel"/>). The SHA-256 digests pin the default
+/// render at spawn and after a deterministic 120-frame replay.
 ///
-/// The digests of zone 0 frame 0, zone 3 frame 0 and zone 3 frame 120 were re-recorded when the model
-/// path started honouring the retail semi-transparency bit (<c>func_80015F38:73</c>, tpage ABR bits
-/// 5..6), which blends the player mech's semi parts: 14 changed pixels in an 8x5 box on zone 0, 83
-/// pixels in a 21x20 box on zone 3 frame 0 and 77 pixels in two clusters (75 + 2) around the screen
-/// centre on zone 3 frame 120. Zone 0 frame 120 is unchanged.
-///
-/// The attribution is reproducible instead of asserted: <see cref="LevelScene.SemiBlendDisabled"/>
-/// switches the ABR blend of <see cref="LevelScene.Tri"/> off, and
-/// <see cref="WithoutTheSemiBlendTheSameReplayReproducesThePreBlendDigests"/> replays exactly the
-/// frames below with that switch set and expects the pre-blend digests of <c>aa1d386</c> - the commit
-/// before the blend landed. Same input, same code, only the blend differs, so a digest change in these
-/// frames is the blend's and nothing else's (in particular the unit-heading branches of todo 38 paint
-/// no pixel here: they stay active in that probe). To re-derive the values by hand, set
-/// <see cref="LevelScene.SemiBlendDisabled"/> after the level is opened and hash the same two frames.
+/// The blend probe runs the same input with only <see cref="LevelScene.SemiBlendDisabled"/> set.
+/// The pre-todo-50 CONFT frames are still reproducible with both the type-0x60 scene props and the
+/// type-11 signs omitted. Trigger volumes are no longer drawn in the normal frame.
 /// </summary>
 public class LevelSceneRasterGoldenTests
 {
@@ -128,8 +118,8 @@ public class LevelSceneRasterGoldenTests
 
     [ConftTheory]
     [InlineData(0, "CONFT.MIS",
-        "C8ACDF087AFC8E7F674E6155004BB027C5D9696D30436D41C79661A2449AB324",
-        "4A9D690FDFE8E795ADD89CC1AB591C8AB2BF29FEC848BD93C777A55C25466982")]
+        "F4739454351EBE74C559CECC88884C15B689243261B0D94A915BC4B0B8CCE44A",
+        "DA0C43D8583D5C42816707C170B44AA3821AFFCB17F436D6B7E39C3A08C9F840")]
     [InlineData(3, "OVMP.MIS",
         "3BEA86CE03C1647E58FE0D5CA9758527D1A39342BDD33584548B97A62FA7B067",
         "87277EF36724F75044F1190037F3F8EE8840D1EDA489AE61FD4E3B71D2F19175")]
@@ -147,20 +137,17 @@ public class LevelSceneRasterGoldenTests
         string frameNHash = Sha256Hex(level.Rgb);
 
         Assert.Equal(expectedFrame0Hash, frame0Hash);
-        Assert.Equal(expectedFrameNHash, frameNHash);
+        Assert.True(expectedFrameNHash == frameNHash, $"Frame 120: expected {expectedFrameNHash}, got {frameNHash}");
     }
 
     /// <summary>
-    /// Attribution probe for the three re-recorded digests: the same open and the same 120-frame play
-    /// input, with only the semi-transparency blend of <see cref="LevelScene.Tri"/> switched off. The
-    /// expected values are the digests of <c>aa1d386</c>, the commit before the blend landed; zone 0
-    /// frame 120 is the same in both runs. Because every other stage (terrain, mech, unit heading,
-    /// sorting, projection) is untouched by the switch, this pins the whole digest delta on the blend.
+    /// Attribution probe for the semi-transparency blend: the same open and the same 120-frame play
+    /// input, with only the blend of <see cref="LevelScene.Tri"/> switched off.
     /// </summary>
     [ConftTheory]
     [InlineData(0, "CONFT.MIS",
-        "D756CAE99866A944B67649D9DB0F61DA0AE591A0E967AFFEA8BBFC450ECE0452",
-        "4A9D690FDFE8E795ADD89CC1AB591C8AB2BF29FEC848BD93C777A55C25466982")]
+        "52B29872CC95AA27A3E51A38FEEC91B333CF0CF921ABCFE5241569614B065342",
+        "A8C482EC01C910E990DBAB8A405113A7E58DCD5B7E638C741F1B11913C25A7CC")]
     [InlineData(3, "OVMP.MIS",
         "0F27FE1D8D70AE6BAC3E48BFB7DC2837495F8E9F6EFD90AFDE25F8656EFF36E6",
         "3663C781D115AB48AB4A01EBB85A0CF9483466A3B0C01723DB45243DC969FA86")]
@@ -175,7 +162,72 @@ public class LevelSceneRasterGoldenTests
 
         Replay(flow);
         level.Render(flow.Camera);
-        Assert.Equal(expectedFrameNHash, Sha256Hex(level.Rgb));
+        string frameNHash = Sha256Hex(level.Rgb);
+        Assert.True(expectedFrameNHash == frameNHash, $"Frame 120: expected {expectedFrameNHash}, got {frameNHash}");
+    }
+
+    /// <summary>
+    /// With neither retail prop pass drawn the same CONFT replay yields the pre-todo-50 hashes.
+    /// </summary>
+    [ConftFact]
+    public void WithoutTheScenePropsAndTerrainSignsTheConftFrameIsThePreTodo50Frame()
+    {
+        var (flow, level) = OpenLevel(0, "CONFT.MIS");
+        Assert.Equal(89, level.ObjectRegistry.SceneProps.Count);
+        level.ScenePropsDisabled = true;
+        level.TerrainSignsDisabled = true;
+
+        level.Render(flow.Camera);
+        Assert.Equal(0, level.ScenePropPrimitives);
+        Assert.Equal(0, level.VisibleSceneProps);
+        Assert.Equal(0, level.PadMarkerLines);
+        Assert.Equal("C8ACDF087AFC8E7F674E6155004BB027C5D9696D30436D41C79661A2449AB324",
+            Sha256Hex(level.Rgb));
+
+        level.SemiBlendDisabled = true;
+        level.Render(flow.Camera);
+        Assert.Equal("D756CAE99866A944B67649D9DB0F61DA0AE591A0E967AFFEA8BBFC450ECE0452",
+            Sha256Hex(level.Rgb));
+
+        Replay(flow);
+        level.Render(flow.Camera);
+        Assert.Equal("4A9D690FDFE8E795ADD89CC1AB591C8AB2BF29FEC848BD93C777A55C25466982",
+            Sha256Hex(level.Rgb));
+
+        // Without the props nothing semi-transparent is left, so the blend changes no pixel of the
+        // pre-todo-50 frame 120 and the value holds with the blend re-enabled.
+        level.SemiBlendDisabled = false;
+        level.Render(flow.Camera);
+        Assert.Equal("4A9D690FDFE8E795ADD89CC1AB591C8AB2BF29FEC848BD93C777A55C25466982",
+            Sha256Hex(level.Rgb));
+    }
+
+    [ConftTheory]
+    [InlineData(10, 40, 90.0, 164, 82, 198, 139)] // Home-base aircraft sign.
+    [InlineData(11, 41, 0.0, 75, 87, 140, 144)] // Home-base tank sign.
+    [InlineData(147, 29, 0.0, 92, 53, 150, 140)] // Neutral outpost claim sign.
+    public void RetailPadSignsContributePixelsWithoutTheTriggerOverlay(
+        int id, int modelId, double yaw, int left, int top, int right, int bottom)
+    {
+        var (_, level) = OpenLevel(0, "CONFT.MIS");
+        var record = Assert.Single(MissionEntities.Load(new MisFile(level.MissionPath)),
+            r => r.Container == EntityContainer.Cact && r.Type == 11 && r.Id == id);
+        Assert.Equal(modelId, record.Model());
+
+        int y = LevelGround.Height(level.Map, record.X, 0x100000, record.Z, out _);
+        level.AttachWalker(new MechBody { X = record.X + 0x1600, Y = y, Z = record.Z - 0x1000, Form = 0 });
+        var camera = new LevelCamera(yaw, 20.0, 0x1200);
+        level.Render(camera);
+        Assert.Equal(0, level.PadMarkerLines);
+        byte[] withSigns = (byte[])level.Rgb.Clone();
+
+        level.TerrainSignsDisabled = true;
+        level.Render(camera);
+        int changed = 0;
+        for (int py = top; py < bottom; py++)
+            for (int px = left; px < right; px++)
+                if (Pixel(level.Rgb, px, py) != Pixel(withSigns, px, py)) changed++;
+        Assert.True(changed > 1000, $"Sign {id} changed only {changed} pixels in its view");
     }
 
     [ConftFact]

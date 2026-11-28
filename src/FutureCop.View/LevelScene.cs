@@ -37,7 +37,7 @@ public sealed record LevelCamera(double Yaw = 30.0, double Elevation = 35.0, int
 /// (PlayerForm) at the clip-rect centre in the static viewer, or at the mission spawn for WALK.
 /// The software rasterizer only turns the emitted packets into pixels; it is a viewer, not a GPU port.
 /// </summary>
-public sealed class LevelScene
+public sealed partial class LevelScene
 {
     public const int Width = 320;
     public const int Height = 240;
@@ -216,6 +216,7 @@ public sealed class LevelScene
         ObjectRegistry.InitMissionSpawnState();
         ObjectRegistry.ScreenState = MapObjectRegistry.ScreenStateLoading;
         ObjectRegistry.GroundHeight = pos => LevelGround.Height(Map, pos.X, pos.Y, pos.Z, out _);
+        ObjectRegistry.PlacementHeight = (x, z, rank) => LevelGround.PlacementHeight(Map, x, z, rank) ?? 0;
         ObjectRegistry.ResolveModel = id => _modelsById.TryGetValue(id, out var m) ? m : null;
         ObjectRegistry.ReadElevatorRider = ReadPlayerElevatorRider;
         ObjectRegistry.LoadFromMission(_file.Bytes);
@@ -247,6 +248,12 @@ public sealed class LevelScene
         // (func_80017668), animation/attack-scheduler callbacks (func_80044B34 / func_80060238 /
         // func_8005F6E8), and a dedicated carrier+child render pass.
         ObjectRegistry.PlaceMissionObjects(records);
+
+        // Cact type 0x60: static scene nodes, dispatched before entity creation
+        // (gLoadActorChunk.c:109-110 -> func_80084110 -> gSpawnSceneNode). CONFT.MIS carries 89,
+        // among them the five Cobj-62 props of the P1 base pad cells (8,12)..(9,13).
+        ObjectRegistry.PlaceDeferredSceneAssets(records);
+        LoadTerrainSigns(records);
 
         _csacSpawner = new CsacUnitSpawner(ObjectRegistry, world: _entities)
         {
@@ -942,6 +949,25 @@ public sealed class LevelScene
     public int PadMarkerLines { get; private set; }
 
     /// <summary>
+    /// Diagnostic switch of the Cact type-0x60 pass: when true <see cref="Render"/> leaves the
+    /// static scene nodes out of the frame. Production never sets it.
+    /// </summary>
+    internal bool ScenePropsDisabled { get; set; }
+
+    /// <summary>
+    /// Faces the last <see cref="Render"/> drew for the static scene nodes of the Cact type-0x60
+    /// branch in <see cref="ObjectRegistry.SceneProps"/>.
+    /// </summary>
+    public int ScenePropPrimitives { get; private set; }
+
+    /// <summary>
+    /// Scene props that fell inside the frame's 5x5 cell window with a non-zero cell mask, whether
+    /// or not their model could be drawn. The retail drawer culls on exactly that
+    /// (<c>gDrawCellWindowModels.c:91-100</c>); the subcell band test is not modelled.
+    /// </summary>
+    public int VisibleSceneProps { get; private set; }
+
+    /// <summary>
     /// The HUD session with the live score words (D_8009FA94 + 0x64). +0x5C is 1 in a Precinct Assault
     /// match: the match end branches on it (80027D9C.c:78, 80060A0C.c:114). The unit counters
     /// +0x6C..+0x78 (gGameSession[27..30]) and the cumulative helipad-claim totals +0x84/+0x88
@@ -969,6 +995,50 @@ public sealed class LevelScene
             Total1 = words[33],
             Total2 = words[34],
         };
+    }
+
+    /// <summary>
+    /// The second game block <c>D_8009F9EC</c> (extern at gDrawInGameHud.c:47) as the live one-player
+    /// Sky Captain publishes it. The retail block is the strategic drone object itself - gInitStrategicDrone
+    /// publishes it (<c>gSinglePlayerEntity = obj</c>, gInitStrategicDrone.c:243) - so its +0x1C/+0x1E are the
+    /// body's health and max health (gInitStrategicDrone.c:186-197, gUpdateStrategicDrone.c:134).
+    /// +0x134 is the 0xB4 AI record; gInitHudGauge starts the gauge record at AI +0xA0 with
+    /// (health, maxHealth) (gInitStrategicDrone.c:244-245, gInitHudGauge.c:39-56), which puts the value
+    /// at +0xA4 and the Q16 scale <c>0x600000 / maxHealth</c> at +0xA8. gUpdateStrategicDrone.c:134
+    /// refreshes +0xA4 from the body every tick, so the two words the HUD multiplies at
+    /// gDrawInGameHud.c:299-301 always describe the live health fraction.
+    /// </summary>
+    /// <returns>The block, or null when the mission has no live Sky Captain.</returns>
+    public HudGameBlock? SecondGameBlock
+    {
+        get
+        {
+            if (_skyCaptain?.Drone is not { } drone) return null;
+            int health = drone.Body.F1C;                  // game +0x1C
+            int maxHealth = drone.Body.F1E;               // game +0x1E
+            return new HudGameBlock
+            {
+                Health = health,
+                MaxHealth = maxHealth,
+                Extra = new HudExtraBlock
+                {
+                    A4 = health,                                              // ai +0xA4
+                    A8 = maxHealth > 0 ? 0x600000 / maxHealth : 0,            // ai +0xA8
+                },
+            };
+        }
+    }
+
+    /// <summary>
+    /// The host's HUD globals with <see cref="SecondGameBlock"/> attached: the port's feed for the
+    /// one-player second gauge, stage line and trailing slot icon of gDrawInGameHud.c:118-120,
+    /// :151-152 and gDrawThreeSlotStatusBar.c. The block is set from the live scene on every call and
+    /// is null when the mission has no live Sky Captain (retail keeps D_8009F9EC null then).
+    /// </summary>
+    public HudGlobals HudGlobals(HudGlobals globals)
+    {
+        ArgumentNullException.ThrowIfNull(globals);
+        return globals with { SecondGame = SecondGameBlock };
     }
 
     /// <summary>
@@ -1490,6 +1560,36 @@ public sealed class LevelScene
         DrawnSections = drawn;
         TilePackets = packetsTotal;
 
+        // Static scene nodes of the deferred-scene branch (Cact type 0x60): the node lives in the
+        // (x >> 17, z >> 17) bucket of the rotated 3DBB bound centre (gSpawnSceneNode.c:360-431) and
+        // gDrawCellWindowModels.c:91-146 only draws buckets inside the current 5x5 cell window whose
+        // mask is non-zero. The per-node subcell band test (mask & node->unk4E, :96-100) and the
+        // spin/animation clock (:149-238) are not modelled.
+        int scenePropPrims = 0;
+        int visibleProps = 0;
+        if (!ScenePropsDisabled && ObjectRegistry.SceneProps.Count > 0)
+        {
+            var propBasis = new int[9];
+            foreach (var prop in ObjectRegistry.SceneProps)
+            {
+                int row = prop.Row - originX, column = prop.Column - originZ;
+                if ((uint)row >= 5 || (uint)column >= 5) continue;
+                if (window[row * 5 + column].Mask == 0) continue;
+                visibleProps++;
+                if (!_modelsById.TryGetValue(prop.ModelId, out var propModel)
+                    || !propModel.Vertices.TryGetValue(1, out var propVerts) || propVerts.Count == 0) continue;
+                prop.Basis(propBasis);
+                var local = new Gte.Mat(propBasis,
+                    ((prop.X - MechWorld.X) >> 4) << 4,
+                    ((prop.Y - MechWorld.Y) >> 4) << 4,
+                    ((prop.Z - MechWorld.Z) >> 4) << 4);
+                var matrix = ScriptRender.Compose(local, view);
+                scenePropPrims += QueueModel(propModel, propVerts, 0, matrix, 0xFF, ref drawOrder);
+            }
+        }
+        ScenePropPrimitives = scenePropPrims;
+        VisibleSceneProps = visibleProps;
+
         // The walker: mech-local parts composed with the view, the same path as WireframeScene.
         int mechFaces = 0;
         var bodyView = view;
@@ -1544,6 +1644,7 @@ public sealed class LevelScene
             }
         }
         PickupPrimitives = pickupPrims;
+        QueueTerrainSigns(view, ref drawOrder);
 
         // Outposts (type 0x24): the record's own model and the child gInitObjectFromDef spawns from the
         // second aRSL model (8002C584.c:286-295), both at the outpost position, unrotated like pickups.
@@ -1693,6 +1794,7 @@ public sealed class LevelScene
     /// lines off distant rooftops. The cutoff borrows the initial range of the retail active-entity
     /// list (8004DF28.c:101,142), not its octagonal distance, overflow adjustment, or drawing rules.
     /// </remarks>
+    /// <param name="view">View matrix of the frame.</param>
     private int PadMarkers(Gte.Mat view)
     {
         if (_purchasePads is not { Pads.Count: > 0 } pads) return 0;
