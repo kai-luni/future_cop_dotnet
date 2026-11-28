@@ -59,8 +59,8 @@ public static class HoverEnemyTick
             int[] b = new int[3];
             if (!ChooseChaseTarget(o, b, w))
                 return 0;
-            Steer(o, b, dt, w);
-            SteerTail(o, dt, w);
+            int gL = Steer(o, b, dt, w);
+            SteerTail(o, dt, gL, w);
             return 0;
         }
     }
@@ -223,9 +223,9 @@ public static class HoverEnemyTick
     /// <summary>
     /// The L_AD4 steering spine (:300-356): chases b, honours the turn-away
     /// threshold, applies the altitude band, eases into the accumulator and
-    /// re-normalises the direction.
+    /// re-normalises the direction. Returns <c>gL</c> sampled at :325 for the :368 clamp.
     /// </summary>
-    private static void Steer(HoverEnemy o, int[] b, int dt, IHoverEnemyWorld w)
+    private static int Steer(HoverEnemy o, int[] b, int dt, IHoverEnemyWorld w)
     {
         unchecked
         {
@@ -278,6 +278,7 @@ public static class HoverEnemyTick
             if (dy < -0x8000) o.Dir[1] = -0x8000;
             else if (dy > 0x8000) o.Dir[1] = 0x8000;
             Normalize(o.Dir);
+            return gL;
         }
     }
 
@@ -285,7 +286,7 @@ public static class HoverEnemyTick
     /// L_AD4 tail (:358-377): banking-scaled move, attack-scheduler step and the
     /// basis rebuild from the eased velocity.
     /// </summary>
-    private static void SteerTail(HoverEnemy o, int dt, IHoverEnemyWorld w)
+    private static void SteerTail(HoverEnemy o, int dt, int gL, IHoverEnemyWorld w)
     {
         unchecked
         {
@@ -296,7 +297,6 @@ public static class HoverEnemyTick
             o.Pos[0] += Fmul(spd, o.Dir[0]);
             o.Pos[1] += Fmul(spd, o.Dir[1]);
             o.Pos[2] += Fmul(spd, o.Dir[2]);
-            int gL = w.SampleHeightBilinear(o.Pos) + (o.F6C << 4);
             if (o.Pos[1] < gL)
                 o.Pos[1] = gL;
             if (o.Type == 0x25 || o.FA == 0)
@@ -336,37 +336,22 @@ public static class HoverEnemyTick
     }
 
     /// <summary>func_8001ACA4 gVectorAddScaled: out = a + middle32(b * scale).</summary>
-    private static void AddScaled(int[] a, int[] b, int scale, int[] result)
-    {
-        for (int i = 0; i < 3; i++)
-            result[i] = unchecked(a[i] + Fmul(b[i], scale));
-    }
+    private static void AddScaled(int[] a, int[] b, int scale, int[] result) =>
+        EnemyMath.AddScaled(a, b, scale, result);
 
     /// <summary>func_8001A6F8 gEaseVectorQuarter: dst = (3*dst + src) &gt;&gt; 2 per component.</summary>
-    private static void EaseQuarterInto(int[] src, int[] dst)
-    {
-        for (int i = 0; i < 3; i++)
-            dst[i] = (dst[i] * 3 + src[i]) >> 2;
-    }
+    private static void EaseQuarterInto(int[] src, int[] dst) =>
+        MechMath.EaseVectorQuarter(src, dst);
 
     /// <summary>func_8001A750 gApproximateDistanceXzHalfMin on the x/z components.</summary>
-    private static int ApproxDistanceXz(int[] a, int[] b)
-    {
-        int x = a[0] - b[0];
-        if (x < 0) x = -x;
-        int z = a[2] - b[2];
-        if (z < 0) z = -z;
-        int sum = unchecked(x + z);
-        int d = unchecked(x - z);
-        int min = unchecked(((d >> 31) & d) + z);
-        return unchecked(sum - (min >> 1));
-    }
+    private static int ApproxDistanceXz(int[] a, int[] b) =>
+        EnemyMath.ApproxDistanceXz(a, b);
 
     /// <summary>func_8001A180 gNormalizeVector via MechMath.Normalize (16.16).</summary>
     private static void Normalize(int[] v) => MechMath.Normalize(v);
 
     /// <summary>Fmul macro (800324E0.c:54): bits 16..47 of the signed product.</summary>
-    private static int Fmul(int a, int b) => unchecked((int)(((long)a * b) >> 16));
+    private static int Fmul(int a, int b) => MechMath.Fmul(a, b);
 
     /// <summary>bits 16..47 of the raw 64-bit product (C Prod union read, :332-333).</summary>
     private static int Mid32(long product) => unchecked((int)(ulong)((ulong)product >> 16));

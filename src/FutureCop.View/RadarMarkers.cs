@@ -238,6 +238,76 @@ public static class RadarMarkers
     /// </summary>
     public static ReadOnlySpan<int> MarkerColorTable => RetailMarkerColors;
 
+    /// <summary>Number of colour entries pulsed per frame by <c>func_8004CC68</c> (<c>D_800A6F60[17..19]</c>).</summary>
+    public const int PulseColorCount = 3;
+
+    /// <summary>Index of the first pulsed entry (<c>D_800A6F60[17]</c> = <c>unk44</c>, <c>8004CAE4.c:91</c>).</summary>
+    public const int PulseFirstColorIndex = 17;
+
+    /// <summary><c>8004CC68.c:37</c>: mask folding <c>gFrameTime &gt;&gt; 3</c> onto the 64-phase ramp.</summary>
+    public const int PulsePhaseMask = 0x3F;
+
+    /// <summary><c>8004CC68.c:38-39</c>: ramp midpoint; phases at or above it are reflected.</summary>
+    public const int PulseReflectAt = 0x20;
+
+    /// <summary><c>8004CC68.c:41</c>: offset added to the reflected phase.</summary>
+    public const int PulseLevelOffset = 8;
+
+    /// <summary><c>8004CC68.c:42-43</c>: clamp applied to the offset level.</summary>
+    public const int PulseLevelClamp = 0x1F;
+
+    /// <summary>
+    /// Port of <c>func_8004CC68</c> (<c>gUpdateMarkerPulseColors</c>, <c>8004CC68.c:36-47</c>): folds
+    /// the low six bits of <paramref name="frameTime"/> / 8 into a triangular level 8..31 and packs it
+    /// into the three colour words retail writes over <c>D_800A6F60[17..19]</c> every frame.
+    /// </summary>
+    /// <param name="frameTime">Retail <c>gFrameTime</c> (<c>D_8009FAA4</c>, signed 32-bit counter).</param>
+    /// <param name="colors">Receives <c>unk44</c>, <c>unk48</c>, <c>unk4C</c> (indices 17, 18, 19).</param>
+    public static void MarkerPulseColors(int frameTime, Span<int> colors)
+    {
+        if (colors.Length < PulseColorCount)
+            throw new ArgumentException($"colors must hold {PulseColorCount} entries (D_800A6F60[17..19]).", nameof(colors));
+
+        unchecked
+        {
+            // 8004CC68.c:36-37 - level = (gFrameTime >> 3) & 0x3F (MIPS sra keeps the sign).
+            int level = (frameTime >> 3) & PulsePhaseMask;
+
+            // 8004CC68.c:38-40 - triangle: reflect phases 32..63 back down, 31 down to 0.
+            if (level >= PulseReflectAt)
+                level = PulsePhaseMask - level;
+
+            // 8004CC68.c:41-44 - lift the ramp by 8 and clamp it one step below the reflect point.
+            level += PulseLevelOffset;
+            if (level >= PulseReflectAt)
+                level = PulseLevelClamp;
+
+            // 8004CC68.c:45-47 - unk44 = red, unk48 = spectral blue/green mix, unk4C = green.
+            int half = level / 2;
+            colors[0] = level << 3;
+            colors[1] = (half << 3) | (half << 11) | (level << 19);
+            colors[2] = level << 11;
+        }
+    }
+
+    /// <summary>
+    /// Copies the retail 32-entry <see cref="MarkerColorTable"/> and applies
+    /// <see cref="MarkerPulseColors"/> for <paramref name="frameTime"/>, i.e. the state of
+    /// <c>D_800A6F60</c> after <c>func_8004CAE4</c> ran at level start (<c>80024A24.c:199</c>) and
+    /// <c>func_8004CC68</c> ran at the end of the current gameplay frame
+    /// (<c>8002703C.c:114</c>, after <c>D_8009FAA4</c> was updated at <c>8002703C.c:69</c>).
+    /// </summary>
+    /// <param name="frameTime">Retail <c>gFrameTime</c> (<c>D_8009FAA4</c>).</param>
+    /// <returns>
+    /// A fresh 32-entry table; entries 17..19 pulse, every other entry keeps its init value.
+    /// </returns>
+    public static int[] ResolveMarkerColorTable(int frameTime)
+    {
+        var table = (int[])RetailMarkerColors.Clone();
+        MarkerPulseColors(frameTime, table.AsSpan(PulseFirstColorIndex, PulseColorCount));
+        return table;
+    }
+
     /// <summary><c>func_8005A934</c> (<c>8005A934.c:49-50</c>): per-axis dead-zone threshold; targets must strictly exceed this.</summary>
     public const int TargetBearingDeadZone = 0x2000;
 
@@ -466,8 +536,9 @@ public static class RadarMarkers
 
     /// <summary>
     /// Pure port of <c>func_8005A9C4</c> (<c>gDrawRadarMarkers</c>, <c>8005A9C4.c:95-145</c>) using
-    /// the retail <see cref="RadiusTable"/> (<c>D_8009AFB4</c>) and retail
-    /// <see cref="MarkerColorTable"/> (<c>D_800A6F60</c>, <c>8004CAE4.c:57-105</c>).
+    /// the retail <see cref="RadiusTable"/> (<c>D_8009AFB4</c>) and the frame-resolved
+    /// <c>D_800A6F60</c> (<see cref="ResolveMarkerColorTable"/>: init table from
+    /// <c>8004CAE4.c:57-105</c> plus the per-frame pulse of <c>func_8004CC68</c>, <c>8004CC68.c:36-47</c>).
     /// </summary>
     /// <param name="reference">Reference entity world <c>(X, Z)</c> and signed 16-bit <c>Heading</c>.</param>
     /// <param name="side">HUD side selector (<c>object-&gt;unkAC-&gt;unkC1</c>; <c>1</c> selects <see cref="RightSideOriginX"/>, otherwise <see cref="LeftSideOriginX"/>).</param>
@@ -484,11 +555,16 @@ public static class RadarMarkers
         RadarMarkerNode? node,
         int playerCount = 1,
         int sessionMode = 0,
-        RadarReference? otherPlayer = null) =>
-        DrawRadarMarkers(
+        RadarReference? otherPlayer = null)
+    {
+        Span<int> colorTable = stackalloc int[MarkerColorTableLength];
+        RetailMarkerColors.CopyTo(colorTable);
+        MarkerPulseColors(frameTime, colorTable.Slice(PulseFirstColorIndex, PulseColorCount));
+        return DrawRadarMarkers(
             reference, side, frameTime, node,
-            MarkerColorTable, RadiusTable,
+            colorTable, RadiusTable,
             playerCount, sessionMode, otherPlayer);
+    }
 
     /// <summary>
     /// Pure port of <c>func_8005A9C4</c> (<c>gDrawRadarMarkers</c>, <c>8005A9C4.c:95-145</c>) with an

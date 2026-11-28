@@ -164,6 +164,87 @@ public class LevelSceneRetirementTests
         world.ProcessDeferredUpdates();
         Assert.Equal(new byte[] { 0x72, 0x21 }, columns);
     }
+
+    /// <summary>
+    /// Retail solo-frame order (800271A4.c:178-180): <c>gCullActiveEntitiesSolo</c> runs before
+    /// entity updates / weapon beam hit delivery (<c>DeliverBeamHits</c> walks <c>world.Active</c>).
+    /// An entity spawned or entering active range between two <see cref="LevelScene.AdvanceWalker"/>
+    /// calls must be hit by an active beam in that same frame, not delayed by one frame.
+    /// </summary>
+    [ConftFact]
+    public void ActiveBeamHitsNewlySpawnedAndNewlyInRangeEntitiesInSameAdvanceWalkerFrame()
+    {
+        var scene = new LevelScene(FindMission()!);
+        scene.EnableMechMovement();
+        scene.EnableFiring();
+
+        var world = scene.Entities!;
+        var weapons = scene.Weapons!;
+        var walker = scene.Walker!;
+        weapons.BeamHitWorld = world;
+        weapons.BeamSourceWord = (uint)scene.Actor.Id | 0x8000u;
+        var beamDef = weapons.RecordOf(WeaponSlots.PrimarySlot)!.HalfB!;
+        Assert.Equal(0x0A, beamDef.Action);
+        Assert.True(beamDef.DamageWord > 0);
+
+        // Start one entity outside ActiveRange so frame 0 excludes it from world.Active.
+        var movedIn = new BeamTargetEntity(9001, walker.X + EntityWorld.ActiveRange + 0x10000, walker.Y, walker.Z);
+        world.Spawn(movedIn);
+        scene.AdvanceWalker(1, 0, AnalogPad.Digital);
+        Assert.DoesNotContain(movedIn, world.Active);
+
+        // Between two AdvanceWalker calls: move the out-of-range entity into range and spawn a new
+        // entity (EntityWorld.Spawn only appends to Units, not Active), both on the beam segment.
+        movedIn.MoveTo(walker.X + 0x1000, walker.Y, walker.Z);
+        var spawned = new BeamTargetEntity(9002, walker.X + 0x1800, walker.Y, walker.Z);
+        world.Spawn(spawned);
+        Assert.DoesNotContain(movedIn, world.Active);
+        Assert.DoesNotContain(spawned, world.Active);
+
+        // Beam along +X from walker with length 0x2000 covering both targets (0x1000 and 0x1800).
+        weapons.Beams.Add(new Beam(beamDef, walker.X, walker.Y, walker.Z, new[] { 0x10000, 0, 0 }, 0x200));
+
+        scene.AdvanceWalker(1, 0, AnalogPad.Digital);
+
+        var spawnedHit = Assert.Single(spawned.Hits);
+        var movedInHit = Assert.Single(movedIn.Hits);
+        Assert.Equal((short)beamDef.ObjWord00, spawnedHit.Damage);
+        Assert.Equal((short)beamDef.ObjWord00, movedInHit.Damage);
+    }
+
+    private sealed class BeamTargetEntity : LiveEntity
+    {
+        private readonly int _recordId;
+        private int _x, _y, _z;
+
+        public List<DirectHit> Hits { get; } = new();
+
+        public BeamTargetEntity(int recordId, int x, int y, int z)
+        {
+            _recordId = recordId;
+            Health = 1000;
+            MaxHealth = 1000;
+            MoveTo(x, y, z);
+        }
+
+        public void MoveTo(int x, int y, int z)
+        {
+            _x = x;
+            _y = y;
+            _z = z;
+            Coord = new CollisionCoord(x, y, z, 0x800, 0x400, 0x400);
+        }
+
+        public override int RecordId => _recordId;
+        public override int DispatchType => 5;
+        public override (int X, int Z) GroundPosition => (_x, _z);
+
+        public override int HandleMessage(int message, EntityWorld world, object? data)
+        {
+            if (message == 14 && data is DirectHit hit) Hits.Add(hit);
+            return BaseHandler(message, this, world, data);
+        }
+    }
 }
 
 /// <summary>Skips tests that need CONFT.MIS when that mission is absent.</summary>

@@ -394,13 +394,29 @@ public sealed class LevelWeapons
     }
 
     /// <summary>
-    /// Ages the live beams by one frame and drops the expired ones. Beams run on the 60 Hz frame, not
-    /// on the 5-tick retail clock, so four frames is a visible flash.
+    /// The mission height field the beam trace clips against. When set, <see cref="AdvanceBeams"/>
+    /// re-runs <see cref="Beam.ClipToGround"/> for every live beam each frame before the hit delivery,
+    /// like the per-frame <c>gTraceMapRay</c> at func_8006B23C:346. Null leaves the beams unclipped
+    /// (wireframe previews and tests that drive the clip by hand).
+    /// </summary>
+    public LevelMap? BeamGroundMap { get; set; }
+
+    /// <summary>
+    /// One frame of the beam path (gBeamPartUpdate, func_8006B23C): re-traces the segment against the
+    /// level floor, delivers the direct hits of this frame and ages the beams by one frame. Beams run
+    /// on the 60 Hz frame, not on the 5-tick retail clock, so four frames is a visible flash. The
+    /// scene owns both wirings - the map through <see cref="BeamGroundMap"/>, the entity world
+    /// through <see cref="BeamHitWorld"/>.
     /// </summary>
     public void AdvanceBeams()
     {
         // gWeaponSlotUpdate sends the slot types 0x0A..0x0C and 0x0E to gBeamPartUpdate every frame
-        // the trigger is held, so a live beam delivers its direct hit once per frame.
+        // the trigger is held, so a live beam delivers its direct hit once per frame. The map trace of
+        // :346 runs before the radial spread (:356) and the callback (:366) that read its result, and
+        // retail re-traces the same segment each of those frames.
+        if (BeamGroundMap is { } map)
+            foreach (var beam in Beams)
+                beam.ClipToGround(map);
         if (BeamHitWorld is { } world) DeliverBeamHits(world);
         foreach (var beam in Beams) beam.Advance();
         Beams.RemoveAll(b => b.Expired);
@@ -408,7 +424,8 @@ public sealed class LevelWeapons
 
     /// <summary>
     /// The entity world the beam hits deliver message 14 into (func_8006B23C `do_cb`,
-    /// 8006B23C.c:196-201). Null keeps the beams decorative; the level owns this wiring.
+    /// 8006B23C.c:196-201). <see cref="LevelScene.EnableFiring"/> wires it to the live entity world;
+    /// null keeps the beams decorative (previews, tests that deliver by hand).
     /// </summary>
     public EntityWorld? BeamHitWorld { get; set; }
 
@@ -430,20 +447,36 @@ public sealed class LevelWeapons
     /// <summary>
     /// The direct-hit callback of gBeamPartUpdate (func_8006B23C:196-201, <c>do_cb</c>, the same
     /// record 8005F018.c:407 builds): a beam whose segment reaches an entity delivers message 14
-    /// with the <see cref="DirectHit"/> payload - damage <c>s3-&gt;unk0C</c> (def + 0x0C), kind
-    /// <c>e-&gt;unk1F</c> (def + 0x1F, the byte gWeaponSlotUpdate passes as gBeamPartUpdate's arg2),
-    /// source <c>self-&gt;unk14</c> - to every entity the segment touches. Returns the number of hits
-    /// delivered this frame.
+    /// with the <see cref="DirectHit"/> payload - damage <c>s3-&gt;unk0C</c> (def + 0x0C, the same
+    /// word the projectile stores at +0x1A), kind <c>e-&gt;unk1F</c> (def + 0x1F, the byte
+    /// gWeaponSlotUpdate passes as gBeamPartUpdate's arg2), source <c>self-&gt;unk14</c> - to every
+    /// entity the segment touches. Returns the number of hits delivered this frame.
     /// </summary>
     /// <remarks>
     /// <para>
     /// The C fires the callback on its locked target handle only; the port has no lock-on, so the
     /// segment test against the active entities takes that place - the same approximation the shot
-    /// pass makes with its projectile pairs. A map hit keeps the C from firing
-    /// (<c>s5 &amp; 0xFF</c>); the port's ground clip only shortens the segment (<see cref="Beam.ClipToGround"/>),
-    /// so a beam blocked by terrain stops short of the entities behind it as well.
+    /// pass makes with its projectile pairs. A map hit makes the C skip the callback as well
+    /// (<c>s5 &amp; 0xFF</c>, gBeamPartUpdate.c:366-378); the port keeps the callback and only
+    /// shortens the segment (<see cref="Beam.ClipToGround"/>), so a beam blocked by terrain stops
+    /// short of the entities behind it. Only the radial spread follows the retail map-hit gate.
     /// </para>
-    /// <para>The radial spread of the second half (s3-&gt;unk0E, gApplyRadialContactDamage) is not ported.</para>
+    /// <para>
+    /// The radial spread of the second half runs before the callback, per beam and frame: a half-1
+    /// beam whose <c>s3-&gt;unk0E</c> is positive calls gApplyRadialContactDamage at the far end with
+    /// <c>s3-&gt;unk0C</c> as the strength and <c>unk0E &lt;&lt; 4</c> as the radius - but only when the
+    /// map trace missed. The C tests <c>(s5 &amp; 0xFF) == 0</c> (gBeamPartUpdate.c:356) and takes
+    /// <c>skip_callback</c> otherwise, so a beam pulled back to the terrain spreads nothing. The port's
+    /// stand-in for that trace is <see cref="Beam.ClipToGround"/>: it records the hit in
+    /// <see cref="Beam.ClippedToGround"/>, and a beam with that flag set skips the spread.
+    /// </para>
+    /// <para>
+    /// The C traces at :346 and spreads at :356 inside one call, once per frame the trigger is held.
+    /// The trace is the caller's job: <see cref="AdvanceBeams"/> re-clips every live beam against
+    /// <see cref="BeamGroundMap"/> right before this method, so the flag always reflects this frame's
+    /// trace. The segment is fixed at spawn, so re-tracing lands on the same ground and the flag
+    /// gates every frame of the beam's <see cref="Beam.LifeFrames"/> life, like retail.
+    /// </para>
     /// </remarks>
     /// <param name="world">The entity world the beams deliver into (see <see cref="BeamHitWorld"/>).</param>
     public int DeliverBeamHits(EntityWorld world)
@@ -453,9 +486,22 @@ public sealed class LevelWeapons
         foreach (var beam in Beams)
         {
             var definition = beam.Definition;
+            // func_8006B23C:352-366: a second-half beam (the item + 0x24 record, flag of :240-247)
+            // whose type is not 0x0E and whose s3->unk0E is positive spreads gApplyRadialContactDamage
+            // around its far end, with s3->unk0C as the strength and unk0E << 4 as the radius. Without
+            // a locked target the C takes the c == 0 branch and uses the beam end v38, which is the
+            // branch the port always takes. :356 gates the whole thing on the map trace missing:
+            // (s5 & 0xFF) == 0, i.e. the beam did not hit the terrain.
+            if (definition.Half == 1 && definition.Action != 0x0E && definition.DamageWord > 0
+                && !beam.ClippedToGround)
+            {
+                RadialContactDamage.Apply(world, new[] { beam.End.X, beam.End.Y, beam.End.Z },
+                    unchecked((short)definition.ObjWord00), definition.DamageWord << 4,
+                    BeamSourceWord, BeamAttacker);
+            }
             var hit = new DirectHit(
                 BeamSourceWord,
-                unchecked((short)definition.DamageWord),
+                unchecked((short)definition.ObjWord00),
                 KindOf(definition),
                 BeamAttacker);
             foreach (var entity in world.Active)

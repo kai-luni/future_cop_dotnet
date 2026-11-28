@@ -47,10 +47,72 @@ public class MenuFlowTests
         new MenuFlow(fe, kind, TextWriter.Null, TextWriter.Null, enableLevelMovement: true);
 
     /// <summary>
+    /// docs/todo/12-menue-standardpfad.md: <c>Program.cs:8-9</c> handed the working-directory-relative
+    /// default <c>build/disc/files/CW/FE.MIS</c> to <c>MenuFlow</c> and <c>MenuAudio</c>, while the
+    /// labels already walked up from the program directory. The launcher now asks MenuArchive for the
+    /// path (Program.cs:11). Start from a directory without an archive and pass the program directory
+    /// below it on the same layout as the retail disc: the resolved path must be the disc archive.
+    /// Open gap: with no archive anywhere the launcher still only writes "Menu text unavailable" to
+    /// stderr (MenuLabels.Load) and starts; there is no warning screen yet, that is
+    /// docs/todo/15-fehlende-dateien-melden.md.
+    /// </summary>
+    [RetailFact]
+    public void SceneAndAudioResolveTheArchiveFromTheProgramDirectoryNotTheWorkingDirectory()
+    {
+        string sourceArchive = FrontEndPath()!;
+        string root = Path.Combine(Path.GetTempPath(), "fc-menu-default-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            // Layout only. The disc is created whether this is green or red, so that a failure comes
+            // from the resolution and not from a missing file.
+            string project = Path.Combine(root, "project");
+            string program = Path.Combine(project, "tools", "FcMainMenu", "bin", "Debug", "net10.0");
+            string launch = Path.Combine(root, "elsewhere");
+            string disc = Path.Combine(project, "build", "disc", "files");
+            Directory.CreateDirectory(program);
+            Directory.CreateDirectory(launch);
+            Directory.CreateDirectory(Path.Combine(disc, "CW"));
+            string archive = Path.Combine(disc, "CW", "FE.MIS");
+            File.Copy(sourceArchive, archive);
+
+            // The working directory the launcher may start in. It resolves to
+            // <launch>/build/disc/files/CW/FE.MIS when the archive path stays relative to it, which
+            // without the program-directory search is exactly what scene and audio used to read.
+            string oldDefault = Path.GetFullPath(MenuArchive.DefaultPath, launch);
+            Assert.False(File.Exists(oldDefault));
+            Assert.NotEqual(archive, oldDefault);
+
+            string resolved = MenuArchive.Resolve(null, program, workingDirectory: launch)!;
+
+            Assert.Equal(archive, resolved);
+
+            // The level itself is not copied: this covers the archive handover, not the mission load.
+            // Same path MenuLabels returns, so scene, labels and audio read one archive.
+            var labels = MenuLabels.Load(null, program, TextWriter.Null, workingDirectory: launch);
+            Assert.Equal(archive, labels.ArchivePath);
+            Assert.Equal(labels.ArchivePath, resolved);
+            // Available for the scene's consumers: the menu sounds and music both decode from it.
+            Assert.Contains((byte)0x48, SoundBank.FromMisFile(resolved).HighTable.Keys);
+            Assert.NotEmpty(MenuMusic.Decode(File.ReadAllBytes(resolved)));
+            // And MenuFlow's mission directory comes from that archive's PA sibling, not the cwd.
+            // (The mission itself is not copied, so the load fails; the path is what this asserts.)
+            var flow = NewFlow(resolved);
+            ToLoadout(flow);
+            flow.HandleKey(Enter);
+            Assert.Equal(Path.Combine(disc, "PA", "CONFT.MIS"), flow.LastLoadErrorPath ?? flow.Level?.MissionPath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
     /// Note on coverage limits: this case would also pass without passing <c>workingDirectory</c>,
-    /// because <c>MenuLabels.FindInstalledArchive</c> walks up from <c>programDirectory</c> and
-    /// resolves the same archive via that fallback. In addition, the actual startup wiring in
-    /// <c>tools/FcMainMenu/Program.cs:8-9</c> is not covered by this test.
+    /// because <c>MenuArchive.FindInstalled</c> walks up from <c>programDirectory</c> and resolves
+    /// the same archive via that fallback. The launcher wiring itself (<c>Program.cs:8-13</c>) needs
+    /// a display and is not covered by tests; <see cref="SceneAndAudioResolveTheArchiveFromTheProgramDirectoryNotTheWorkingDirectory"/>
+    /// covers the resolution it calls.
     /// </summary>
     [RetailFact]
     public void DefaultArchiveFromForeignDirectoryDrivesLabelsAudioAndScene()
@@ -89,6 +151,132 @@ public class MenuFlowTests
             flow.HandleKey(Enter);
             Assert.Equal(MenuScreen.Scene, flow.Screen);
             Assert.Equal(mission, flow.Level?.MissionPath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Finding 5 regression: passing an explicit mission path such as <c>PA/CONFT.MIS</c> must not
+    /// make scene/audio select <c>PA/CONFT.MIS</c> on mere file existence while labels validate and
+    /// fall through to <c>CW/FE.MIS</c>. Tests both <see cref="MenuArchive.Resolve"/> and the actual
+    /// launcher handoff (<see cref="MenuArchive.PrepareLaunch"/>) used by <c>tools/FcMainMenu/Program.cs</c>.
+    /// </summary>
+    [RetailFact]
+    public void LauncherHandoffWithExplicitMissionPathSharesValidatedFrontEndArchive()
+    {
+        string sourceArchive = FrontEndPath()!;
+        string sourceMission = Path.Combine(LevelTerrainTests.FindDisc()!, "PA", "CONFT.MIS");
+        string root = Path.Combine(Path.GetTempPath(), "fc-menu-explicit-mission-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string program = Path.Combine(root, "tools", "FcMainMenu", "bin", "Debug", "net10.0");
+            string launchDir = Path.Combine(root, "elsewhere");
+            string disc = Path.Combine(root, "build", "disc", "files");
+            Directory.CreateDirectory(program);
+            Directory.CreateDirectory(launchDir);
+            Directory.CreateDirectory(Path.Combine(disc, "CW"));
+            Directory.CreateDirectory(Path.Combine(disc, "PA"));
+            string archive = Path.Combine(disc, "CW", "FE.MIS");
+            string mission = Path.Combine(disc, "PA", "CONFT.MIS");
+            File.Copy(sourceArchive, archive);
+            File.Copy(sourceMission, mission);
+
+            // Explicit PA/CONFT.MIS exists on disk, so existence-only Resolve used to pick it.
+            Assert.Equal(archive, MenuArchive.Resolve(mission, program, workingDirectory: launchDir));
+
+            using var output = new StringWriter();
+            using var errors = new StringWriter();
+            var launch = MenuArchive.PrepareLaunch(mission, sceneKindEnv: null, program, output, errors, workingDirectory: launchDir);
+
+            Assert.Equal(archive, launch.Labels.ArchivePath);
+            Assert.Equal(archive, launch.AudioArchivePath);
+            Assert.Null(launch.Labels.UnavailablePath);
+            Assert.Equal("", errors.ToString());
+            Assert.NotEqual("fallback", launch.Labels.Lookup(0x2710, "fallback"));
+            Assert.Contains((byte)0x48, SoundBank.FromMisFile(launch.AudioArchivePath!).HighTable.Keys);
+            Assert.NotEmpty(MenuMusic.Decode(File.ReadAllBytes(launch.AudioArchivePath!)));
+
+            ToLoadout(launch.Flow);
+            launch.Flow.HandleKey(Enter);
+            Assert.Equal(MenuScreen.Scene, launch.Flow.Screen);
+            Assert.Equal(mission, launch.Flow.Level?.MissionPath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Finding 5 regression: launcher handoff skips an explicit mission in a foreign directory or a
+    /// corrupt local <c>FE.MIS</c> in favour of the validated installed <c>CW/FE.MIS</c> for labels,
+    /// scene, and audio alike; when no valid archive exists anywhere, warnings and the unavailable
+    /// notice are preserved and audio is disabled.
+    /// </summary>
+    [RetailFact]
+    public void LauncherHandoffSkipsCorruptAndForeignArchivesAndPreservesMissingWarnings()
+    {
+        string sourceArchive = FrontEndPath()!;
+        string sourceMission = Path.Combine(LevelTerrainTests.FindDisc()!, "PA", "CONFT.MIS");
+        string root = Path.Combine(Path.GetTempPath(), "fc-menu-handoff-fallbacks-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string program = Path.Combine(root, "project", "tools", "FcMainMenu", "bin");
+            string launchDir = Path.Combine(root, "elsewhere");
+            string disc = Path.Combine(root, "project", "build", "disc", "files");
+            Directory.CreateDirectory(program);
+            Directory.CreateDirectory(launchDir);
+            Directory.CreateDirectory(Path.Combine(disc, "CW"));
+            Directory.CreateDirectory(Path.Combine(disc, "PA"));
+            string installedArchive = Path.Combine(disc, "CW", "FE.MIS");
+            string installedMission = Path.Combine(disc, "PA", "CONFT.MIS");
+            File.Copy(sourceArchive, installedArchive);
+            File.Copy(sourceMission, installedMission);
+
+            // 1) Explicit CONFT.MIS in a foreign directory with no sibling CW/FE.MIS -> falls through to installed FE.MIS.
+            string foreignMission = Path.Combine(launchDir, "CONFT.MIS");
+            File.Copy(sourceMission, foreignMission);
+            using (var errors = new StringWriter())
+            {
+                var launch = MenuArchive.PrepareLaunch(foreignMission, null, program, TextWriter.Null, errors, workingDirectory: launchDir);
+                Assert.Equal(installedArchive, launch.Labels.ArchivePath);
+                Assert.Equal(installedArchive, launch.AudioArchivePath);
+                Assert.Null(launch.Labels.UnavailablePath);
+                Assert.Equal("", errors.ToString());
+                ToLoadout(launch.Flow);
+                launch.Flow.HandleKey(Enter);
+                Assert.Equal(MenuScreen.Scene, launch.Flow.Screen);
+                Assert.Equal(installedMission, launch.Flow.Level?.MissionPath);
+            }
+
+            // 2) Corrupt local FE.MIS at cwd default -> skipped in favour of installed FE.MIS.
+            string corruptLocal = Path.Combine(launchDir, "build", "disc", "files", "CW", "FE.MIS");
+            Directory.CreateDirectory(Path.GetDirectoryName(corruptLocal)!);
+            File.WriteAllText(corruptLocal, "corrupt archive");
+            Assert.Equal(installedArchive, MenuArchive.Resolve(null, program, workingDirectory: launchDir));
+            using (var errors = new StringWriter())
+            {
+                var launch = MenuArchive.PrepareLaunch(null, null, program, TextWriter.Null, errors, workingDirectory: launchDir);
+                Assert.Equal(installedArchive, launch.Labels.ArchivePath);
+                Assert.Equal(installedArchive, launch.AudioArchivePath);
+                Assert.Null(launch.Labels.UnavailablePath);
+                Assert.Equal("", errors.ToString());
+            }
+
+            // 3) No valid archive anywhere -> preserves stderr warning and UnavailablePath notice, disables audio.
+            string emptyProgram = Directory.CreateDirectory(Path.Combine(root, "isolated", "bin")).FullName;
+            string emptyLaunch = Directory.CreateDirectory(Path.Combine(root, "isolated", "cwd")).FullName;
+            Assert.Null(MenuArchive.Resolve(null, emptyProgram, workingDirectory: emptyLaunch));
+            using (var errors = new StringWriter())
+            {
+                var launch = MenuArchive.PrepareLaunch(null, null, emptyProgram, TextWriter.Null, errors, workingDirectory: emptyLaunch);
+                Assert.StartsWith("Menu text unavailable: ", errors.ToString());
+                Assert.NotNull(launch.Labels.UnavailablePath);
+                Assert.Null(launch.AudioArchivePath);
+            }
         }
         finally
         {
@@ -784,5 +972,181 @@ public class MenuFlowTests
         int lit = 0;
         for (int i = 0; i < frame.Length; i += 4) if (frame[i] != 0 || frame[i + 1] != 0 || frame[i + 2] != 0) lit++;
         Assert.True(lit > 640 * 480 * 9 / 10, $"only {lit} lit pixels in the SLIM window frame");
+    }
+
+    private static RadarLinePacket ReadGoldenRadarLine(string directive, string name)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "golden", "radar-markers.vectors");
+        foreach (var raw in File.ReadLines(path))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            var words = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length < 4 || words[0] != directive || words[1] != name) continue;
+            int arrow = Array.IndexOf(words, "->");
+            Assert.True(arrow >= 2, $"Malformed vector row: {line}");
+
+            int offset = directive switch
+            {
+                "LINE" => arrow + 1,
+                "DRAW" => arrow + 3, // skip packet count and leading "L" kind token
+                _ => throw new ArgumentOutOfRangeException(nameof(directive), directive, null),
+            };
+            if (directive == "DRAW") Assert.Equal("L", words[arrow + 2]);
+
+            return new RadarLinePacket(
+                Tag: uint.Parse(words[offset], System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture),
+                CodeWord: uint.Parse(words[offset + 1], System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture),
+                X0: short.Parse(words[offset + 2], System.Globalization.CultureInfo.InvariantCulture),
+                Y0: short.Parse(words[offset + 3], System.Globalization.CultureInfo.InvariantCulture),
+                X1: short.Parse(words[offset + 4], System.Globalization.CultureInfo.InvariantCulture),
+                Y1: short.Parse(words[offset + 5], System.Globalization.CultureInfo.InvariantCulture));
+        }
+        throw new InvalidOperationException($"Vector '{directive} {name}' not found in radar-markers.vectors");
+    }
+
+    private static (byte R, byte G, byte B) HudPixel(byte[] rgb, int x, int y)
+    {
+        int o = (y * LevelScene.Width + x) * 3;
+        return (rgb[o], rgb[o + 1], rgb[o + 2]);
+    }
+
+    /// <summary>
+    /// Binds <see cref="MechBody.Angle"/> (+0xB0) and <see cref="MechBody.Port"/> (+0xC1) through
+    /// <see cref="MenuFlow.BuildHud"/>, <see cref="RadarMarkers.DrawRadarMarkers"/>, and
+    /// <see cref="InGameHud.Paint"/> against C-harness-generated golden vectors from the unchanged
+    /// <c>8005A740.c</c> and <c>8005A9C4.c</c> units for four cardinal headings and both sides.
+    /// </summary>
+    [RetailFact]
+    public void BuildHud_BindsWalkerAngleAndSideToCHarnessHeadingLineCoordinates()
+    {
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var walker = flow.Level!.Walker!;
+
+        var cases = new (sbyte Side, ushort Angle, string LineVector, string DrawVector)[]
+        {
+            (0, 0x000, "heading_left_0x000", "walker_side0_h000"),
+            (0, 0x400, "heading_left_0x400", "walker_side0_h400"),
+            (0, 0x800, "heading_left_0x800", "walker_side0_h800"),
+            (0, 0xC00, "heading_left_0xC00", "walker_side0_hC00"),
+            (1, 0x000, "heading_right_0x000", "walker_side1_h000"),
+            (1, 0x400, "heading_right_0x400", "walker_side1_h400"),
+            (1, 0x800, "heading_right_0x800", "walker_side1_h800"),
+            (1, 0xC00, "heading_right_0xC00", "walker_side1_hC00"),
+        };
+
+        var seenCoords = new HashSet<(short X0, short Y0, short X1, short Y1)>();
+        foreach (var (side, angle, lineVector, drawVector) in cases)
+        {
+            var expectedLine = ReadGoldenRadarLine("LINE", lineVector);
+            var expectedDraw = ReadGoldenRadarLine("DRAW", drawVector);
+            Assert.Equal(expectedLine, expectedDraw);
+
+            walker.Port = side;
+            walker.Angle = angle;
+
+            var hud = flow.BuildHud();
+            Assert.NotNull(hud.Radar);
+            Assert.Equal(unchecked((short)angle), hud.Radar!.Value.Heading);
+            Assert.Equal(side, hud.Player.ValueC1);
+
+            var result = RadarMarkers.DrawRadarMarkers(hud.Radar.Value, hud.Player.ValueC1, frameTime: 0, node: null);
+            Assert.Equal(side == 1 ? RadarMarkers.RightSideOriginX : RadarMarkers.LeftSideOriginX, result.OriginX);
+            Assert.Equal(expectedLine, result.HeadingLine);
+            seenCoords.Add((result.HeadingLine.X0, result.HeadingLine.Y0, result.HeadingLine.X1, result.HeadingLine.Y1));
+
+            var rgb = new byte[LevelScene.Width * LevelScene.Height * 3];
+            InGameHud.Paint(rgb, hud, new HudSession { Mode = 0 }, new HudGlobals { FrameTime = 0 });
+            Assert.Equal((0x80, 0x80, 0x80), HudPixel(rgb, expectedLine.X0, expectedLine.Y0));
+            Assert.Equal((0x80, 0x80, 0x80), HudPixel(rgb, expectedLine.X1, expectedLine.Y1));
+        }
+
+        Assert.Equal(8, seenCoords.Count);
+    }
+
+    /// <summary>
+    /// Verifies that player 2 (<see cref="MechBody.Port"/> == 1, retail <c>unkAC-&gt;unkC1 == 1</c> at
+    /// <c>8005A9C4.c:109</c>) places the radar heading line on the right-side origin (<c>0x780000</c> = 120 px,
+    /// +80 px from player 1), and that any other <c>Port</c> value falls back to the left origin (<c>0x280000</c>).
+    /// </summary>
+    [RetailFact]
+    public void BuildHud_PlayerTwoPortSelectsRightRadarOriginAndNonOnePortFallsBackLeft()
+    {
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var walker = flow.Level!.Walker!;
+        walker.Angle = 0x400;
+
+        var expectedP1 = ReadGoldenRadarLine("DRAW", "walker_side0_h400");
+        var expectedP2 = ReadGoldenRadarLine("DRAW", "walker_side1_h400");
+        var expectedFallback = ReadGoldenRadarLine("DRAW", "side2_fallback_h400");
+
+        walker.Port = 0;
+        var p1Hud = flow.BuildHud();
+        var p1Result = RadarMarkers.DrawRadarMarkers(p1Hud.Radar!.Value, p1Hud.Player.ValueC1, frameTime: 0, node: null);
+        Assert.Equal(0, p1Hud.Player.ValueC1);
+        Assert.Equal(RadarMarkers.LeftSideOriginX, p1Result.OriginX);
+        Assert.Equal(expectedP1, p1Result.HeadingLine);
+
+        walker.Port = 1;
+        var p2Hud = flow.BuildHud();
+        var p2Result = RadarMarkers.DrawRadarMarkers(p2Hud.Radar!.Value, p2Hud.Player.ValueC1, frameTime: 0, node: null);
+        Assert.Equal(1, p2Hud.Player.ValueC1);
+        Assert.Equal(RadarMarkers.RightSideOriginX, p2Result.OriginX);
+        Assert.Equal(expectedP2, p2Result.HeadingLine);
+        Assert.Equal(80, p2Result.HeadingLine.X0 - p1Result.HeadingLine.X0);
+        Assert.Equal(80, p2Result.HeadingLine.X1 - p1Result.HeadingLine.X1);
+
+        var p2Rgb = new byte[LevelScene.Width * LevelScene.Height * 3];
+        InGameHud.Paint(p2Rgb, p2Hud, new HudSession { Mode = 0 }, new HudGlobals { FrameTime = 0 });
+        Assert.Equal((0x80, 0x80, 0x80), HudPixel(p2Rgb, expectedP2.X0, expectedP2.Y0));
+        Assert.Equal((0x80, 0x80, 0x80), HudPixel(p2Rgb, expectedP2.X1, expectedP2.Y1));
+        Assert.Equal((0x00, 0x00, 0x00), HudPixel(p2Rgb, expectedP1.X0, expectedP1.Y0));
+        Assert.Equal((0x00, 0x00, 0x00), HudPixel(p2Rgb, expectedP1.X1, expectedP1.Y1));
+
+        walker.Port = 2;
+        var fallbackHud = flow.BuildHud();
+        var fallbackResult = RadarMarkers.DrawRadarMarkers(fallbackHud.Radar!.Value, fallbackHud.Player.ValueC1, frameTime: 0, node: null);
+        Assert.Equal(2, fallbackHud.Player.ValueC1);
+        Assert.Equal(RadarMarkers.LeftSideOriginX, fallbackResult.OriginX);
+        Assert.Equal(expectedFallback, fallbackResult.HeadingLine);
+    }
+
+    /// <summary>
+    /// Turning the mech through live locomotion input rotates the heading line produced by
+    /// <see cref="MenuFlow.BuildHud"/>; replacing the handed-over angle with a constant turns this red.
+    /// </summary>
+    [RetailFact]
+    public void TurningTheWalkerRotatesTheHudHeadingLine()
+    {
+        var flow = NewFlow(FrontEndPath()!);
+        ToLoadout(flow);
+        flow.HandleKey(Enter);
+        var walker = flow.Level!.Walker!;
+
+        for (int i = 0; i < 10; i++) flow.Advance(0.033);
+        ushort beforeAngle = walker.Angle;
+        var beforeHud = flow.BuildHud();
+        var beforeLine = RadarMarkers.DrawRadarMarkers(beforeHud.Radar!.Value, beforeHud.Player.ValueC1, frameTime: 0, node: null).HeadingLine;
+
+        flow.HandleKey(Right);
+        for (int i = 0; i < 30; i++) flow.Advance(0.033);
+        flow.HandleKeyRelease(Right);
+
+        ushort afterAngle = walker.Angle;
+        var afterHud = flow.BuildHud();
+        var afterLine = RadarMarkers.DrawRadarMarkers(afterHud.Radar!.Value, afterHud.Player.ValueC1, frameTime: 0, node: null).HeadingLine;
+
+        Assert.NotEqual(beforeAngle, afterAngle);
+        Assert.Equal(unchecked((short)afterAngle), afterHud.Radar!.Value.Heading);
+        Assert.NotEqual(
+            (beforeLine.X0, beforeLine.Y0, beforeLine.X1, beforeLine.Y1),
+            (afterLine.X0, afterLine.Y0, afterLine.X1, afterLine.Y1));
+        Assert.Equal(
+            RadarMarkers.EmitAngledLine(RadarMarkers.OriginXForSide(afterHud.Player.ValueC1), RadarMarkers.HeadingLineAngle(unchecked((short)afterAngle))),
+            afterLine);
     }
 }

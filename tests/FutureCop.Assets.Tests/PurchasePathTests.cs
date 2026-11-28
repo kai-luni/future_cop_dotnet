@@ -127,12 +127,12 @@ public sealed class PurchasePathTests
 
         // Hover mode (unkAC->unk40 != 0) must not trigger the pad (80031C74.c:102)
         purchase.VmState.GameSession[RpnsVmState.SessionScoreP1] = 5;
-        var hoverRes = purchase.TryTriggerPad(heliPad, playerEntityId: 12, isHoverMode: true);
+        var hoverRes = purchase.TryTriggerPad(heliPad, new PlayerTarget(12, 0, 0, 0, 0, busy: true));
         Assert.False(hoverRes.Triggered);
         Assert.Equal(5, purchase.VmState.GameSession[RpnsVmState.SessionScoreP1]);
 
         // Walker mode triggers purchase: deducts 1, increments P1 helis, queues burst on Csac 34
-        var walkRes = purchase.TryTriggerPad(heliPad, playerEntityId: 12, isHoverMode: false);
+        var walkRes = purchase.TryTriggerPad(heliPad, new PlayerTarget(12, 0, 0, 0, 0, busy: false));
         Assert.True(walkRes.Triggered);
         Assert.True(walkRes.Accepted);
         Assert.Equal(RpnsVmState.SfxPurchaseAccepted, walkRes.SfxId);
@@ -144,7 +144,7 @@ public sealed class PurchasePathTests
         // Main-base P1 tankpad (Cact 107, type 95, cost 1 -> ScriptVars[11]++ -> Cfun T18 -> Csac 75)
         // T18 has raw period 202 -> scaled 202 * 5 = 1010 (80049420.c:85-92), fires only at remaining < 0 (80049564.c:51).
         var tankPad = purchase.FindPad(107)!;
-        var tankRes = purchase.TryTriggerPad(tankPad, playerEntityId: 12, isHoverMode: false);
+        var tankRes = purchase.TryTriggerPad(tankPad, new PlayerTarget(12, 0, 0, 0, 0, busy: false));
         Assert.True(tankRes.Accepted);
         Assert.Equal(3, tankRes.ScoreAfter);
         Assert.Equal(1, purchase.VmState.ScriptVars[11]);
@@ -170,7 +170,7 @@ public sealed class PurchasePathTests
         Assert.Equal(5, purchase.VmState.GameSession[RpnsVmState.SessionScoreP1]);
 
         // Now trigger outpost pad (cost 2)
-        var outRes = purchase.TryTriggerPad(outpostPad, playerEntityId: 12, isHoverMode: false, frameTime: 100);
+        var outRes = purchase.TryTriggerPad(outpostPad, new PlayerTarget(12, 0, 0, 0, 0, busy: false), frameTime: 100);
         Assert.True(outRes.Accepted);
         Assert.Equal(3, outRes.ScoreAfter);
         Assert.Equal(1, purchase.VmState.ScriptVars[0]);
@@ -180,7 +180,7 @@ public sealed class PurchasePathTests
         Assert.False(dreadPad.IsEnabled);
         purchase.ApplyPadCommand7A(dreadPad, arg: 1);
         purchase.VmState.GameSession[RpnsVmState.SessionScoreP1] = 50;
-        var dreadRes = purchase.TryTriggerPad(dreadPad, playerEntityId: 12, isHoverMode: false, frameTime: 200);
+        var dreadRes = purchase.TryTriggerPad(dreadPad, new PlayerTarget(12, 0, 0, 0, 0, busy: false), frameTime: 200);
         Assert.True(dreadRes.Accepted);
         Assert.Equal(0, dreadRes.ScoreAfter);
         Assert.Equal(1, purchase.VmState.ScriptVars[18]);
@@ -199,7 +199,7 @@ public sealed class PurchasePathTests
         score.Score[1] = 7;
 
         sys.SyncFromMatchScore(score);
-        var res = sys.TryTriggerPad(pad, playerEntityId: 12, isHoverMode: false);
+        var res = sys.TryTriggerPad(pad, new PlayerTarget(12, 0, 0, 0, 0, busy: false));
         sys.SyncToMatchScore(score);
 
         Assert.True(res.Accepted);
@@ -207,57 +207,191 @@ public sealed class PurchasePathTests
         Assert.Equal(7, score.Score[1]);
     }
 
+    /// <summary>
+    /// Finding 3 of the review: the type-14 walk of 8003151C.c:105-122 tests <i>every</i> player entity
+    /// of D_8009FA58, not only the P1 body. Slot 1 is the P2 entity (obj+0x14 = 16 in CONFT.MIS), and
+    /// <see cref="LevelScene.AttachSecondPlayer"/> is what registers it. The observable is the pad's
+    /// own <see cref="PurchasePad.LastTriggerFrame"/>: a pad accepts only the player inside its box, so
+    /// a P1 body parked 0x200000 world units away never makes the pad fire, while the P2 body standing
+    /// on the pad does — with the same pad, the same script offset and no second candidate.
+    /// </summary>
+    [RetailFact]
+    public void SecondPlayerEntityDrivesTheType14TriggerWalk()
+    {
+        string path = LevelSceneRetirementTests.FindMission()!;
+
+        // Negative arm: the type-14 pad is marked, P1 is far away and no P2 is registered. The pad
+        // walk (and with it D_8009FA58) runs only with the spawner enabled and a walker attached.
+        var solo = new LevelScene(path) { EnableCsacSpawner = true };
+        solo.EnableObjectives();
+        var soloPads = solo.PurchasePads!;
+        solo.AttachWalker(new MechBody { X = 0x200000, Y = 0, Z = 0x200000, Form = 0 });
+        int marked = -1;
+        foreach (var candidate in soloPads.Pads)
+        {
+            if (candidate.Kind != PurchasePadKind.TriggerAttachment || !candidate.IsEnabled) continue;
+            if (soloPads.Pads.Any(p => p != candidate && p.Kind == PurchasePadKind.MapZone && p.RecordId == candidate.RecordId)) continue;
+            marked = candidate.RecordId;
+            break;
+        }
+        Assert.True(marked >= 0, "CONFT has no standalone type-14 pad");
+        var pad = soloPads.FindPad(marked)!;
+        solo.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.Single(solo.PlayerTargets);                               // D_8009FA58: P1 only
+        int frameAfterSolo = pad.LastTriggerFrame;
+
+        // Positive arm: the same pad, the same far P1, and P2 standing on it.
+        var dual = new LevelScene(path) { EnableCsacSpawner = true };
+        dual.EnableObjectives();
+        var dualPads = dual.PurchasePads!;
+        dual.AttachWalker(new MechBody { X = 0x200000, Y = 0, Z = 0x200000, Form = 0 });
+        var pad2 = dualPads.FindPad(marked)!;
+        dual.AttachSecondPlayer(new MechBody { X = pad2.WorldX, Y = pad2.WorldY, Z = pad2.WorldZ, Form = 0 }, 16);
+        dual.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+
+        // D_8009FA58 now carries both entities (80031DE8.c:19): the P1 actor and the P2 actor 16.
+        Assert.Equal(2, dual.PlayerTargets.Count);
+        Assert.Contains(dual.PlayerTargets, t => t.RecordId == 16);
+        Assert.Contains(dual.PlayerTargets, t => t.RecordId == dual.Actor.Id);
+        // 8003151C.c:115 stamps the frame of the accepted test on the pad; the P2 entity supplied it.
+        Assert.NotEqual(frameAfterSolo, pad2.LastTriggerFrame);
+        Assert.Equal(dual.PurchaseFrameTime, pad2.LastTriggerFrame);
+    }
+
+    /// <summary>
+    /// The scene walk of a map zone (func_80031DE8, 80031DE8.c:85-204): node 106 caches a D_800A8F90
+    /// candidate of its node id 12 (:119-144, 106 is <c>id == 12</c> at tACT +0x1C, 800319D4.c:137)
+    /// and tests it against its box every frame (:159-168 / 80031C74.c:84-100). It has no script to
+    /// run: <c>Cact</c> 106's +0x24 word is 0 in CONFT.MIS, and 80031C74.c:106-108 enters
+    /// <c>gInterpretEntityScript</c> only for a non-zero <c>node-&gt;script</c> (loaded from the
+    /// request's +0x24, 800319D4.c:137). So the node fires, buys nothing and never reaches the
+    /// helipad script at pool byte 0 (0x99 = <c>op 25 gGameSession[25]--</c>). The purchase itself is
+    /// covered on a hand-built pad (<see cref="ConftMis_LoadsPurchasePadsAndSpawnsHeliAndTankAndDreadnought"/>).
+    /// The old test read the score of a hover walker over the pad; the player is only ever a
+    /// <i>candidate</i> of the scan now, never the tested target by its own right.
+    /// </summary>
     [RetailFact]
     public void SceneWalkerPurchaseSpawnsHelicopterInTheSameTick()
     {
         string path = LevelSceneRetirementTests.FindMission()!;
         var scene = new LevelScene(path) { EnableCsacSpawner = true };
         scene.EnableObjectives();
-        var pad = PurchasePadSystem.LoadFromMission(File.ReadAllBytes(path))!.FindPad(106)!;
+        var pads = scene.PurchasePads!;
+        var pad = pads.FindPad(106)!;
         var walker = new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 1 };
         scene.AttachWalker(walker);
         scene.Objectives!.Score.Score[0] = 5;
 
+        // A busy candidate (hover mode, unkAC->unk40 != 0) is rejected by the flag-4 gate of
+        // 80031C74.c:102: the node caches it, its box test runs and nothing fires.
+        var player = new PlayerTarget(12, pad.WorldX, pad.WorldY, pad.WorldZ, busy: true);
+        scene.AddMapZoneCandidate(player);
+        Assert.True(ReferenceEquals(player, scene.MapZoneTargetOf(pad)));
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
         Assert.Equal(5, scene.ScoreSession(new HudSession()).Score0);
         Assert.DoesNotContain(scene.CsacSpawner!.SpawnedUnits, u => u.SourceSlot.Record.Id == 34);
+        Assert.Null(pad.LastFire);
 
+        // Walker form, same cached target: the box test passes and 80031C74.c:104-115 returns 1
+        // without a script (node->script == 0). The node keeps flag 2 (:176-184 keeps it linked).
+        player.Busy = false;
         walker.Form = 0;
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
-        Assert.Equal(4, scene.ScoreSession(new HudSession()).Score0);
-        Assert.Single(scene.CsacSpawner.SpawnedUnits.Where(u => u.SourceSlot.Record.Id == 34));
+        var fire = pad.LastFire ?? throw new InvalidOperationException("zone 106 did not fire");
+        Assert.Equal(12, pad.MapZoneTargetId);
+        Assert.True(fire.Triggered);
+        Assert.False(fire.Accepted);                                     // no script ran
+        Assert.Equal((5, 5), (fire.ScoreBefore, fire.ScoreAfter));
+        Assert.Equal(0, pads.VmState.GameSession[RpnsVmState.SessionHelisP1]);
+        // No script word moved: the pool's zone bodies are the only writers of the script vars here.
+        Assert.Equal(0, pads.VmState.ScriptVars[25]);
+        Assert.Equal(0, pads.VmState.ScriptVars[16]);
+        // No burst is queued, so the drain of the next update cannot turn anything into a unit.
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.Empty(scene.CsacSpawner.SpawnedUnits);
+        Assert.False(scene.IsMapZoneReleased(pad));                      // flags 2: the node stays linked
     }
 
+    /// <summary>
+    /// The normally drawn frame has no debug pad outlines, but the player's helipad node
+    /// still fires and the HUD session carries the play mode. Node 106 stands on
+    /// (-480, 0, 871944) with flag 2 and no script (Cact +0x24 = 0, 800319D4.c:137): the box test of
+    /// 80031C74.c:84-100 accepts the player every frame, :104-115 returns 1, and without a script
+    /// (80031C74.c:106-108) the session bank is untouched - 5 points and 0 helis stay. The bought
+    /// unit and its face count are covered on a hand-built pad (the retail 106 buys nothing), so this
+    /// test pins the no-script arm of the walk in a real render.
+    /// </summary>
     [RetailFact]
-    public void SceneDrawsBoughtUnitPadsAndScoreSession()
+    public void SceneKeepsPadDetectionAndScoreSessionWithoutDebugOutlines()
     {
         string path = LevelSceneRetirementTests.FindMission()!;
         var scene = new LevelScene(path) { EnableCsacSpawner = true };
         scene.EnableObjectives();
-        var pad = PurchasePadSystem.LoadFromMission(File.ReadAllBytes(path))!.FindPad(106)!;
+        var pads = scene.PurchasePads!;
+        var pad = pads.FindPad(106)!;
+        // Original C leaf_systems ls_test_map_zone: the loader frees the source object
+        // after publishing the trigger node; the node survives, not a live actor.
+        Assert.DoesNotContain(scene.ObjectRegistry.LiveObjects.Entries, entry => entry.Id == 106);
         var walker = new MechBody { X = pad.WorldX, Y = pad.WorldY, Z = pad.WorldZ, Form = 0 };
         scene.AttachWalker(walker);
         scene.Objectives!.Score.Score[0] = 5;
 
         scene.Render(new LevelCamera(0.0, 20.0, 0x1200));
         Assert.Equal(0, scene.SpawnedUnitPrimitives);
-        Assert.True(scene.PadMarkerLines > 0, "the pad under the walker produced no marker lines");
+        Assert.Equal(0, scene.PadMarkerLines);
 
+        // The walker itself is the node-12 candidate (obj+0x14 of the player entity is its record id
+        // 12, PlayerTarget), standing on the pad centre.
+        scene.AddMapZoneCandidate(new PlayerTarget(12, pad.WorldX, pad.WorldY, pad.WorldZ));
+        Assert.Equal(12, scene.MapZoneTargetOf(pad)?.RecordId);
         scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
-        var unit = Assert.Single(scene.CsacSpawner!.SpawnedUnits.Where(u => u.SourceSlot.Record.Id == 34));
-        walker.X = unit.X; walker.Y = unit.Y; walker.Z = unit.Z;
-        scene.AttachWalker(walker);
+        var fire = pad.LastFire ?? throw new InvalidOperationException("zone 106 did not fire");
+        Assert.True(fire.Triggered);
+        Assert.False(fire.Accepted);                                     // no script ran
+        Assert.Equal((5, 5), (fire.ScoreBefore, fire.ScoreAfter));
+
+        // The stay node fires again on the next frame as well (800616A0 ahead of the node walk,
+        // 80031DE8.c:90) and still buys nothing: no unit, no burst.
+        scene.AdvanceSkyCaptain(RetailClock.TicksPerFrame);
+        Assert.Empty(scene.CsacSpawner!.SpawnedUnits);
         scene.Render(new LevelCamera(0.0, 20.0, 0x1200));
-        Assert.True(scene.SpawnedUnitPrimitives > 0, "the bought unit produced no rendered faces");
+        Assert.Equal(0, scene.SpawnedUnitPrimitives);
 
         var session = scene.ScoreSession(new HudSession());
-        Assert.Equal((1, 4), (session.Mode, session.Score0));
+        Assert.Equal((1, 5), (session.Mode, session.Score0));
+        Assert.Equal(5, pads.VmState.GameSession[RpnsVmState.SessionScoreP1]);
+        Assert.Equal(0, pads.VmState.GameSession[RpnsVmState.SessionHelisP1]);
+    }
+
+    [ConftFact]
+    public void TheGreenPadOutlineRequiresExplicitOptInForEachFrame()
+    {
+        var (scene, _) = SceneWithOnlyThisPadMarked(106);
+        var camera = new LevelCamera(0.0, 20.0, 0x1200);
+
+        scene.Render(camera);
+        Assert.Equal(0, scene.PadMarkerLines);
+        byte[] normal = scene.Rgb.ToArray();
+
+        scene.ShowPadMarkers = true;
+        scene.Render(camera);
+        Assert.Equal(4, scene.PadMarkerLines);
+        byte[] green = { 0x40, 0xFF, 0x40 };
+        Assert.Contains(Enumerable.Range(0, LevelScene.Width * LevelScene.Height), i =>
+            scene.Rgb.AsSpan(i * 3, 3).SequenceEqual(green) &&
+            !normal.AsSpan(i * 3, 3).SequenceEqual(green));
+
+        scene.ShowPadMarkers = false;
+        scene.Render(camera);
+        Assert.Equal(0, scene.PadMarkerLines);
+        Assert.Equal(normal, scene.Rgb);
     }
 
     [RetailFact]
     public void PadMarkersExcludeNonWalkerZones()
     {
         var (scene, zone) = SceneWithOnlyThisPadMarked(235);
+        scene.ShowPadMarkers = true;
         var camera = new LevelCamera(0.0, 20.0, 0x6000);
         Assert.Equal(PurchasePadKind.MapZone, zone.Kind);
         Assert.False(zone.RequiresWalkerMode);
@@ -273,6 +407,7 @@ public sealed class PurchasePathTests
     public void PadMarkersCullAtTheHorizontalDistanceLimit()
     {
         var (scene, pad) = SceneWithOnlyThisPadMarked(152);
+        scene.ShowPadMarkers = true;
         var camera = new LevelCamera(0.0, 70.0, 0x6000);
         foreach (var (dx, dz) in new[] { (1, 0), (0, 1) })
         {
@@ -298,6 +433,7 @@ public sealed class PurchasePathTests
     public void RaisedPadMarkerDrawsAtThePlatformHeight()
     {
         var (scene, _) = SceneWithOnlyThisPadMarked(152);
+        scene.ShowPadMarkers = true;
         var camera = new LevelCamera(0.0, 20.0, 0x1200);
         scene.Render(camera);
         Assert.Equal(6, scene.PadMarkerLines);
@@ -350,7 +486,9 @@ public sealed class PurchasePathTests
             File.WriteAllBytes(path, mission);
             var scene = new LevelScene(path);
             scene.EnableObjectives();
-            Assert.Equal(layeredTile.Y, scene.PurchasePads!.FindPad(106)!.WorldY);
+            // 800319D4.c:131–132 stores the selected surface height in a signed halfword.
+            int mapZoneY = unchecked((short)(layeredTile.Y >> 8)) << 8;
+            Assert.Equal(mapZoneY, scene.PurchasePads!.FindPad(106)!.WorldY);
             Assert.Equal(layeredTile.Y, scene.PurchasePads.FindPad(152)!.WorldY);
         }
         finally
@@ -363,6 +501,7 @@ public sealed class PurchasePathTests
     public void RetiredClaimPadDisappearsFromMarkers()
     {
         var (scene, _) = SceneWithOnlyThisPadMarked(152);
+        scene.ShowPadMarkers = true;
         scene.Objectives!.Score.Score[0] = 100;
         var camera = new LevelCamera(0.0, 20.0, 0x1200);
         scene.Render(camera);
@@ -515,13 +654,22 @@ public sealed class PurchasePathTests
         Assert.Equal(retireScript, entity.RetireScript);
         vm.OnCommandByTag!(152, 0x3D, 1);
 
+        // The command only fills the entity's entry slot (8004DA84.c:57-63); the retire runs on the
+        // entry pass of 8004CECC.c:108-114, after the script that issued it returned. That pass walks
+        // the frame's active table D_800A8F90, so the entity has to survive this frame's cull.
+        Assert.NotEqual(0, entity.RuntimeId);
+        world.CullActive(entity.GroundPosition.X, entity.GroundPosition.Z);
+        Assert.Equal(1, pads.RunEntityCommands(world));
         Assert.Equal(0, entity.RuntimeId);
         const uint mask = LiveEntity.ResetFlag | LiveEntity.NoRetireScriptFlag;
         Assert.Equal(mask, entity.Flags & mask);
         Assert.Equal(0, vm.SessionPointerBank[3]);
 
         // The same slot-1 script runs if 0x3D does not set the skip flag.
+        var other = Assert.Single(world.Units.Where(e => e.RecordId == 151));
         vm.OnCommandByTag!(151, 0x3D, 0);
+        world.CullActive(other.GroundPosition.X, other.GroundPosition.Z);
+        Assert.Equal(1, pads.RunEntityCommands(world));
         Assert.Equal(63, vm.SessionPointerBank[3]);
     }
 
@@ -536,7 +684,7 @@ public sealed class PurchasePathTests
         pads.VmState.GameSession[RpnsVmState.SessionScoreP2] = 100;
 
         // Exercise the east-side branch of 152 -> 149 -> 153 with the retail P2 tag.
-        Assert.True(pads.TryTriggerPad(pads.FindPad(152)!, playerEntityId: 16, isHoverMode: false).Triggered);
+        Assert.True(pads.TryTriggerPad(pads.FindPad(152)!, new PlayerTarget(16, 0, 0, 0, 0, busy: false)).Triggered);
         Assert.True(helipad.IsEnabled);
         var session = scene.ScoreSession(new HudSession());
         Assert.Equal((0, 1), (session.Total1, session.Total2));
@@ -674,6 +822,119 @@ public sealed class PurchasePathTests
         Assert.Equal(0, t29.Count); // fired once and decremented count
         int spawned = spawner.Drain(1);
         Assert.True(spawned >= group50Count, $"Expected >= {group50Count} group-50 spawns, got {spawned}");
+    }
+
+    /// <summary>
+    /// The two base dreadnought pads are not one-shot: the latch word they test (<c>80069D68.c</c>
+    /// case 19, <c>ScriptVars[18]</c> for Cact 47 and <c>[20]</c> for Cact 51) is cleared by the retire
+    /// script of the very unit the pad buys. CONFT.MIS pad 47 runs pool 1599 (0x63F) and queues
+    /// spawner 7, whose Csac 7 record carries retire script 1739 (0x6CB) = <c>80 92 20 ... 00</c>,
+    /// i.e. <c>ScriptVars[18] = 0</c> plus 5 points to the opposing session words. Pad 51 runs 1631
+    /// (0x65F) and queues spawner 8; Csac 8 carries 1763 (0x6E3) = <c>ScriptVars[20] = 0</c>.
+    /// <c>gRetireEntity</c> (8004D958.c:54) evaluates that word on the entity's +0x98, the record's
+    /// second script slot (the request's +0x24/+0x28 words, gLoadMapZone.c:95); the port routes it
+    /// through <see cref="EntityWorld.OnScript"/> (<see cref="LiveEntity.Retire"/>). So a second
+    /// purchase is possible only once the first unit dies - and this test pins both halves: the
+    /// refused second attempt while the unit lives, and the accepted one after message 4.
+    /// </summary>
+    [RetailFact]
+    public void Cact14DreadnoughtPadsRearmWhenTheirBoughtUnitRetires()
+    {
+        byte[] bytes = File.ReadAllBytes(LevelSceneRetirementTests.FindMission()!);
+        var records = MissionEntities.Parse(bytes);
+        var registry = new MapObjectRegistry();
+        registry.InitMissionSpawnState();
+        registry.LiveObjects.Allocate();
+        var world = new EntityWorld();
+        var spawner = new CsacUnitSpawner(registry, new RetailRandom(0x457), world);
+        spawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(bytes, r));
+        // 8004D598.c:51-52: the retirement sweep frees the Csac slot of every 0x10000000 entity.
+        world.OnSpawnedUnitRetired = spawner.RecordSpawnedUnitRetirement;
+        var purchase = PurchasePadSystem.LoadFromMission(bytes, spawner,
+            random: new RetailRandom(0x457), world: world)!;
+        var vm = purchase.VmState;
+
+        // 8002AA1C.c:128-130 / 8004D958.c:53-55: damage and retire scripts run on the pads' VM.
+        world.OnScript = (_, script, arg1, arg2) =>
+        {
+            var slice = purchase.Pool.Slice(script);
+            if (slice.IsEmpty || slice[0] == 0) return; // 80069D68.c:163-165
+            RpnsScriptVm.Execute(slice, vm, arg1, arg2);
+        };
+
+        AssertRearm(purchase, spawner, world, vm, padId: 47, scriptOffset: 1599,
+            latchVar: 18, spawnerId: 7, unitRecordId: 7, retireScript: 1739);
+
+        // Same mechanism on the second base: Cact 51 -> pool 1631, latch word 20, spawner 8,
+        // Csac 8 with retire script 1763.
+        AssertRearm(purchase, spawner, world, vm, padId: 51, scriptOffset: 1631,
+            latchVar: 20, spawnerId: 8, unitRecordId: 8, retireScript: 1763);
+    }
+
+    private static void AssertRearm(PurchasePadSystem purchase, CsacUnitSpawner spawner,
+        EntityWorld world, RpnsVmState vm, int padId, int scriptOffset, int latchVar,
+        int spawnerId, int unitRecordId, int retireScript)
+    {
+        var pad = purchase.FindPad(padId)!;
+        Assert.Equal(PurchasePadKind.TriggerAttachment, pad.Kind);
+        Assert.Equal(scriptOffset, pad.Script0Offset);
+        Assert.False(pad.IsEnabled, "the pad starts disabled (flag 0x10)");
+        purchase.ApplyPadCommand7A(pad, arg: 1);
+        Assert.True(pad.IsEnabled);
+
+        // First purchase: score 50, latch 0. The gate of 80069D68.c case 37 is `b < a` with
+        // b = ScriptVars[latch] and a = 1, i.e. "not bought yet", so 0 passes and the tail
+        // (`push 1; push latch; op 32`) stores exactly 1.
+        vm.GameSession[RpnsVmState.SessionScoreP1] = 50;
+        Assert.Equal(0, vm.ScriptVars[latchVar]);
+        var first = purchase.TryTriggerPad(pad, new PlayerTarget(12, 0, 0, 0, 0, busy: false), frameTime: 40);
+        Assert.True(first.Triggered);
+        Assert.True(first.Accepted);
+        Assert.Equal(RpnsVmState.SfxPurchaseAccepted, first.SfxId);
+        Assert.Equal(0, first.ScoreAfter);
+        Assert.Equal(1, vm.ScriptVars[latchVar]);
+
+        int before = spawner.SpawnedUnits.Count;
+        Assert.Contains(spawner.Slots, s => s.Record.Id == spawnerId); // the script's op-60 id
+        Assert.True(spawner.Drain(1) >= 1);
+        var unit = spawner.SpawnedUnits.Skip(before).Single(u => u.SourceSlot.Record.Id == unitRecordId);
+        Assert.Equal(unitRecordId, unit.SourceSlot.Record.Id);
+        Assert.Equal(retireScript, unit.RetireScript);
+        Assert.Contains(unit, world.Units);
+        int spawnCount = spawner.SpawnedUnits.Count;
+
+        // Second attempt with the unit alive: the latch is 1, the gate fails and the else arm
+        // stores 73 in pointer-bank word 3 (0xC9 83 1E). Nothing is queued, nothing spawns.
+        var denied = purchase.TryTriggerPad(pad, new PlayerTarget(12, 0, 0, 0, 0, busy: false), frameTime: 41);
+        Assert.True(denied.Triggered);
+        Assert.False(denied.Accepted);
+        Assert.Equal(RpnsVmState.SfxPurchaseDenied, denied.SfxId);
+        Assert.Equal(1, vm.ScriptVars[latchVar]);
+        spawner.Drain(1);
+        Assert.Equal(spawnCount, spawner.SpawnedUnits.Count);
+
+        // Message 4 -> gEntityBaseHandler -> gRetireEntity runs the unit's +0x98 script
+        // (8004D958.c:53-55), which zeroes the latch and pays 5 to the opposing session words.
+        int otherScoreBefore = vm.GameSession[RpnsVmState.SessionScoreP2];
+        Assert.Equal(1, LiveEntity.BaseHandler(4, unit, world, null));
+        Assert.Equal(0, vm.ScriptVars[latchVar]);
+        Assert.Equal(5, vm.GameSession[RpnsVmState.SessionScoreP2] - otherScoreBefore);
+        Assert.Equal(0, unit.RuntimeId);
+        // 8004D598.c:39-71: the same frame's sweep unlinks the retiree, runs message 5 and lets
+        // func_80061020 drop the spawner's live counter so the slot can spawn again.
+        Assert.Equal(1, world.SweepRetired());
+        Assert.DoesNotContain(unit, world.Units);
+
+        // Third trigger after the retire: the same pad, the same word, a second unit this session.
+        vm.GameSession[RpnsVmState.SessionScoreP1] = 50;
+        var second = purchase.TryTriggerPad(pad, new PlayerTarget(12, 0, 0, 0, 0, busy: false), frameTime: 42);
+        Assert.True(second.Accepted);
+        Assert.Equal(1, vm.ScriptVars[latchVar]);
+        Assert.True(spawner.Drain(1) >= 1);
+        var again = spawner.SpawnedUnits.Skip(spawnCount).Single(u => u.SourceSlot.Record.Id == unitRecordId);
+        Assert.NotSame(unit, again);
+        Assert.Equal(retireScript, again.RetireScript);
+        Assert.Equal(2, spawner.SpawnedUnits.Count(u => u.SourceSlot.Record.Id == unitRecordId));
     }
 
     private static byte[] BuildSyntheticCfunMission(

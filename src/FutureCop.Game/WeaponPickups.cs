@@ -80,7 +80,12 @@ public sealed class WeaponPickup
     /// <summary>Descriptor +0x3A: spin rate; <c>((rate &lt;&lt; 4) / 218) &gt;&gt; 4</c> lands in +0xD4.</summary>
     public short Rate { get; init; }
     /// <summary>Last hierarchy entry: the Cobj id of the first aRSL reference, 0 when there is none.</summary>
-    public int ModelId { get; init; }
+    /// <remarks>
+    /// Defaults to <see cref="WeaponPickups.NoModel"/>, not 0: no mission resource is named 0, but a
+    /// lookup by id would still match the first model in a list that carries none, and the pickup
+    /// would then borrow an unrelated model. func_8002ACB4:60-62 draws nothing without a model.
+    /// </remarks>
+    public int ModelId { get; init; } = WeaponPickups.NoModel;
     /// <summary>File offset of the 0x3C-byte placement descriptor (<c>chunk + 0x08</c>).</summary>
     public int RecordOffset { get; init; }
 
@@ -290,6 +295,14 @@ public sealed class WeaponPickups
     public const byte PlacementPayloadType = 0x10;
     /// <summary>Byte offset of the placement record from the chunk start (func_80019C38 - 4).</summary>
     public const int RecordFromChunk = 0x08;
+    /// <summary>
+    /// <see cref="WeaponPickup.ModelId"/> of a record whose aRSL list carries no Cobj entry. -1 can
+    /// never be a model id, so the draw path finds no model and the record draws nothing, exactly
+    /// like the null instance func_8002ACB4:60-62 skips. 0 is not usable as "no model": a task-21
+    /// probe of PA/CONFT.MIS found the port's model list populated with ids 12..66 and no 0, so a
+    /// later loader that does index from 0 would make every missing entry draw a real model.
+    /// </summary>
+    public const int NoModel = -1;
 
     private readonly List<WeaponPickup> _items = new();
     private readonly Dictionary<byte, WeaponSlotLimits> _limits = new();
@@ -307,10 +320,17 @@ public sealed class WeaponPickups
     public IReadOnlyList<WeaponPickup> Items => _items;
 
     /// <summary>Number of pickups that already paid out and retired.</summary>
-    public int CollectedCount => _items.Count(i => i.Collected);
+    public int CollectedCount { get; private set; }
 
     /// <summary>Number of pickups still on the map.</summary>
-    public int RemainingCount => _items.Count(i => !i.Collected);
+    public int RemainingCount => _items.Count;
+
+    /// <summary>
+    /// Invoked immediately after <see cref="Update"/> retires a pickup on contact
+    /// (gApplyRotatingPropProximityEffect, 8002FF6C.c:77-79 -> gRetireEntity, 8004D958.c:48-60),
+    /// allowing the owning scene to retire the backing Csac entity and arm its respawn countdown.
+    /// </summary>
+    public Action<WeaponPickup>? OnRetired { get; set; }
 
     /// <summary>Empty field; <see cref="FromMission"/> fills it from the archive.</summary>
     public WeaponPickups(IReadOnlyDictionary<byte, WeaponRecord> registry, int difficulty = WeaponSlots.DefaultDifficulty,
@@ -326,8 +346,21 @@ public sealed class WeaponPickups
     public WeaponPickup Add(WeaponPickup pickup)
     {
         ArgumentNullException.ThrowIfNull(pickup);
-        _items.Add(pickup);
+        if (!pickup.Collected) _items.Add(pickup);
         return pickup;
+    }
+
+    /// <summary>Swaps one item for another in place, keeping its archive position.</summary>
+    /// <param name="current">Item to replace; must be the entry in <see cref="Items"/>.</param>
+    /// <param name="replacement">New item at the same index.</param>
+    public void Replace(WeaponPickup current, WeaponPickup replacement)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(replacement);
+        int index = _items.IndexOf(current);
+        if (index < 0) throw new ArgumentException("item is not part of this field", nameof(current));
+        if (replacement.Collected) _items.RemoveAt(index);
+        else _items[index] = replacement;
     }
 
     /// <summary>
@@ -509,16 +542,36 @@ public sealed class WeaponPickups
         if (target is null || target.EntityType != 1) return 0;
 
         int paid = 0;
-        foreach (var item in _items)
+        for (int i = 0; i < _items.Count;)
         {
-            if (item.Collected) continue;
-            if (!Overlaps(item, x, y, z)) continue;
+            var item = _items[i];
+            if (item.Collected)
+            {
+                _items.RemoveAt(i);
+                continue;
+            }
+            if (!Overlaps(item, x, y, z))
+            {
+                i++;
+                continue;
+            }
             int accumulator = item.Accumulator;
             var outcome = Apply(ctx, target, item.Payload, item.Amount, ref accumulator, item.Period);
             item.Accumulator = accumulator;
-            if (!outcome.Paid) continue;
-            paid++;
-            if (item.RetiresOnCollect) item.Collected = true;
+            if (outcome.Paid) paid++;
+            // func_8002FF6C:76-79 retires unconditionally on contact when 0x02000000 is set,
+            // even when gApplyPlayerResupply returned early below the interval period.
+            if (item.RetiresOnCollect)
+            {
+                item.Collected = true;
+                _items.RemoveAt(i);
+                CollectedCount++;
+                OnRetired?.Invoke(item);
+            }
+            else
+            {
+                i++;
+            }
         }
         return paid;
     }
@@ -559,27 +612,11 @@ public sealed class WeaponPickups
             // func_80019C38:60 returns chunk + 0x0C and func_8004D6D4:103 steps four bytes back, so the
             // record base is chunk + 0x08 and its type word sits at chunk + 0x0C.
             int rec = p + RecordFromChunk;
-            var span = data.AsSpan(rec);
-            int x = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(span.Slice(0x08));
-            int z = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(span.Slice(0x10));
-            int kindType = (sbyte)span[0x24];
-            int kind = span[0x25];
-            int value = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(0x26));
-            int height = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(span.Slice(0x28));
-            int halfX = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(span.Slice(0x2A)) << 4;
-            int halfY = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(span.Slice(0x2C)) << 4;
-            int halfZ = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(span.Slice(0x2E)) << 4;
-            int speed = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(span.Slice(0x30));
-            uint payload = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(0x34));
-            short angle = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(span.Slice(0x38));
-            short rate = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(span.Slice(0x3A));
 
-            int ground = 0;
-            if (map is not null)
-                ground = LevelGround.PlacementHeight(map, x, z, WeaponPickup.GroundRank(kindType)) ?? 0;
-            int y = ground + (height << 4);
-
-            int modelId = 0;
+            // func_8004D6D4:143-150 resolves the record's aRSL pairs through func_80019BF0 and hands the
+            // list to the spawn path; no model is attached when no pair resolves. A record without an
+            // aRSL Cobj entry therefore draws nothing (func_8002ACB4:60-62 skips a null instance).
+            int modelId = NoModel;
             int list = p + length;
             if (list + 12 <= data.Length &&
                 System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(list)) == arsl &&
@@ -595,30 +632,77 @@ public sealed class WeaponPickups
                 }
             }
 
-            field.Add(new WeaponPickup
-            {
-                X = x,
-                Y = y,
-                Z = z,
-                HalfX = halfX,
-                HalfY = halfY,
-                HalfZ = halfZ,
-                Payload = payload,
-                Amount = -1,                     // func_8002FF6C:76 passes -1
-                Period = WeaponPickup.RetailPeriod(speed),
-                SectionId = section,
-                KindType = kindType,
-                Kind = kind,
-                Value = value,
-                Height = height,
-                Speed = speed,
-                Angle = angle,
-                Rate = rate,
-                ModelId = modelId,
-                RecordOffset = rec,
-            });
+            field.Add(FromDescriptor(data.AsSpan(rec), section, rec, modelId, map));
         }
         return field;
+    }
+
+    /// <summary>
+    /// Builds one <see cref="WeaponPickup"/> from a parsed type-0x10 <see cref="EntityRecord"/>,
+    /// mirroring gInitRotatingProp (func_8002FA20, 8002FA20.c:78-122) for Csac respawns:
+    /// ground-snapped y (<c>ground + (height &lt;&lt; 4)</c>), box extents (<c>&lt;&lt; 4</c>),
+    /// payload word, reciprocal period and the first aRSL Cobj id (or <see cref="NoModel"/>).
+    /// </summary>
+    public static WeaponPickup? FromRecord(EntityRecord record, LevelMap? map)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        if (record.Type != PlacementPayloadType || record.Source.Length < 0x3C) return null;
+        int modelId = NoModel;
+        foreach (var resource in record.Resources)
+        {
+            if (resource.Type == "Cobj")
+            {
+                modelId = resource.Id;
+                break;
+            }
+        }
+        return FromDescriptor(record.Source, record.Id, record.ChunkOffset + RecordFromChunk, modelId, map);
+    }
+
+    private static WeaponPickup FromDescriptor(ReadOnlySpan<byte> span, int section, int recordOffset,
+        int modelId, LevelMap? map)
+    {
+        int x = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(span.Slice(0x08));
+        int z = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(span.Slice(0x10));
+        int kindType = (sbyte)span[0x24];
+        int kind = span[0x25];
+        int value = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(0x26));
+        int height = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(span.Slice(0x28));
+        int halfX = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(span.Slice(0x2A)) << 4;
+        int halfY = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(span.Slice(0x2C)) << 4;
+        int halfZ = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(span.Slice(0x2E)) << 4;
+        int speed = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(span.Slice(0x30));
+        uint payload = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(0x34));
+        short angle = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(span.Slice(0x38));
+        short rate = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(span.Slice(0x3A));
+
+        int ground = 0;
+        if (map is not null)
+            ground = LevelGround.PlacementHeight(map, x, z, WeaponPickup.GroundRank(kindType)) ?? 0;
+        int y = ground + (height << 4);
+
+        return new WeaponPickup
+        {
+            X = x,
+            Y = y,
+            Z = z,
+            HalfX = halfX,
+            HalfY = halfY,
+            HalfZ = halfZ,
+            Payload = payload,
+            Amount = -1,                     // func_8002FF6C:76 passes -1
+            Period = WeaponPickup.RetailPeriod(speed),
+            SectionId = section,
+            KindType = kindType,
+            Kind = kind,
+            Value = value,
+            Height = height,
+            Speed = speed,
+            Angle = angle,
+            Rate = rate,
+            ModelId = modelId,
+            RecordOffset = recordOffset,
+        };
     }
 
     private void ReadLimits(byte[] data)

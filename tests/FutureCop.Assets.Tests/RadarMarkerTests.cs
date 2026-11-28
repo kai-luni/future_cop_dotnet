@@ -466,6 +466,53 @@ public sealed class RadarMarkerTests
         Assert.Equal((0x00, 0x00, 0x00), Pixel(noRadar, 14, 44));
     }
 
+    /// <summary>
+    /// <c>8004CC68.c:36-47</c> in the real HUD frame path: a radar slot carrying colour index 17
+    /// (<c>8004CAE4.c:91</c>) is painted with the pulsed colour of the frame, not with the static
+    /// init value <c>0x000000F8</c>. Cycles sampled inside the <c>0x180</c> blink window of
+    /// <c>8005A9C4.c:125</c>: <c>frameTime = 0x80</c> (phase 16) gives level 24 and
+    /// <c>D_800A6F60[17] = 0xC0</c>; <c>frameTime = 0x180</c> (phase 48) gives
+    /// <c>0x3F - 48 + 8 = 23</c> and <c>0xB8</c>.
+    /// </summary>
+    [Fact]
+    public void InGameHud_Paint_UsesPerFrameMarkerPulseColorsForEntry17()
+    {
+        // Same geometry as the test above: slot 0 at +X, bearing 0, triangle centroid (66, 44) at the left origin.
+        var node = new RadarMarkerNode(
+            ActiveMask: 1u,
+            Slots: new[] { new RadarMarkerSlot(Flags: RadarMarkers.PulseFirstColorIndex, PosA: 0, PosB: 0x20) });
+        var game = new HudGameBlock
+        {
+            Health = 100,
+            MaxHealth = 100,
+            Radar = new RadarReference(0, 0, Heading: 0),
+            Player = new HudPlayerBlock { Value64 = 2, ValueC1 = 0, RadarMarkers = node },
+        };
+        var session = new HudSession { Mode = 0 };
+
+        Assert.Equal(0x000000F8, RadarMarkers.MarkerColorTable[RadarMarkers.PulseFirstColorIndex]);
+
+        // frameTime 0x80: >> 3 = 16 -> level 24 -> R = 0xC0 (8004CC68.c:41,45); 0x1C0 & 0x180 != 0 (blink on).
+        var mid = new byte[LevelScene.Width * LevelScene.Height * 3];
+        InGameHud.Paint(mid, game, session, new HudGlobals { FrameTime = 0x80 });
+        Assert.Equal((0xC0, 0x00, 0x00), Pixel(mid, 66, 44));
+
+        // frameTime 0xC0: >> 3 = 24 -> level 0x3F - 24 + 8 = 0x1F -> R = 0xF8 (8004CC68.c:38-45).
+        var peak = new byte[LevelScene.Width * LevelScene.Height * 3];
+        InGameHud.Paint(peak, game, session, new HudGlobals { FrameTime = 0xC0 });
+        Assert.Equal((0xF8, 0x00, 0x00), Pixel(peak, 66, 44));
+
+        // frameTime 0x180: >> 3 = 48 -> level 0x3F - 48 + 8 = 23 -> R = 0xB8 (8004CC68.c:38-45).
+        var falling = new byte[LevelScene.Width * LevelScene.Height * 3];
+        InGameHud.Paint(falling, game, session, new HudGlobals { FrameTime = 0x180 });
+        Assert.Equal((0xB8, 0x00, 0x00), Pixel(falling, 66, 44));
+
+        // frameTime 0x1C0: >> 3 = 56 -> level 0x3F - 56 + 8 = 15 -> R = 0x78 (blink still on).
+        var late = new byte[LevelScene.Width * LevelScene.Height * 3];
+        InGameHud.Paint(late, game, session, new HudGlobals { FrameTime = 0x1C0 });
+        Assert.Equal((0x78, 0x00, 0x00), Pixel(late, 66, 44));
+    }
+
     private static (byte R, byte G, byte B) Pixel(byte[] rgb, int x, int y)
     {
         int o = (y * LevelScene.Width + x) * 3;

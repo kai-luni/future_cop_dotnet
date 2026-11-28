@@ -151,6 +151,12 @@ public sealed class SkyCaptainSystem
     public Func<EnemyEntity, EnemyEntity, bool>? LineOfSightProbe { get; private set; }
 
     /// <summary>
+    /// Coarse height grid of the bound mission (func_800695A8 gBuildCoarseHeightGrid), sampled
+    /// bilinearly by func_80069A38 in the type-9 hover path. Null before <see cref="BindMap"/>.
+    /// </summary>
+    public HeightGrid? HeightGrid { get; private set; }
+
+    /// <summary>
     /// Wires the enemy attack cluster's terrain raycast hooks (<see cref="LineOfSightProbe"/> and
     /// <see cref="EnemyWorld.OnTraceMapRay"/>) to <see cref="MechCollision.Ray"/> against the loaded
     /// <see cref="LevelMap"/>.
@@ -190,6 +196,8 @@ public sealed class SkyCaptainSystem
     {
         ArgumentNullException.ThrowIfNull(map);
         _map = map;
+        // func_800695A8 builds the coarse grid at load time; func_80069A38 samples it later.
+        HeightGrid = HeightGrid.Build(map);
         LineOfSightProbe = (ctx, target) =>
             MechCollision.Ray(
                 map,
@@ -448,7 +456,11 @@ public sealed class SkyCaptainSystem
         // +0x68 aliases the second score word on the 1P HUD (8002D1A0.c:204-207).
         var score = scene.Objectives?.Score.Score;
         if (Drone is not null && score is not null) Economy.F68 = score[1];
-        Advance(dt, pos => LevelGround.Height(scene.Map, pos[0], pos[1], pos[2], out _));
+        // Exactly one spawner path may run: when the retail CSAC path is enabled on the scene,
+        // suppress the retired BuildOrderSpawner so both paths can never spawn or move units
+        // simultaneously.
+        AdvanceCore(dt, pos => LevelGround.Height(scene.Map, pos[0], pos[1], pos[2], out _),
+            runBuildOrderSpawner: !scene.EnableCsacSpawner);
         if (Drone is not null && score is not null) score[1] = Economy.F68;
         // Message 10 of func_8002D664 hands the touching entity to gTryCaptureObjective. The strategic
         // drone is gSinglePlayerEntity (func_800331CC:243): a type-0x25 candidate whose entity id is
@@ -485,7 +497,10 @@ public sealed class SkyCaptainSystem
     }
 
     /// <summary>Message 6 with an explicit func_80066F78 probe (testable without a mission).</summary>
-    public void Advance(int dt, Func<int[], int> groundHeight)
+    public void Advance(int dt, Func<int[], int> groundHeight) =>
+        AdvanceCore(dt, groundHeight, runBuildOrderSpawner: true);
+
+    private void AdvanceCore(int dt, Func<int[], int> groundHeight, bool runBuildOrderSpawner)
     {
         _frameTime = unchecked(_frameTime + dt);
         // 800357C0.c:141-144: msg 6 returns 0 while +0xFA == 5, the drone tick does not run.
@@ -495,8 +510,9 @@ public sealed class SkyCaptainSystem
             StrategicDroneTick.Tick(d.Drone, new TickWorld(this, d, groundHeight), dt);
         }
         // Opt-in port extension beyond retail: materialize build-order production and keep already
-        // spawned units moving even when the drone is inactive or in state 5.
-        if (_enableBuildOrderSpawner)
+        // spawned units moving even when the drone is inactive or in state 5, unless the live CSAC
+        // spawner owns unit movement on the scene.
+        if (_enableBuildOrderSpawner && runBuildOrderSpawner)
         {
             _activeGroundHeight = groundHeight;
             try
@@ -599,7 +615,7 @@ public sealed class SkyCaptainSystem
     private static int Fmul(int a, int b) => unchecked((int)(((long)a * b) >> 16));
 
     /// <summary>The strategy, timer and mover services share one scene and one drone.</summary>
-    private sealed class TickWorld : StrategicDroneTick.IWorld, DroneStrategy.IWorld, IHoverEnemyWorld
+    internal sealed class TickWorld : StrategicDroneTick.IWorld, DroneStrategy.IWorld, IHoverEnemyWorld
     {
         private readonly SkyCaptainSystem _sys;
         private readonly StrategicDrone _d;
@@ -761,8 +777,11 @@ public sealed class SkyCaptainSystem
             PullFromBody(_d);
         }
 
-        // IHoverEnemyWorld. func_80069A38 is not ported: the point probe func_80066F78 stands in.
-        public int SampleHeightBilinear(int[] pos) => _ground(pos);
+        // IHoverEnemyWorld. 800324E0.c:330 samples the mission's coarse height grid bilinearly
+        // (func_80069A38); the point probe func_80066F78 stays in use for gGetGroundHeight
+        // (800324E0.c:368) and for callers without a grid.
+        public int SampleHeightBilinear(int[] pos) =>
+            _sys.HeightGrid is { } grid ? grid.Sample(pos) : _ground(pos);
         public int GetGroundHeight(int[] pos) => _ground(pos);
         public HoverEnemyHit? FindTargetEntity(HoverEnemy o) => null;   // type 0x25 never searches (800324E0.c:167)
         public void StepAttackScheduler(HoverEnemy o, int dt) { }        // +0xA0 slot not initialised (80032180.c:205)

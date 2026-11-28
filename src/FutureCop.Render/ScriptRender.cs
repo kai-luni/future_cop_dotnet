@@ -64,14 +64,7 @@ public static class ScriptRender
     }
 
     /// <summary>func_8001846C: sine and cosine in 16.16 from the 4096-step angle table.</summary>
-    public static (int Sin, int Cos) SinCos(int angle)
-    {
-        int a = angle & 0xfff;
-        int i = a & 0x3ff;
-        int s = (int)Math.Round(Math.Sin(i * Math.PI / 2048) * 32768) << 1;
-        int c = (int)Math.Round(Math.Sin((1024 - i) * Math.PI / 2048) * 32768) << 1;
-        return (a >> 10) switch { 0 => (s, c), 1 => (c, -s), 2 => (-s, -c), _ => (-c, s) };
-    }
+    public static (int Sin, int Cos) SinCos(int angle) => RetailAngles.SinCos(angle);
 
     /// <summary>
     /// func_8001006C as the bone compose step: the local matrix is rotated by the parent and the
@@ -80,22 +73,39 @@ public static class ScriptRender
     /// </summary>
     public static Gte.Mat Compose(Gte.Mat local, Gte.Mat parent)
     {
-        var loaded = Gte.Load(parent);
-        var input = new[] { local.W[0], local.W[1], local.W[2], local.W[3], local.W[4], local.W[5],
-            local.W[6], local.W[7], local.W[8], local.Tx, local.Ty, local.Tz };
-        var output = new int[12];
+        Span<short> r = stackalloc short[9];
+        int[] pw = parent.W;
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++)
+            {
+                int w = pw[j * 3 + i];
+                r[i * 3 + j] = i == 1 ? (short)((-w) >> 4) : (short)(w >> 4);
+            }
+        int[] lw = local.W;
+        Span<int> input = stackalloc int[12]
+        {
+            lw[0], lw[1], lw[2], lw[3], lw[4], lw[5], lw[6], lw[7], lw[8], local.Tx, local.Ty, local.Tz,
+        };
+        var outW = new int[9];
+        int tx = 0, ty = 0, tz = 0;
         for (int i = 0; i < 4; i++)
         {
             short x = (short)(input[i * 3] >> 4), y = (short)(input[i * 3 + 1] >> 4), z = (short)(input[i * 3 + 2] >> 4);
-            for (int j = 0; j < 3; j++)
+            int c0 = (int)Math.Clamp(((long)r[0] * x + (long)r[1] * y + (long)r[2] * z) >> 12, -32768, 32767) << 4;
+            int c1 = (-(int)Math.Clamp(((long)r[3] * x + (long)r[4] * y + (long)r[5] * z) >> 12, -32768, 32767)) << 4;
+            int c2 = (int)Math.Clamp(((long)r[6] * x + (long)r[7] * y + (long)r[8] * z) >> 12, -32768, 32767) << 4;
+            if (i < 3)
             {
-                long sum = (long)loaded.R[j * 3] * x + (long)loaded.R[j * 3 + 1] * y + (long)loaded.R[j * 3 + 2] * z;
-                int value = (int)Math.Clamp(sum >> 12, -32768, 32767);
-                output[i * 3 + j] = (j == 1 ? -value : value) << 4;
+                outW[i * 3] = c0;
+                outW[i * 3 + 1] = c1;
+                outW[i * 3 + 2] = c2;
+            }
+            else
+            {
+                tx = c0; ty = c1; tz = c2;
             }
         }
-        return new Gte.Mat(output[..9], output[9] + parent.Tx, output[10] + parent.Ty,
-            output[11] + parent.Tz);
+        return new Gte.Mat(outW, tx + parent.Tx, ty + parent.Ty, tz + parent.Tz);
     }
 
     /// <summary>
@@ -159,6 +169,15 @@ public static class ScriptRender
         Gte.Mat instance, int h, int ofx, int ofy, int widthMode)
     {
         var sv = new ScreenVertex[verts.Count];
+        Project(model, verts, frame, instance, h, ofx, ofy, widthMode, sv);
+        return sv;
+    }
+
+    /// <summary>func_80013F08 scripted path writing into a caller-supplied scratch span.</summary>
+    public static void Project(Model model, IReadOnlyList<Vertex> verts, int frame,
+        Gte.Mat instance, int h, int ofx, int ofy, int widthMode, Span<ScreenVertex> destination)
+    {
+        destination.Slice(0, verts.Count).Clear();
         foreach (var bone in Bones(model, frame, instance))
         {
             var loaded = Gte.Load(bone.Matrix);
@@ -169,10 +188,9 @@ public static class ScriptRender
                 var v = verts[i];
                 var (sxy, sz3, clip, _, written) = Gte.Rtps(loaded, v.X, v.Y, v.Z, h, ofx, ofy, widthMode);
                 // Retail leaves stale data when the clip byte is 1; a fresh buffer is zero.
-                sv[i] = written ? new ScreenVertex(sxy, sz3, clip) : new ScreenVertex(0, 0, clip);
+                destination[i] = written ? new ScreenVertex(sxy, sz3, clip) : new ScreenVertex(0, 0, clip);
             }
         }
-        return sv;
     }
 
     /// <summary>

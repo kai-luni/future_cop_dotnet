@@ -31,10 +31,11 @@ public class EnvironmentVectorTests
         new((short)v[index], (short)v[index + 1], (short)v[index + 2]);
 
     [Theory, MemberData(nameof(Cases), "SINCOS")]
-    public void RenderSinCosMatchesRetail(int[] v)
+    public void GameAndRenderSinCosMatchRetail(int[] v)
     {
         Assert.Equal(3, v.Length);
         Assert.Equal((v[1], v[2]), ScriptRender.SinCos(v[0]));
+        Assert.Equal((v[1], v[2]), MechMath.SinCos(v[0]));
     }
 
     [Theory, MemberData(nameof(Cases), "ROT")]
@@ -67,6 +68,45 @@ public class EnvironmentVectorTests
         Assert.Equal((v[17], v[18], v[19]), (actual.Trx, actual.Try, actual.Trz));
     }
 
+    // func_80010820 only differs from func_80010750 by leaving w9..w11 untouched, i.e. the packed
+    // rotation registers and a zero translation; the managed loader is the only rotation packer and
+    // produces the same nine s16 elements, so the shared rows run through it unchanged.
+    [Theory, MemberData(nameof(Cases), "LOADROT")]
+    public void RotationLoadPacksTheSameRegistersWithZeroTranslation(int[] v)
+    {
+        Assert.Equal(17, v.Length);
+        var actual = Gte.Load(new Gte.Mat(v[..9], 0, 0, 0));
+        var expected = new short[9];
+        for (int i = 0; i < 8; i++) expected[i] = (short)(v[9 + i / 2] >> (16 * (i % 2)));
+        expected[8] = (short)v[13];   // ctrl4 low half carries w8 >> 4
+        Assert.Equal(expected, actual.R);
+        Assert.Equal((0, 0, 0), (actual.Trx, actual.Try, actual.Trz));
+    }
+
+    // func_8001006C transforms up to four words with the rotation loaded by func_80010820 and no
+    // translation. The managed port only runs it inside func_80013CB8 (ScriptRender.Compose), which
+    // passes the four local rows through exactly that pipeline, so the row vertices go into the local
+    // rows and the row rotation becomes the parent.
+    [Theory, MemberData(nameof(Cases), "XF6C")]
+    public void ComposedWordTransformMatchesRetailBatchWords(int[] v)
+    {
+        Assert.Equal(22, v.Length);
+        int count = v[9];
+        Assert.InRange(count, 0, 2);
+        var words = new int[9];
+        Array.Copy(v, 10, words, 0, count * 3);
+        var actual = ScriptRender.Compose(new Gte.Mat(words, 0, 0, 0), new Gte.Mat(v[..9], 0, 0, 0));
+        for (int i = 0; i < count; i++)
+        {
+            int o = 16 + i * 3;
+            Assert.Equal((v[o], v[o + 1], v[o + 2]),
+                (actual.W[i * 3], actual.W[i * 3 + 1], actual.W[i * 3 + 2]));
+        }
+        Assert.Equal((0, 0, 0), (actual.Tx, actual.Ty, actual.Tz));
+        // A zero count writes nothing; the port's composed matrix is zero-initialised.
+        if (count == 0) Assert.All(actual.W, word => Assert.Equal(0, word));
+    }
+
     [Theory, MemberData(nameof(Cases), "XF10C")]
     public void RotationOnlyTransformIgnoresLoadedTranslation(int[] v)
     {
@@ -78,6 +118,20 @@ public class EnvironmentVectorTests
             var (x, y, z, _) = Gte.Mvmva(loaded, vertex.X, vertex.Y, vertex.Z);
             int expected = 19 + i * 3;
             Assert.Equal((v[expected], v[expected + 1], v[expected + 2]), ((int)x, (int)y, (int)z));
+        }
+    }
+
+    [Theory, MemberData(nameof(Cases), "XF234")]
+    public void TranslatedWorldVerticesMatchRetailMacWords(int[] v)
+    {
+        Assert.Equal(25, v.Length);
+        var loaded = Gte.Load(Matrix(v));
+        Assert.InRange(v[12], 1, 2);
+        for (int i = 0; i < v[12]; i++)
+        {
+            var vertex = VertexAt(v, 13 + i * 3);
+            int j = 19 + i * 3;
+            Assert.Equal((v[j], v[j + 1], v[j + 2]), Gte.TransformWorld(loaded, vertex.X, vertex.Y, vertex.Z));
         }
     }
 

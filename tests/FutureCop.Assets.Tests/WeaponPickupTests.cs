@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
 using FutureCop.Assets;
 using FutureCop.Game;
+using FutureCop.Game.Mech;
+using FutureCop.View;
 using Xunit;
 
 namespace FutureCop.Assets.Tests;
@@ -381,16 +383,60 @@ public class WeaponPickupTests
     public void ASelfRetiringPickupLeavesTheFieldAfterOnePayout()
     {
         var (field, player, slots) = Field(WeaponPickups.Instant | WeaponPickups.SelfRetire | 0x0001);
-        slots.Ammo[0] = 0;
-        Assert.Equal(1, field.Update(ResupplyContext.Solo(player, 5), 0, 0, 0));
-        Assert.True(field.Items[0].Collected);
-        Assert.Equal(0, field.RemainingCount);
-        Assert.Equal(1, field.CollectedCount);
+        var first = Assert.Single(field.Items);
+        first.Accumulator = 777;
+        var second = field.Add(new WeaponPickup
+        {
+            HalfX = 1, HalfY = 1, HalfZ = 1,
+            Payload = WeaponPickups.Instant | WeaponPickups.SelfRetire | 0x0002,
+        });
+        var untouched = field.Add(new WeaponPickup { X = 100000, HalfX = 1, HalfY = 1, HalfZ = 1 });
+        var ctx = ResupplyContext.Solo(player, 5);
+        Array.Clear(slots.Ammo);
 
-        // A second frame pays nothing: func_8002FF6C:77-79 retired the entity.
-        slots.Ammo[0] = 0;
-        Assert.Equal(0, field.Update(ResupplyContext.Solo(player, 5), 0, 0, 0));
-        Assert.Equal(0, slots.Ammo[0]);
+        Assert.Equal(2, field.Update(ctx, 0, 0, 0));
+        Assert.True(first.Collected);
+        Assert.True(second.Collected);
+        // Original C leaf gameplay test, instant case: *acc is left unchanged.
+        Assert.Equal(777, first.Accumulator);
+        Assert.Equal(untouched, Assert.Single(field.Items));
+        Assert.Equal(1, field.RemainingCount);
+        Assert.Equal(2, field.CollectedCount);
+
+        Array.Clear(slots.Ammo);
+        Assert.Equal(0, field.Update(ctx, 0, 0, 0));
+        Assert.All(slots.Ammo, ammo => Assert.Equal(0, ammo));
+        Assert.Equal(1, field.RemainingCount);
+    }
+
+    [ConftFact]
+    public void SceneCannotRefillFromTheSamePickupAfterFiringIsEnabledAgain()
+    {
+        var scene = new LevelScene(LevelSceneRetirementTests.FindMission()!);
+        scene.EnableMechMovement();
+        scene.EnableFiring();
+        var pickups = scene.Pickups!;
+        var slots = scene.Weapons!.Slots;
+        var item = pickups.Items.Single(p => p.SectionId == 100);
+        int remaining = pickups.RemainingCount;
+
+        var walker = scene.Walker!;
+        (walker.X, walker.Y, walker.Z) = (item.X, item.Y, item.Z);
+        slots.Ammo[0] = 1;
+        scene.AdvanceWalker(0, 0, AnalogPad.Digital);
+        Assert.Equal(7500, slots.Ammo[0]);
+        Assert.Equal(remaining - 1, pickups.RemainingCount);
+        Assert.Equal(1, pickups.Payouts);
+
+        walker.X = item.X - item.HalfX;
+        scene.AdvanceWalker(0, 0, AnalogPad.Digital);
+        scene.EnableFiring();
+        walker.X = item.X;
+        slots.Ammo[0] = 1;
+        scene.AdvanceWalker(0, 0, AnalogPad.Digital);
+        Assert.Equal(1, slots.Ammo[0]);
+        Assert.Equal(remaining - 1, scene.Pickups!.RemainingCount);
+        Assert.Equal(1, scene.Pickups.Payouts);
     }
 
     [Fact]
@@ -448,6 +494,31 @@ public class WeaponPickupTests
         Assert.Equal(1, second.Period);          // RetailPeriod(-4916) clamps to 1
         Assert.Equal(512, second.Angle);
         Assert.Equal(20 << 4, second.Y);
+    }
+
+    [Fact]
+    public void ARecordWithoutAnArslCobjEntryHasNoModel()
+    {
+        // func_8004D6D4:143-150 only resolves aRSL pairs that name a resource; with none resolved the
+        // spawn path attaches no model, and func_8002ACB4:60-62 then returns 0 without drawing.
+        var withModel = Placement(0x64, 4096, 8192, 0, 81, 819, 819, 2048, 6488064, 0x03000001, -1, 1228, 23);
+        var withoutList = withModel[..0x44].ToArray();               // the tACT chunk alone, no aRSL
+        var nullList = (byte[])withModel.Clone();                    // an aRSL whose only pair is NULL
+        BinaryPrimitives.WriteUInt32LittleEndian(nullList.AsSpan(0x44 + 12), ChunkReader.TagValue("NULL"));
+        BinaryPrimitives.WriteInt32LittleEndian(nullList.AsSpan(0x44 + 16), 23);
+
+        foreach (var data in new[] { withoutList, nullList })
+        {
+            var (archive, registry) = Archive(data);
+            var field = WeaponPickups.FromMission(archive, registry, map: null, difficulty: 0);
+            var item = Assert.Single(field.Items);
+            Assert.Equal(WeaponPickups.NoModel, item.ModelId);
+            // 0 is a valid resource name on a mission that has one, so it must not stand in for "none".
+            Assert.NotEqual(0, item.ModelId);
+            // The placement itself is intact: only the model is missing.
+            Assert.Equal(4096, item.X);
+            Assert.Equal(8192, item.Z);
+        }
     }
 
     [Fact]

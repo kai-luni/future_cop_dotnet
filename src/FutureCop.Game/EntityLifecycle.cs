@@ -1,3 +1,6 @@
+using FutureCop.Assets;
+using FutureCop.Game.Mech;
+
 namespace FutureCop.Game;
 
 /// <summary>
@@ -295,6 +298,43 @@ public abstract class LiveEntity
 }
 
 /// <summary>
+/// The message-4 blast words of the direct-shot projectile (func_80036624:164-174), as func_80035904
+/// copies them from the spawn block of 8005E47C.c:99-108: the radius word <c>+0xD0</c>
+/// (args + 0x44 = def + 0x0E &lt;&lt; 4, then <c>&gt;&gt; 8</c>), the leash <c>+0xA6</c>
+/// (args + 0x3C = def + 0x16 &lt;&lt; 4, then <c>&gt;&gt; 8</c>), the spawn words
+/// <c>+0xA0/+0xA2/+0xA4</c> (the muzzle <c>&gt;&gt; 8</c>, s16) and bit 0 of <c>+0xE4</c>
+/// (args + 0x54 bit 0, set from bit 1 of the definition's flags byte).
+/// </summary>
+/// <param name="RadiusWord">+0xD0 (s16): the blast radius <c>&lt;&lt; 8</c>; a non-positive word means
+/// the projectile does not blast at all.</param>
+/// <param name="ScaleRadius">+0xA6 (s16): the leash radius the distance scaling divides by.</param>
+/// <param name="ScaleByDistance">+0xE4 bit 0: drop the amount by the distance from the spawn words.</param>
+/// <param name="HomeX">+0xA0 (s16): the spawn position x &gt;&gt; 8.</param>
+/// <param name="HomeY">+0xA2 (s16): the spawn position y &gt;&gt; 8.</param>
+/// <param name="HomeZ">+0xA4 (s16): the spawn position z &gt;&gt; 8.</param>
+public readonly record struct ProjectileBlast(short RadiusWord, short ScaleRadius, bool ScaleByDistance,
+    short HomeX, short HomeY, short HomeZ)
+{
+    /// <summary>A projectile without a blast: every word zero, which fails the +0xD0 gate.</summary>
+    public static ProjectileBlast None => default;
+
+    /// <summary>
+    /// The spawn words func_80035904 stores for a direct shot fired at <paramref name="x"/>,
+    /// <paramref name="y"/>, <paramref name="z"/> (the muzzle): the two shifted definition words and
+    /// the spawn position, as above.
+    /// </summary>
+    public static ProjectileBlast FromDefinition(ShotDefinition definition, int x, int y, int z)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        return new ProjectileBlast(
+            unchecked((short)((definition.DamageWord << 4) >> 8)),
+            unchecked((short)((definition.ArcWord << 4) >> 8)),
+            (definition.Flags & 2) != 0,
+            unchecked((short)(x >> 8)), unchecked((short)(y >> 8)), unchecked((short)(z >> 8)));
+    }
+}
+
+/// <summary>
 /// The player projectile as the collision pass sees it: a type-2 entity (gSpawnDirectShot,
 /// 8005E47C.c) whose handler func_80036624 answers messages 4, 5 and 11. The port's shots live in
 /// <c>LevelWeapons</c>; a shot becomes this entity when it touches an entity of the
@@ -303,18 +343,24 @@ public abstract class LiveEntity
 public sealed class ProjectileContact : LiveEntity
 {
     private readonly int _recordId;
+    private readonly int _y;
     private readonly (int X, int Z) _position;
 
     /// <param name="shooterRecordId">The firing entity's +0x14: args.flags = ent-&gt;unk14 | 0x8000 (8005E47C.c:73), stored to +0x14 by 8002A5F4.c:119.</param>
     /// <param name="damage">Weapon obj+0x00: args.unk1A (8005E47C.c:101), copied to +0x1A by 8002A5F4.c:131 and again by 80035904.c:209.</param>
     /// <param name="slotIndex">Weapon obj+0x0E: args.unk4C (8005E47C.c:106), copied to +0x20 by 80035904.c:180.</param>
-    /// <param name="x">Projectile position x.</param>
-    /// <param name="z">Projectile position z.</param>
-    public ProjectileContact(int shooterRecordId, short damage, byte slotIndex, int x, int z)
+    /// <param name="x">Projectile position x (obj+0x50).</param>
+    /// <param name="z">Projectile position z (obj+0x58), the ground position the cull and the blast use.</param>
+    /// <param name="y">Projectile position y (obj+0x54); only the message-4 blast centre reads it.</param>
+    /// <param name="blast">The message-4 blast words; <see cref="ProjectileBlast.None"/> for a shot without one.</param>
+    public ProjectileContact(int shooterRecordId, short damage, byte slotIndex, int x, int z,
+        int y = 0, ProjectileBlast blast = default)
     {
         _recordId = (shooterRecordId | 0x8000) & 0xFFFF;
         Word1A = damage;
         SlotIndex = slotIndex;
+        _y = y;
+        Blast = blast;
         _position = (x, z);
         // args.unk14 = flags | 8 (8005E47C.c:85) and 80035904.c:239 adds 0x800002.
         Flags = 0x800002 | AlwaysActiveFlag;
@@ -326,14 +372,20 @@ public sealed class ProjectileContact : LiveEntity
     /// <summary>Entity type 2 (8005E47C.c: args.kind = 2).</summary>
     public override int DispatchType => 2;
 
+    /// <summary>obj+0x50/+0x54/+0x58: the position the message-4 blast is centred on.</summary>
+    public (int X, int Y, int Z) Position => (_position.X, _y, _position.Z);
+
+    /// <summary>The message-4 blast words of func_80036624:164-174 (see <see cref="ProjectileBlast"/>).</summary>
+    public ProjectileBlast Blast { get; }
+
     /// <inheritdoc/>
     public override (int X, int Z) GroundPosition => _position;
 
     /// <summary>
     /// func_80036624 for the chain's messages. Message 11 sets the health to -1 so the next frame
     /// sweep retires the projectile (80036624.c:155-156); the penetrating class 0x15 of :146-154 is
-    /// not modelled. Message 4 skips the radial blast of :164-174 (gApplyRadialContactDamage is not
-    /// ported) and retires through the base handler (:175, :179). Message 5 returns 0 (:176-177).
+    /// not modelled. Message 4 runs the radial blast of :164-174 and retires through the base handler
+    /// (:175, :179). Message 5 returns 0 (:176-177).
     /// </summary>
     public override int HandleMessage(int message, EntityWorld world, object? data)
     {
@@ -344,9 +396,47 @@ public sealed class ProjectileContact : LiveEntity
                 return 0;
             case 5:
                 return 0;
+            case 4:
+                FireBlast(world);
+                return BaseHandler(message, this, world, data);
             default:
                 return BaseHandler(message, this, world, data);
         }
+    }
+
+    /// <summary>
+    /// The radial blast of a projectile impact (func_80036624:164-174): with a positive <c>+0xD0</c>
+    /// radius word the amount starts at the <c>+0x1A</c> damage and, when bit 0 of <c>+0xE4</c> is set,
+    /// drops by <c>((len &lt;&lt; 2) &gt;&gt; 8) * damage / +0xA6</c>; len is the length of the vector from
+    /// the spawn words <c>+0xA0/+0xA2/+0xA4</c> back to the current position. A positive amount calls
+    /// gApplyRadialContactDamage at the projectile position with <c>+0xD0 &lt;&lt; 8</c> as the radius.
+    /// </summary>
+    /// <remarks>
+    /// arg3 (<c>+0xC8</c>) is the shooter entity in retail; the port has no live entity for the
+    /// player's weapon object, so the record is null and the message's source word is this projectile's
+    /// own <c>+0x14</c> - the word 8005E47C.c:73 formed from the shooter id, which message 9 strips
+    /// with 0x7FFF like every other area hit.
+    /// </remarks>
+    private void FireBlast(EntityWorld world)
+    {
+        if (Blast.RadiusWord <= 0) return;                                    // :164-165
+        int amount = Word1A;
+        if (Blast.ScaleByDistance)                                            // :166-169
+        {
+            if (Blast.ScaleRadius == 0)
+                throw new InvalidOperationException("func_80036624 divides by the zero leash word +0xA6");
+            var (x, y, z) = Position;
+            int vx = unchecked((Blast.HomeX << 8) - x);
+            int vy = unchecked((Blast.HomeY << 8) - y);
+            int vz = unchecked((Blast.HomeZ << 8) - z);
+            int length = MechMath.Sqrt12(MechMath.SumSquares3(vx, vy, vz));
+            int scaled = unchecked(((length << 2) >> 8) * Word1A) / Blast.ScaleRadius;
+            // :171-172: the multiply keeps the signed +0x1A, the subtraction reads it as u16.
+            amount = unchecked((short)((ushort)Word1A - scaled));
+        }
+        if (amount > 0)                                                       // :173-174
+            RadialContactDamage.Apply(world, new[] { Position.X, Position.Y, Position.Z }, amount,
+                unchecked(Blast.RadiusWord << 8), (uint)RecordId, null);
     }
 }
 
@@ -486,6 +576,27 @@ public sealed class EntityWorld
                 OnRefreshSlotSpawns?.Invoke(entity, (entity.Flags19 >> 3) & 0x1E); // :63
             }
         }
+    }
+
+    /// <summary>
+    /// gBroadcastEntityMessage (func_8004CD6C, <c>gBroadcastEntityMessage.c:41-54</c>): every entry of
+    /// the frame's active table D_800A8F90 with a positive runtime id receives
+    /// <paramref name="message"/> with <paramref name="arg2"/> as the payload. D_800A8F90 is the cull
+    /// snapshot, so an entity the frame's <see cref="CullActive"/> dropped is not reached. Returns the
+    /// number of deliveries.
+    /// </summary>
+    public int BroadcastMessage(int message, int arg2)
+    {
+        int delivered = 0;
+        // A snapshot keeps the walk stable when a handler retires or spawns; retail walks the same
+        // table with a fixed count (:47-49).
+        foreach (var entity in _active.ToArray())
+        {
+            if (entity.RuntimeId <= 0) continue;                              // :50
+            entity.HandleMessage(message, this, arg2);
+            delivered++;
+        }
+        return delivered;
     }
 
     /// <summary>

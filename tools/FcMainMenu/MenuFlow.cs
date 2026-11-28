@@ -33,7 +33,9 @@ public enum SceneKind
 public sealed class MenuFlow
 {
     // X11 keycodes (evdev + 8) as the window delivers them.
-    private const uint KeyEscape = 9, KeyBackspace = 22, KeyQ = 24, KeyEnter = 36, KeySpace = 65, KeyKpEnter = 104;
+    private const uint KeyEscape = 9, KeyBackspace = 22, KeyTab = 23, KeyQ = 24, KeyEnter = 36, KeySpace = 65, KeyKpEnter = 104;
+    /// <summary>X11 keycode (Tab = evdev 15 + 8) bound to <see cref="PadButtons.Select"/> for chase-camera preset cycling.</summary>
+    public const uint CameraPresetKey = KeyTab;
     private const uint KeyUp = 111, KeyLeft = 113, KeyRight = 114, KeyDown = 116;
     // Fire buttons, mapped to the two pad buttons gWeaponSlotInput reads: X11 keycode 52 is Z and 53 is
     // X on the evdev+8 mapping this window delivers (xmodmap -pk confirms both).
@@ -129,6 +131,7 @@ public sealed class MenuFlow
         "Return" or "XF86Select" => KeyEnter,
         "space" or "Space" => KeySpace,
         "KP_Enter" => KeyKpEnter,
+        "Tab" => KeyTab,
         "Escape" or "XF86Back" => KeyEscape,
         _ => code == KeyTizenBack ? KeyEscape : (uint)code,
     };
@@ -260,6 +263,7 @@ public sealed class MenuFlow
         FrontEnd.ScreenState = 0;
         Preview = null;
         Level = null;
+        Camera = Camera with { PresetState = 0 };
         SceneLeft?.Invoke();
     }
 
@@ -277,6 +281,7 @@ public sealed class MenuFlow
                 if (_enableLevelMovement) level.EnableMechMovement();
                 if (_enableLevelMovement) level.EnableFiring();
                 Level = level;
+                Camera = Camera with { PresetState = level.ChaseCamera.State };
                 _maxHealth = level.Walker?.Health ?? 0;
                 _pendingWalkerTicks = 0;
                 // D_800A8EA4 and the mission's VRAM: what makes the slot sprites real icons instead
@@ -406,6 +411,9 @@ public sealed class MenuFlow
         // bits. Q and E are free next to the movement keys.
         KeyQ => PadButtons.L2,
         KeyEKey => PadButtons.R2,
+        // gResetActorAndPlaceView (800573A4.c:238) binds chase-camera preset cycling to translated
+        // bit 0x40000 (PadButtons.Select via MechInput.cs:44,97,124).
+        KeyTab => PadButtons.Select,
         _ => PadButtons.None,
     };
 
@@ -424,15 +432,15 @@ public sealed class MenuFlow
 
         // func_8002703C caps each frame at 0x3C clock ticks; func_800588D4 carries the
         // remainder and passes one locomotion substep per eight ticks to func_800549F0.
-        _pendingWalkerTicks += Math.Min(seconds * RetailClock.TicksPerSecond, 0x3C);
+        int frameTicks = (int)Math.Min(seconds * RetailClock.TicksPerSecond, 0x3C);
+        _pendingWalkerTicks += frameTicks;
         // D_8009FAA4 (gFrameTime) is a monotonically growing s32 clock in retail (8002703C.c:15,71).
         // HUD consumers test bit 0x40 (8006BF44.c:79, 8006C080.c:72), bit 0x80 (80047F30.c:194,217,256;
         // 80047BE8.c:18,78-79 via u8 load >= 0x80), and bits 0x180 (8005A9C4.c:125), so do not truncate
         // the clock to 8 bits.
-        int frameTime = unchecked(Globals.FrameTime + (int)Math.Min(seconds * RetailClock.TicksPerSecond, 0x3C));
+        int frameTime = unchecked(Globals.FrameTime + frameTicks);
         Globals = Globals with { FrameTime = frameTime };
         int steps = (int)(_pendingWalkerTicks / 8);
-        if (steps == 0) return;
         _pendingWalkerTicks -= steps * 8;
         PadButtons buttons = HeldPadButtons() | externalButtons;
         MechInput.RefreshPadWords(_padWords, buttons, PadMapping.Default);
@@ -441,9 +449,11 @@ public sealed class MenuFlow
         // walker just received from func_800576A8.
         Level.HeldButtons = buttons;
         Level.HeldPadWord = flags;
-        Level.AdvanceWalker(steps, flags, externalPad);
-        // Message 6 of the Sky Captain with the same tick count the walker ran (800271A4.c:180).
-        Level.AdvanceSkyCaptain(steps * RetailClock.LocomotionTicks);
+        // One solo frame with the retail phase order (800271A4.c:177-217): gFrameDelta stays the
+        // frame's own clock delta, the substeps only say how much locomotion the frame carries. The
+        // scene owns cull, message 6, map zones, deferred updates, spawners and the sweep.
+        Level.AdvanceSoloFrame(frameTicks, steps, flags, externalPad);
+        Camera = Camera with { PresetState = Level.ChaseCamera.State };
         if (Level.Weapons != null)
         {
             foreach (var ev in Level.Weapons.DrainSoundEvents())
@@ -471,7 +481,7 @@ public sealed class MenuFlow
     /// </summary>
     public HudPlayerBlock Player { get; set; } = new() { Value64 = 2 };
 
-    private HudGameBlock BuildHud()
+    internal HudGameBlock BuildHud()
     {
         var walker = Level?.Walker;
         int health = walker?.Health ?? 0;
@@ -481,9 +491,18 @@ public sealed class MenuFlow
         // same two words instead of inventing a third quantity.
         int reciprocal = max > 0 ? 0x600000 / max : 0;
 
+        // object->unkB0 (8005A9C4.c:24,111) is the same 12-bit 0..0xFFF heading updated by
+        // gTickOnFootPhysics (800549F0.c:437,460-462) and gTickHoverPhysics (80053A74.c:281,297-299).
         var radar = Level is not null
             ? new RadarReference(Level.MechWorld.X, Level.MechWorld.Z, unchecked((short)(walker?.Angle ?? 0)))
             : (RadarReference?)null;
+
+        // Retail object->unkAC->unkC1 is a single s8 player-slot field assigned once at spawn
+        // (gInitPlayerUnit, 800579D4.c:190) and shared by analog stick/port reads (800538C8.c:56),
+        // weapon sound voice slots (80046CF0.c:76), surface/invulnerability checks (80053188.c:160-195,223),
+        // HUD layout/scoring (80047F30.c:207,210,214,229), and radar side origin selection
+        // (8005A9C4.c:109: side 1 -> 0x780000, otherwise 0x280000). walker.Port models that +0xC1 field.
+        int side = walker?.Port ?? Player.ValueC1;
 
         // func_8006C080 reads the three slot ids at +0x90 and their counters at +0x84/+0x8A straight
         // out of the player control block, so the bar shows the live loadout of the fire path.
@@ -502,7 +521,7 @@ public sealed class MenuFlow
                     Value84 = slots.Ammo.ToArray(),
                     Value8A = slots.Reserve.ToArray(),
                     Value90 = slots.SlotIds.Select(id => (int)id).ToArray(),
-                    ValueC1 = walker?.Port ?? Player.ValueC1,
+                    ValueC1 = side,
                 },
             };
         }
@@ -516,7 +535,7 @@ public sealed class MenuFlow
             {
                 Value58 = health,
                 Value5C = reciprocal,
-                ValueC1 = walker?.Port ?? Player.ValueC1,
+                ValueC1 = side,
             },
         };
     }
@@ -542,7 +561,8 @@ public sealed class MenuFlow
             if (!Profile)
             {
                 Level.Render(Camera);
-                InGameHud.Paint(Level.Rgb, BuildHud(), Level.ScoreSession(Session), Globals, Level.Vram);
+                InGameHud.Paint(Level.Rgb, BuildHud(), Level.ScoreSession(Session),
+                    Level.HudGlobals(Globals), Level.Vram);
                 FrameBlit.RgbToBgrx(Level.Rgb, LevelScene.Width, LevelScene.Height, bgrx, scale);
                 return;
             }
@@ -555,7 +575,8 @@ public sealed class MenuFlow
             Cells = Level.VisibleCells;
             t = Stopwatch.GetTimestamp();
             a = GC.GetAllocatedBytesForCurrentThread();
-            InGameHud.Paint(Level.Rgb, BuildHud(), Level.ScoreSession(Session), Globals, Level.Vram);
+            InGameHud.Paint(Level.Rgb, BuildHud(), Level.ScoreSession(Session),
+                Level.HudGlobals(Globals), Level.Vram);
             BytesHud = GC.GetAllocatedBytesForCurrentThread() - a;
             MsHud = Stopwatch.GetElapsedTime(t).TotalMilliseconds;
             t = Stopwatch.GetTimestamp();
@@ -567,8 +588,9 @@ public sealed class MenuFlow
     }
 
     /// <summary>
-    /// Camera of the level view: the fixed orbit default of <see cref="LevelCamera"/>. Viewer camera,
-    /// not the retail chase camera func_800569EC; the orbit translates with the walker.
+    /// Camera of the level view: orbit around the walker layered with the retail chase-camera
+    /// preset state (<c>info-&gt;state</c> 0..6, <c>src/game/800569EC.c:228-246</c>), synced from
+    /// <see cref="LevelScene.ChaseCamera"/> on every <see cref="Advance"/> call.
     /// </summary>
     public LevelCamera Camera { get; set; } = new LevelCamera();
 

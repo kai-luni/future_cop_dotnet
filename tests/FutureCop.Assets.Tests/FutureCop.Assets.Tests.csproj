@@ -16,6 +16,7 @@
     <Compile Include="../../tools/FcLevelTv/BitmapHud.cs" Link="BitmapHud.cs" />
     <Compile Include="../../tools/FcMainMenu/MenuFlow.cs" Link="MenuFlow.cs" />
     <Compile Include="../../tools/FcMainMenu/MenuLabels.cs" Link="MenuLabels.cs" />
+    <Compile Include="../../tools/FcMainMenu/MenuArchive.cs" Link="MenuArchive.cs" />
     <Compile Include="../../tools/FcMainMenu/X11PanelLayout.cs" Link="X11PanelLayout.cs" />
     <Compile Include="../../tools/FcMainMenu/FrameBlit.cs" Link="FrameBlit.cs" />
     <Compile Include="../../tools/FcMainMenu.Tizen/BitmapPanel.cs" Link="BitmapPanel.cs" />
@@ -64,5 +65,7 @@
     <None Include="../golden/map-occupancy.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/map-occupancy.vectors" />
     <None Include="../golden/csac-spawner.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/csac-spawner.vectors" />
     <None Include="../golden/radar-markers.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/radar-markers.vectors" />
+    <None Include="../golden/radial-blast.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/radial-blast.vectors" />
+    <None Include="../golden/unit-movers.vectors" CopyToOutputDirectory="PreserveNewest" Link="golden/unit-movers.vectors" />
   </ItemGroup>
 </Project>

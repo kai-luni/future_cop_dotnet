@@ -1,5 +1,7 @@
 # Extracted retail disc assets - never commit (local working copy only)
 build/
+# retail disc symlink in the parity worktree
+/build
 # .NET build output
 bin/
 obj/

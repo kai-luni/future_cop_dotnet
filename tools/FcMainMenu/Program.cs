@@ -5,14 +5,16 @@ using FutureCop.View;
 using FcMainMenu;
 
 const int width = 640, height = 480;
-var labels = MenuLabels.Load(args.FirstOrDefault(), AppContext.BaseDirectory, Console.Error);
-string path = labels.ArchivePath;
-var flow = new MenuFlow(path, MenuFlow.SceneKindFrom(Environment.GetEnvironmentVariable("FC_MENU_SCENE")),
-    Console.Out, Console.Error, enableLevelMovement: true);
+// Scene, labels and audio share one validated archive resolution (MenuArchive.PrepareLaunch), so an
+// explicit PA/CONFT.MIS or corrupt local file falls through to CW/FE.MIS consistently for all three.
+var launch = MenuArchive.PrepareLaunch(args.FirstOrDefault(), Environment.GetEnvironmentVariable("FC_MENU_SCENE"),
+    AppContext.BaseDirectory, Console.Out, Console.Error);
+var labels = launch.Labels;
+var flow = launch.Flow;
 var menu = flow.Menu;
 using var window = MenuWindow.Open(width, height);
 if (window == null) { Console.Error.WriteLine("Cannot open X11 display."); return; }
-MenuAudio? audio = labels.UnavailablePath == null ? MenuAudio.TryStart(path) : null;
+MenuAudio? audio = launch.AudioArchivePath != null ? MenuAudio.TryStart(launch.AudioArchivePath) : null;
 SoundMixer? frontEndMixer = audio?.Mixer;
 LevelAudio? levelAudio = null;
 flow.SceneEntered += () => {
@@ -23,14 +25,14 @@ flow.SceneEntered += () => {
 };
 flow.SceneLeft += () => {
     levelAudio?.Dispose(); levelAudio = null;
-    audio = labels.UnavailablePath == null ? MenuAudio.TryStart(path) : null;
+    audio = launch.AudioArchivePath != null ? MenuAudio.TryStart(launch.AudioArchivePath) : null;
     frontEndMixer = audio?.Mixer ?? frontEndMixer;
 };
 flow.MenuSoundTriggered += id => audio?.PlayMenuSound(id);
 flow.SceneStartSoundTriggered += id => { if (frontEndMixer != null) levelAudio?.PlayMenuSound(id, frontEndMixer); };
 flow.WeaponSoundTriggered += ev => levelAudio?.HandleWeaponSound(ev);
 flow.LevelTicksAdvanced += ticks => levelAudio?.StepTicks(ticks);
-Console.WriteLine("Arrows: navigate / move and turn in the level; Space: jump; Enter: accept; Escape: back; Q: quit.");
+Console.WriteLine("Arrows: navigate / move and turn in the level; Space: jump; Tab: camera; Enter: accept; Escape: back; Q: quit.");
 // The loop holds a 60 Hz frame budget instead of sleeping a fixed 16 ms after the work: that sleep
 // used to add its full length to the render time (a 10-12 ms level frame became a 28 ms frame, i.e.
 // 36 fps). FC_FRAME_LOG=<file> writes one CSV line per frame so pacing is measured, not guessed.
@@ -313,6 +315,7 @@ sealed class MenuWindow : IDisposable
     private IntPtr pixmap, windowGc, windowPicture, pixmapPicture;
     private int outWidth, outHeight;
     private bool _needsRedraw;
+    private bool _sizeDirty = true;
 
     /// <summary>
     /// True once after a resize or expose, so the caller knows it must repaint at the new size.
@@ -371,7 +374,8 @@ sealed class MenuWindow : IDisposable
                 case 10: flow.ClearHeldKeys(); break; // FocusOut
                 // ConfigureNotify (22) and Expose (12) mean the window was resized or uncovered:
                 // the frame has to be recomposited at the new size.
-                case 12: case 22: _needsRedraw = true; break;
+                case 12: _needsRedraw = true; break;
+                case 22: _needsRedraw = true; _sizeDirty = true; break;
                 case 17: case 33: return false;
             }
         }
@@ -425,28 +429,34 @@ sealed class MenuWindow : IDisposable
             XFlush(display);
             return;
         }
-        if (XGetGeometry(display, window, out _, out _, out _, out uint w, out uint h, out _, out _) == 0)
+        if (_sizeDirty || outWidth <= 0 || outHeight <= 0)
         {
-            XFlush(display);
-            return;
-        }
-        int targetW = (int)w, targetH = (int)h;
-        if (targetW <= 0 || targetH <= 0) targetW = width;
-        if (targetH <= 0) targetH = height;
-        if (targetW != outWidth || targetH != outHeight)
-        {
-            outWidth = targetW;
-            outHeight = targetH;
-            // XRender applies a picture transform to the *source* sampling coordinates, so the matrix
-            // on the pixmap picture maps destination pixels back to the 640x480 source: scale by
-            // source/target. 16.16 fixed point.
-            int sx = (int)(((long)width << 16) / targetW);
-            int sy = (int)(((long)height << 16) / targetH);
-            XRenderSetPictureTransform(display, pixmapPicture, new[] { sx, 0, 0, 0, sy, 0, 0, 0, 0x10000 });
+            if (XGetGeometry(display, window, out _, out _, out _, out uint w, out uint h, out _, out _) == 0)
+            {
+                XFlush(display);
+                return;
+            }
+            _sizeDirty = false;
+            int targetW = (int)w, targetH = (int)h;
+            if (targetW <= 0) targetW = width;
+            if (targetH <= 0) targetH = height;
+            if (targetW != outWidth || targetH != outHeight)
+            {
+                outWidth = targetW;
+                outHeight = targetH;
+                // XRender applies a picture transform to the *source* sampling coordinates, so the matrix
+                // on the pixmap picture maps destination pixels back to the 640x480 source: scale by
+                // source/target. 16.16 fixed point.
+                int sx = (int)(((long)width << 16) / targetW);
+                int sy = (int)(((long)height << 16) / targetH);
+                XRenderSetPictureTransform(display, pixmapPicture, new[] { sx, 0, 0, 0, sy, 0, 0, 0, 0x10000 });
+                XRenderSetPictureFilter(display, pixmapPicture,
+                    targetW == width && targetH == height ? "nearest" : "bilinear", IntPtr.Zero, 0);
+            }
         }
         // Composite the whole window area; the source transform stretches the 640x480 frame over it.
         XRenderComposite(display, 3 /* PictOpSrc */, pixmapPicture, IntPtr.Zero, windowPicture,
-            0, 0, 0, 0, 0, 0, (uint)targetW, (uint)targetH);
+            0, 0, 0, 0, 0, 0, (uint)outWidth, (uint)outHeight);
         XFlush(display);
     }
 
