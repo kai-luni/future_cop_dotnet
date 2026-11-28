@@ -477,24 +477,30 @@ public sealed class SceneProp
     /// dereferences the model there, and every placed node has one.
     /// </summary>
     /// <remarks>
-    /// The GTE truncates matrix and vector to 1.12 (12 bits) before the multiply; the port multiplies
-    /// the full 16.16 values and shifts once, which keeps the product exact. The truncated form is at
-    /// most 15 world units off and moves one more HK prop into the neighbouring cell, so the shipped
-    /// counts are 13 here against 14 for a literal GTE emulation.
+    /// <c>gSpawnSceneNode.c:366-371</c> does not multiply the bound centre by the node matrix
+    /// directly: <c>gGteLoadRotation</c> (func_80010820) stores <c>R = F * M^T</c>, so the engine
+    /// matrix rows become GTE columns, and <c>gGteTransformWords</c> (func_8001006C) feeds the raw
+    /// s16 centre words through <c>mvmva</c> and returns <c>(R * centre)</c>. The port therefore
+    /// loads and transforms through <see cref="Gte.Load"/> / <see cref="Gte.Mvmva"/> instead of
+    /// multiplying the rows by hand: the transposed column 0 and 2 (<c>R[0..2]</c> / <c>R[6..8]</c>,
+    /// i.e. <c>basis[0]</c>, <c>basis[3]</c>, <c>basis[6]</c> and <c>basis[2]</c>, <c>basis[5]</c>,
+    /// <c>basis[8]</c>) give the x and z offset. The load truncates the matrix to 1.3.12
+    /// (<c>w &gt;&gt; 4</c>, s16), so the offset is <c>(R * centre &gt;&gt; 12) &lt;&lt; 4</c> world
+    /// units; the centred bucket differs from the raw origin bucket for 14 of HK's 151 records,
+    /// 4 of JOKE's and 4 of SLIM's 75, and none of CONFT's 89 (OVMP has no type-0x60 records).
     /// </remarks>
     private (int Row, int Column) Bucket()
     {
         if (_frameBounds is not { Count: > 0 } frames || frames[0].Length < 3)
             return (X >> 17, Z >> 17);
         var bounds = frames[0];
-        int cx = bounds[0] << 4, cy = bounds[1] << 4, cz = bounds[2] << 4;
         var basis = new int[9];
         Basis(basis);
-        // func_8001006C (gGteTransformWords) on words 9..11 of the matrix: the node matrix is 16.16,
-        // the GTE loads it as 1.12 and the result is (matrix * vector) >> 12 << 4 = (matrix * v) >> 16.
-        int x = X + ((basis[0] * cx + basis[1] * cy + basis[2] * cz) >> 16);
-        int z = Z + ((basis[6] * cx + basis[7] * cy + basis[8] * cz) >> 16);
-        return (x >> 17, z >> 17);
+        // gGteLoadRotation + gGteTransformWords on the first 3DBB centre (model +0x34 + 8): mvmva
+        // over V0, IR1..IR3 out, << 4 to world units (the store negates IR2, which only affects y).
+        var rotation = Gte.Load(new Gte.Mat(basis, 0, 0, 0));
+        var (offsetX, _, offsetZ, _) = Gte.Mvmva(rotation, bounds[0], bounds[1], bounds[2]);
+        return ((X + (offsetX << 4)) >> 17, (Z + (offsetZ << 4)) >> 17);
     }
 
     /// <summary>

@@ -955,11 +955,21 @@ public sealed class LevelScene
     public int BasePadLines { get; private set; }
 
     /// <summary>
-    /// Diagnostic switch of the Cact type-0x60 pass: when true <see cref="Render"/> leaves the
-    /// static scene nodes out of the frame, reproducing the pixels of the pre-todo-50 baseline and
-    /// proving what the props contribute. Placement itself has no other side effect, so the switch
-    /// is pixel-equivalent to skipping <see cref="MapObjectRegistry.PlaceDeferredSceneAssets"/>.
+    /// Diagnostic switch for the second todo-50 addition: when true <see cref="Render"/> leaves the
+    /// two home-base pad outlines out of the frame (<see cref="BasePadLines"/> becomes 0) and draws
+    /// nothing else differently. Together with <see cref="ScenePropsDisabled"/>, which drops the 89
+    /// Cact type-0x60 static nodes, the pair reproduces the pre-todo-50 frame, because that commit
+    /// drew neither the props nor the pad volumes and placement has no other side effect.
     /// Production never sets it.
+    /// </summary>
+    internal bool BasePadOutlinesDisabled { get; set; }
+
+    /// <summary>
+    /// Diagnostic switch of the Cact type-0x60 pass: when true <see cref="Render"/> leaves the
+    /// static scene nodes out of the frame while the home-base pad outlines stay on, proving what
+    /// the props alone contribute. Placement itself has no other side effect, so the switch is
+    /// pixel-equivalent to skipping <see cref="MapObjectRegistry.PlaceDeferredSceneAssets"/>.
+    /// <see cref="BasePadOutlinesDisabled"/> adds the pad outlines. Production never sets it.
     /// </summary>
     internal bool ScenePropsDisabled { get; set; }
 
@@ -1736,7 +1746,7 @@ public sealed class LevelScene
         SkyCaptainPrimitives = skyCaptain;
         // The home-base purchase pad volumes are part of the normal frame (see PadMarkers); the rest
         // of the walker pads stay an explicit debug overlay.
-        BasePadLines = PadMarkers(view, basePurchaseOnly: true);
+        BasePadLines = BasePadOutlinesDisabled ? 0 : PadMarkers(view, basePurchaseOnly: true);
         PadMarkerLines = ShowPadMarkers ? PadMarkers(view) : 0;
         return _drawQueue.Count;
     }
