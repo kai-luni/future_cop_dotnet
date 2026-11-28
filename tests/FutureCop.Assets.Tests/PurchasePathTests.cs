@@ -824,6 +824,119 @@ public sealed class PurchasePathTests
         Assert.True(spawned >= group50Count, $"Expected >= {group50Count} group-50 spawns, got {spawned}");
     }
 
+    /// <summary>
+    /// The two base dreadnought pads are not one-shot: the latch word they test (<c>80069D68.c</c>
+    /// case 19, <c>ScriptVars[18]</c> for Cact 47 and <c>[20]</c> for Cact 51) is cleared by the retire
+    /// script of the very unit the pad buys. CONFT.MIS pad 47 runs pool 1599 (0x63F) and queues
+    /// spawner 7, whose Csac 7 record carries retire script 1739 (0x6CB) = <c>80 92 20 ... 00</c>,
+    /// i.e. <c>ScriptVars[18] = 0</c> plus 5 points to the opposing session words. Pad 51 runs 1631
+    /// (0x65F) and queues spawner 8; Csac 8 carries 1763 (0x6E3) = <c>ScriptVars[20] = 0</c>.
+    /// <c>gRetireEntity</c> (8004D958.c:54) evaluates that word on the entity's +0x98, the record's
+    /// second script slot (the request's +0x24/+0x28 words, gLoadMapZone.c:95); the port routes it
+    /// through <see cref="EntityWorld.OnScript"/> (<see cref="LiveEntity.Retire"/>). So a second
+    /// purchase is possible only once the first unit dies - and this test pins both halves: the
+    /// refused second attempt while the unit lives, and the accepted one after message 4.
+    /// </summary>
+    [RetailFact]
+    public void Cact14DreadnoughtPadsRearmWhenTheirBoughtUnitRetires()
+    {
+        byte[] bytes = File.ReadAllBytes(LevelSceneRetirementTests.FindMission()!);
+        var records = MissionEntities.Parse(bytes);
+        var registry = new MapObjectRegistry();
+        registry.InitMissionSpawnState();
+        registry.LiveObjects.Allocate();
+        var world = new EntityWorld();
+        var spawner = new CsacUnitSpawner(registry, new RetailRandom(0x457), world);
+        spawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(bytes, r));
+        // 8004D598.c:51-52: the retirement sweep frees the Csac slot of every 0x10000000 entity.
+        world.OnSpawnedUnitRetired = spawner.RecordSpawnedUnitRetirement;
+        var purchase = PurchasePadSystem.LoadFromMission(bytes, spawner,
+            random: new RetailRandom(0x457), world: world)!;
+        var vm = purchase.VmState;
+
+        // 8002AA1C.c:128-130 / 8004D958.c:53-55: damage and retire scripts run on the pads' VM.
+        world.OnScript = (_, script, arg1, arg2) =>
+        {
+            var slice = purchase.Pool.Slice(script);
+            if (slice.IsEmpty || slice[0] == 0) return; // 80069D68.c:163-165
+            RpnsScriptVm.Execute(slice, vm, arg1, arg2);
+        };
+
+        AssertRearm(purchase, spawner, world, vm, padId: 47, scriptOffset: 1599,
+            latchVar: 18, spawnerId: 7, unitRecordId: 7, retireScript: 1739);
+
+        // Same mechanism on the second base: Cact 51 -> pool 1631, latch word 20, spawner 8,
+        // Csac 8 with retire script 1763.
+        AssertRearm(purchase, spawner, world, vm, padId: 51, scriptOffset: 1631,
+            latchVar: 20, spawnerId: 8, unitRecordId: 8, retireScript: 1763);
+    }
+
+    private static void AssertRearm(PurchasePadSystem purchase, CsacUnitSpawner spawner,
+        EntityWorld world, RpnsVmState vm, int padId, int scriptOffset, int latchVar,
+        int spawnerId, int unitRecordId, int retireScript)
+    {
+        var pad = purchase.FindPad(padId)!;
+        Assert.Equal(PurchasePadKind.TriggerAttachment, pad.Kind);
+        Assert.Equal(scriptOffset, pad.Script0Offset);
+        Assert.False(pad.IsEnabled, "the pad starts disabled (flag 0x10)");
+        purchase.ApplyPadCommand7A(pad, arg: 1);
+        Assert.True(pad.IsEnabled);
+
+        // First purchase: score 50, latch 0. The gate of 80069D68.c case 37 is `b < a` with
+        // b = ScriptVars[latch] and a = 1, i.e. "not bought yet", so 0 passes and the tail
+        // (`push 1; push latch; op 32`) stores exactly 1.
+        vm.GameSession[RpnsVmState.SessionScoreP1] = 50;
+        Assert.Equal(0, vm.ScriptVars[latchVar]);
+        var first = purchase.TryTriggerPad(pad, new PlayerTarget(12, 0, 0, 0, 0, busy: false), frameTime: 40);
+        Assert.True(first.Triggered);
+        Assert.True(first.Accepted);
+        Assert.Equal(RpnsVmState.SfxPurchaseAccepted, first.SfxId);
+        Assert.Equal(0, first.ScoreAfter);
+        Assert.Equal(1, vm.ScriptVars[latchVar]);
+
+        int before = spawner.SpawnedUnits.Count;
+        Assert.Contains(spawner.Slots, s => s.Record.Id == spawnerId); // the script's op-60 id
+        Assert.True(spawner.Drain(1) >= 1);
+        var unit = spawner.SpawnedUnits.Skip(before).Single(u => u.SourceSlot.Record.Id == unitRecordId);
+        Assert.Equal(unitRecordId, unit.SourceSlot.Record.Id);
+        Assert.Equal(retireScript, unit.RetireScript);
+        Assert.Contains(unit, world.Units);
+        int spawnCount = spawner.SpawnedUnits.Count;
+
+        // Second attempt with the unit alive: the latch is 1, the gate fails and the else arm
+        // stores 73 in pointer-bank word 3 (0xC9 83 1E). Nothing is queued, nothing spawns.
+        var denied = purchase.TryTriggerPad(pad, new PlayerTarget(12, 0, 0, 0, 0, busy: false), frameTime: 41);
+        Assert.True(denied.Triggered);
+        Assert.False(denied.Accepted);
+        Assert.Equal(RpnsVmState.SfxPurchaseDenied, denied.SfxId);
+        Assert.Equal(1, vm.ScriptVars[latchVar]);
+        spawner.Drain(1);
+        Assert.Equal(spawnCount, spawner.SpawnedUnits.Count);
+
+        // Message 4 -> gEntityBaseHandler -> gRetireEntity runs the unit's +0x98 script
+        // (8004D958.c:53-55), which zeroes the latch and pays 5 to the opposing session words.
+        int otherScoreBefore = vm.GameSession[RpnsVmState.SessionScoreP2];
+        Assert.Equal(1, LiveEntity.BaseHandler(4, unit, world, null));
+        Assert.Equal(0, vm.ScriptVars[latchVar]);
+        Assert.Equal(5, vm.GameSession[RpnsVmState.SessionScoreP2] - otherScoreBefore);
+        Assert.Equal(0, unit.RuntimeId);
+        // 8004D598.c:39-71: the same frame's sweep unlinks the retiree, runs message 5 and lets
+        // func_80061020 drop the spawner's live counter so the slot can spawn again.
+        Assert.Equal(1, world.SweepRetired());
+        Assert.DoesNotContain(unit, world.Units);
+
+        // Third trigger after the retire: the same pad, the same word, a second unit this session.
+        vm.GameSession[RpnsVmState.SessionScoreP1] = 50;
+        var second = purchase.TryTriggerPad(pad, new PlayerTarget(12, 0, 0, 0, 0, busy: false), frameTime: 42);
+        Assert.True(second.Accepted);
+        Assert.Equal(1, vm.ScriptVars[latchVar]);
+        Assert.True(spawner.Drain(1) >= 1);
+        var again = spawner.SpawnedUnits.Skip(spawnCount).Single(u => u.SourceSlot.Record.Id == unitRecordId);
+        Assert.NotSame(unit, again);
+        Assert.Equal(retireScript, again.RetireScript);
+        Assert.Equal(2, spawner.SpawnedUnits.Count(u => u.SourceSlot.Record.Id == unitRecordId));
+    }
+
     private static byte[] BuildSyntheticCfunMission(
         (int count, int period, int rawRem, int trig, int act)[] timers,
         byte[] timerBytecode)
