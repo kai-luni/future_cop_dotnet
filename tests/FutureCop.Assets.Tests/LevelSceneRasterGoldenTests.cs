@@ -27,6 +27,16 @@ namespace FutureCop.Assets.Tests;
 /// frames is the blend's and nothing else's (in particular the unit-heading branches of todo 38 paint
 /// no pixel here: they stay active in that probe). To re-derive the values by hand, set
 /// <see cref="LevelScene.SemiBlendDisabled"/> after the level is opened and hash the same two frames.
+///
+/// Zone 0 frame 120 and zone 3 frame 120 were re-recorded once more when the player mech's texture
+/// flipbooks started stepping (todo 46): the light submodel owns two 3DTA entries that swap the UV
+/// words of two 3DTL records every 35 and 60 retail ticks (func_800136C8:155-172,
+/// func_80012E48:66-73), so the frame that is drawn after 120 frames of play samples other texels
+/// than before (<see cref="LevelScene.TextureAnimationsDisabled"/> freezes them, the attribution test
+/// uses that to stay independent of the flipbooks). Frame 0 is unaffected because it is drawn before
+/// the first <see cref="LevelScene.AdvanceSoloFrame"/>: with the flipbooks frozen the replay still
+/// reproduces the previous hashes, and the delta is 10 pixels in a 5x3 box at (151,104) on zone 0 and
+/// 35 pixels in a 9x9 box at (156,105) on zone 3, the mech light bar at the screen centre.
 /// </summary>
 public class LevelSceneRasterGoldenTests
 {
@@ -129,10 +139,10 @@ public class LevelSceneRasterGoldenTests
     [ConftTheory]
     [InlineData(0, "CONFT.MIS",
         "C8ACDF087AFC8E7F674E6155004BB027C5D9696D30436D41C79661A2449AB324",
-        "4A9D690FDFE8E795ADD89CC1AB591C8AB2BF29FEC848BD93C777A55C25466982")]
+        "EF5C92CE8894BE11BFF47FD4140B09DF7958700F640AB0FFBBF13CCE412B2F56")]
     [InlineData(3, "OVMP.MIS",
         "3BEA86CE03C1647E58FE0D5CA9758527D1A39342BDD33584548B97A62FA7B067",
-        "87277EF36724F75044F1190037F3F8EE8840D1EDA489AE61FD4E3B71D2F19175")]
+        "3399E32F743DC92A036D353F7DBDD3244A053990594A45585B2981DB1ECBD313")]
     public void LevelSceneRgbMatchesBaselineSha256AcrossDeterministicPlay(
         int zone, string expectedMission, string expectedFrame0Hash, string expectedFrameNHash)
     {
@@ -156,6 +166,8 @@ public class LevelSceneRasterGoldenTests
     /// expected values are the digests of <c>aa1d386</c>, the commit before the blend landed; zone 0
     /// frame 120 is the same in both runs. Because every other stage (terrain, mech, unit heading,
     /// sorting, projection) is untouched by the switch, this pins the whole digest delta on the blend.
+    /// <see cref="LevelScene.TextureAnimationsDisabled"/> holds the 3DTA flipbooks on their on-disc
+    /// frame, exactly as they were before they landed, so the same values stay reproducible.
     /// </summary>
     [ConftTheory]
     [InlineData(0, "CONFT.MIS",
@@ -169,6 +181,7 @@ public class LevelSceneRasterGoldenTests
     {
         var (flow, level) = OpenLevel(zone, expectedMission);
         level.SemiBlendDisabled = true;
+        level.TextureAnimationsDisabled = true;
 
         level.Render(flow.Camera);
         Assert.Equal(expectedFrame0Hash, Sha256Hex(level.Rgb));
