@@ -27,6 +27,16 @@ namespace FutureCop.Assets.Tests;
 /// frames is the blend's and nothing else's (in particular the unit-heading branches of todo 38 paint
 /// no pixel here: they stay active in that probe). To re-derive the values by hand, set
 /// <see cref="LevelScene.SemiBlendDisabled"/> after the level is opened and hash the same two frames.
+///
+/// The zone 0 (CONFT) digests were re-recorded again when todo 50 started drawing the Cact type-0x60
+/// static scene nodes (the P1 base props around the spawn) and the two home-base purchase pad
+/// volumes in the normal frame. Attribution probe: with <c>PlaceDeferredSceneAssets</c> skipped the
+/// frame 0 digest returns to the old <c>C8ACDF08…</c> (no-blend: <c>D756CAE9…</c>), so frame 0 is the
+/// props' change alone - the pad outlines paint nothing in the spawn view. Frame 120 changed with
+/// both passes active (<c>58292EA4…</c> vs <c>4A9D690F…</c>); pads only gave <c>53C1A939…</c>, so
+/// both contribute there. The no-blend frame 120 digest no longer coincides with the blended one
+/// (<c>B597E0C6…</c> vs <c>58292EA4…</c>); the pixel-level cause is not attributed. Zone 3 is OVMP
+/// (0 type-96 records) and keeps its digests.
 /// </summary>
 public class LevelSceneRasterGoldenTests
 {
@@ -128,8 +138,8 @@ public class LevelSceneRasterGoldenTests
 
     [ConftTheory]
     [InlineData(0, "CONFT.MIS",
-        "C8ACDF087AFC8E7F674E6155004BB027C5D9696D30436D41C79661A2449AB324",
-        "4A9D690FDFE8E795ADD89CC1AB591C8AB2BF29FEC848BD93C777A55C25466982")]
+        "F4739454351EBE74C559CECC88884C15B689243261B0D94A915BC4B0B8CCE44A",
+        "58292EA4DFF5195F6969D5B47990FEDBB1BA9A60B60DBDB7A3B2CF2E2D8292E5")]
     [InlineData(3, "OVMP.MIS",
         "3BEA86CE03C1647E58FE0D5CA9758527D1A39342BDD33584548B97A62FA7B067",
         "87277EF36724F75044F1190037F3F8EE8840D1EDA489AE61FD4E3B71D2F19175")]
@@ -159,8 +169,8 @@ public class LevelSceneRasterGoldenTests
     /// </summary>
     [ConftTheory]
     [InlineData(0, "CONFT.MIS",
-        "D756CAE99866A944B67649D9DB0F61DA0AE591A0E967AFFEA8BBFC450ECE0452",
-        "4A9D690FDFE8E795ADD89CC1AB591C8AB2BF29FEC848BD93C777A55C25466982")]
+        "52B29872CC95AA27A3E51A38FEEC91B333CF0CF921ABCFE5241569614B065342",
+        "B597E0C615DE8C57D6569A31E1E906718A119309BEFE9CFB44F8FED533CC6627")]
     [InlineData(3, "OVMP.MIS",
         "0F27FE1D8D70AE6BAC3E48BFB7DC2837495F8E9F6EFD90AFDE25F8656EFF36E6",
         "3663C781D115AB48AB4A01EBB85A0CF9483466A3B0C01723DB45243DC969FA86")]

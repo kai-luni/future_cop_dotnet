@@ -330,6 +330,130 @@ public sealed class LiveObjectRegistry
 }
 
 /// <summary>
+/// One static scene node placed by the Cact type-0x60 branch:
+/// <c>gLoadActorChunk.c:109-110</c> <c>case 0x60: gLoadDeferredSceneAsset(arg0)</c>
+/// (<c>func_80084110</c>), which resolves the record's first <c>aRSL</c> resource
+/// (<c>gLoadDeferredSceneAsset.c:53-57</c>) and hands the record itself to
+/// <c>gSpawnSceneNode</c> (<c>func_80083A10</c>, <c>gLoadDeferredSceneAsset.c:58-59</c>).
+/// </summary>
+/// <remarks>
+/// <para>
+/// The record is the 0x30-byte spawn request <c>gSpawnSceneNode.c:35-55</c> reads, i.e. <c>tACT + 8</c>:
+/// id u16 +0x00, position s32 +0x08/+0x0C/+0x10, three angles s16 +0x14/+0x16/+0x18, a lift s16 +0x1A,
+/// the alignment code s8 +0x1C, flags u8 +0x1D, an animation rate u8 +0x1E, three Q6 scales
+/// +0x1F..+0x21, the spin byte +0x22 and a degree value +0x23. Those are the same offsets
+/// <see cref="EntityRecord"/> stores as <see cref="EntityRecord.Source"/>.
+/// </para>
+/// <para>
+/// These are scene nodes, not live entities: retail never enters <c>func_8002AE54</c> /
+/// <c>gSpawnQueuedEntityAndGetId</c> for this type, so nothing is registered in D_8009F800 and no
+/// message reaches the prop. Placement is ground-snapped by
+/// <c>gSpawnSceneNode.c:292-299</c> (only skipped when the alignment code is -99) and bucketed by
+/// <c>(x &gt;&gt; 17, z &gt;&gt; 17)</c> (<c>gSpawnSceneNode.c:429</c>).
+/// </para>
+/// </remarks>
+public sealed class SceneProp
+{
+    internal SceneProp(EntityRecord record, int modelId, int x, int y, int z)
+    {
+        Record = record;
+        ModelId = modelId;
+        X = x;
+        Y = y;
+        Z = z;
+    }
+
+    /// <summary>The source <c>Cact</c> record (the tACT payload that doubles as the spawn request).</summary>
+    public EntityRecord Record { get; }
+
+    /// <summary>Entity id (<c>source +0x00</c>), also the node's <c>+0x54</c> word (<c>gSpawnSceneNode.c:247</c>).</summary>
+    public int Id => Record.Id;
+
+    /// <summary>First <c>aRSL</c> <c>Cobj</c> id, the model <c>func_80019BF0</c> resolves for the node.</summary>
+    public int ModelId { get; }
+
+    /// <summary>World x of the record (<c>source +0x08</c>).</summary>
+    public int X { get; }
+
+    /// <summary>
+    /// World y after the ground snap of <c>gSpawnSceneNode.c:292-299</c>: the surface selected by
+    /// <see cref="AlignmentCode"/> plus <c>(s16 source +0x1A) &lt;&lt; 4</c>, or the raw source y for -99.
+    /// </summary>
+    public int Y { get; }
+
+    /// <summary>World z of the record (<c>source +0x10</c>).</summary>
+    public int Z { get; }
+
+    /// <summary>
+    /// Surface selector <c>source +0x1C</c> (<c>gSpawnSceneNode.c:294-299</c>): -99 keeps the source y,
+    /// 0 selects the highest surface, 1 the lowest, anything else <c>code - 2</c>.
+    /// </summary>
+    public int AlignmentCode => unchecked((sbyte)Record.U8(0x1C));
+
+    /// <summary>First rotation angle (<c>source +0x14</c>), the Y-axis turn of <c>gBuildRotationMatrix</c>.</summary>
+    public int Yaw => unchecked((short)Record.U16(0x14));
+
+    /// <summary>Third rotation angle (<c>source +0x18</c>), the X-axis turn (<c>gSpawnSceneNode.c:314</c>).</summary>
+    public int Pitch => unchecked((short)Record.U16(0x18));
+
+    /// <summary>Second rotation angle (<c>source +0x16</c>), the Z-axis turn (<c>gSpawnSceneNode.c:320</c>).</summary>
+    public int Roll => unchecked((short)Record.U16(0x16));
+
+    /// <summary>Animation rate <c>source +0x1E</c> (<c>gSpawnSceneNode.c:255-265</c>); 0 = static.</summary>
+    public byte AnimateRate => (byte)Record.U8(0x1E);
+
+    /// <summary>
+    /// Spin rate / upright flag <c>source +0x22</c> (<c>gSpawnSceneNode.c:246,351-357</c>): a non-zero
+    /// value forces the upright matrix row and drives the per-frame yaw of
+    /// <c>gDrawCellWindowModels.c:184-233</c>.
+    /// </summary>
+    public byte Spin => (byte)Record.U8(0x22);
+
+    /// <summary>Q6 scale of matrix row 0 (<c>source +0x1F</c>, 0x40 = 1.0).</summary>
+    public byte ScaleX => (byte)Record.U8(0x1F);
+
+    /// <summary>Q6 scale of matrix row 1 (<c>source +0x20</c>).</summary>
+    public byte ScaleY => (byte)Record.U8(0x20);
+
+    /// <summary>Q6 scale of matrix row 2 (<c>source +0x21</c>).</summary>
+    public byte ScaleZ => (byte)Record.U8(0x21);
+
+    /// <summary>Scene bucket row <c>x &gt;&gt; 17</c> (<c>gSpawnSceneNode.c:429</c>).</summary>
+    public int Row => X >> 17;
+
+    /// <summary>Scene bucket column <c>z &gt;&gt; 17</c> (<c>gSpawnSceneNode.c:429</c>).</summary>
+    public int Column => Z >> 17;
+
+    /// <summary>
+    /// Node basis of <c>gSpawnSceneNode.c:326-357</c>: <c>gBuildRotationMatrix(yaw, pitch, roll)</c>,
+    /// row scaling by the three Q6 bytes unless all are 0x40, then the upright correction a non-zero
+    /// spin byte selects. The signed-scale random jitter of <c>:331-337</c> is not modelled; every
+    /// shipped type-96 record carries 0x40/0x40/0x40.
+    /// </summary>
+    public void Basis(int[] matrix)
+    {
+        ArgumentNullException.ThrowIfNull(matrix);
+        MechWalker.RotationMatrix(Yaw, Pitch, Roll, matrix);
+        if (ScaleX != 0x40 || ScaleY != 0x40 || ScaleZ != 0x40)
+        {
+            int[] scale = { unchecked((sbyte)ScaleX), unchecked((sbyte)ScaleY), unchecked((sbyte)ScaleZ) };
+            for (int row = 0; row < 3; row++)
+                for (int column = 0; column < 3; column++)
+                    matrix[row * 3 + column] = (matrix[row * 3 + column] * scale[row]) >> 6;
+        }
+        if (Spin != 0)
+        {
+            // gSpawnSceneNode.c:351-357: rows 0 and 1 lose their off-axis terms, row 1 becomes up.
+            matrix[1] = 0;
+            matrix[3] = 0;
+            matrix[4] = 0x10000;
+            matrix[5] = 0;
+            matrix[7] = 0;
+        }
+    }
+}
+
+/// <summary>
 /// Shared map-object spawn and occupancy registry in <c>FutureCop.Game</c>:
 /// combines the 256-slot descriptor table D_800A0C70, the 2x256 map-cell spawn gate D_800A7040,
 /// the immediate-vs-deferred registration queue (D_8009F70C / D_8009F708 / D_8009FA00[0]) with
@@ -426,8 +550,23 @@ public sealed class MapObjectRegistry
     /// <summary>Placed type-10 elevators registered in the ground-object table (max 24, 8006314C.c:36-47).</summary>
     public IReadOnlyList<Elevator> Elevators => _groundElevators;
 
+    private readonly List<SceneProp> _deferredSceneProps = new();
+
+    /// <summary>
+    /// Static scene nodes placed by the Cact type-0x60 branch (<c>gLoadActorChunk.c:109-110</c>),
+    /// in archive order, after <see cref="PlaceDeferredSceneAssets"/>.
+    /// </summary>
+    public IReadOnlyList<SceneProp> SceneProps => _deferredSceneProps;
+
     /// <summary>Static terrain query for type-10 initialization; pass the record's full XYZ probe.</summary>
     public Func<Vec3, int>? GroundHeight { get; set; }
+
+    /// <summary>
+    /// Ranked surface query for the type-96 ground snap (x, z, rank) -&gt; height, the ported
+    /// <c>func_80067684</c> (<see cref="LevelGround.PlacementHeight"/>) that
+    /// <c>gSpawnSceneNode.c:297</c> calls with the alignment code mapped by <c>:296</c>.
+    /// </summary>
+    public Func<int, int, int, int>? PlacementHeight { get; set; }
 
     /// <summary>Resolves an object's primary Cobj model for its 3DBB collision records.</summary>
     public Func<int, Model?>? ResolveModel { get; set; }
@@ -441,6 +580,8 @@ public sealed class MapObjectRegistry
     /// <summary>
     /// Places the supported Cact actors in an allocated live registry (8004D6D4.c).
     /// Csac templates remain with the spawner until their spawn gate fires (80060E74.c, 8006125C.c).
+    /// Type 0x60 is not an actor: <c>gLoadActorChunk.c:109-110</c> returns before entity creation, so
+    /// its records are placed as static scene nodes by <see cref="PlaceDeferredSceneAssets"/>.
     /// </summary>
     public int PlaceMissionObjects(IReadOnlyList<EntityRecord> records)
     {
@@ -456,6 +597,60 @@ public sealed class MapObjectRegistry
         }
         return placed;
     }
+
+    /// <summary>
+    /// Port of the Cact type-0x60 branch: <c>gLoadActorChunk.c:106-110</c>
+    /// <c>case 0x60: gLoadDeferredSceneAsset(arg0)</c> (<c>func_80084110</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>gLoadDeferredSceneAsset.c:53-59</c> resolves the record's <c>LSRa</c> list and its first entry
+    /// with <c>func_80019BF0(entry.group, entry.name)</c>, then calls
+    /// <c>gSpawnSceneNode(tACT + 8, resource-&gt;model, -1, 0)</c>: a static (z2 &lt; 0) node with no
+    /// caller matrix, so the transform comes from the record itself. Every shipped type-0x60 record
+    /// carries exactly one <c>aRSL</c> entry and that entry is a <c>Cobj</c> (checked over CONFT 89,
+    /// HK 151, JOKE 75, SLIM 75, OVMP 0), so <see cref="EntityRecord.Model()"/> reading the first
+    /// <c>Cobj</c> is that first entry. The port reproduces the placement
+    /// of <c>gSpawnSceneNode.c:292-349</c>: position from +0x08/+0x10, ground snap through
+    /// <see cref="PlacementHeight"/> for every alignment code except -99, lift <c>(s16 +0x1A) &lt;&lt; 4</c>,
+    /// and the basis built from +0x14/+0x18/+0x16 with the Q6 row scales and the spin-byte upright
+    /// correction.
+    /// </para>
+    /// <para>
+    /// Not modelled: the 250-node pool retry of <c>gSpawnSceneNode.c:236-243</c> and the per-frame
+    /// animation/spin clock of <c>gDrawCellWindowModels.c:149-238</c> (89 static props in CONFT.MIS,
+    /// pool exhaustion unreachable). The 5x5 cell-window cull of that drawer is modelled by
+    /// <see cref="SceneProp.Row"/> / <see cref="SceneProp.Column"/> in the viewer.
+    /// </para>
+    /// </remarks>
+    public int PlaceDeferredSceneAssets(IReadOnlyList<EntityRecord> records)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+        _deferredSceneProps.Clear();
+        foreach (var record in records)
+        {
+            if (record.Container != EntityContainer.Cact) continue;
+            if (record.Type != DeferredSceneAssetType) continue;
+            int modelId = record.Model();
+            // func_80019BF0(0, 0) finds nothing and gSpawnSceneNode would dereference null; a record
+            // without a Cobj reference is not a placeable asset in the shipped archives.
+            if (modelId == 0) continue;
+            int x = record.X, z = record.Z;
+            int y = record.Y;
+            int alignment = unchecked((sbyte)record.U8(0x1C));
+            if (alignment != -99)
+            {
+                int rank = alignment switch { 0 => -1, 1 => -2, _ => alignment - 2 };
+                // gSpawnSceneNode.c:296-298. A failed query answers 0 in retail, not the source y.
+                y = (PlacementHeight?.Invoke(x, z, rank) ?? 0) + (unchecked((short)record.U16(0x1A)) << 4);
+            }
+            _deferredSceneProps.Add(new SceneProp(record, modelId, x, y, z));
+        }
+        return _deferredSceneProps.Count;
+    }
+
+    /// <summary>Cact type byte of the deferred-scene asset branch (<c>gLoadActorChunk.c:109</c>).</summary>
+    public const int DeferredSceneAssetType = 0x60;
 
     /// <summary>First registered lift hit, for <see cref="MechWorld.GroundObjects"/> (8006320C.c:51–89).</summary>
     public GroundObjectHit? ProbeGroundObjects(Vec3 position)
@@ -485,6 +680,11 @@ public sealed class MapObjectRegistry
         }
     }
 
+    /// <summary>
+    /// Builds the live actor for a supported Cact record. Type 0x60 never reaches this switch:
+    /// <c>gLoadActorChunk.c:109-110</c> dispatches it to the deferred-scene path before entity
+    /// creation (<see cref="PlaceDeferredSceneAssets"/>).
+    /// </summary>
     internal IRegisteredMapObject? CreateMissionObject(EntityRecord record, int runtimeId)
     {
         switch (record.Type)
@@ -546,6 +746,8 @@ public sealed class MapObjectRegistry
         _deferredQueue.Clear();
         _deferredSpawnRequests.Clear();
         _groundElevators.Clear();
+        // The scene-node pool (D_8009F934) is refilled on level load, so no type-96 node survives a reload.
+        _deferredSceneProps.Clear();
         HasDeferralPool = true;
         _deferredPoolRemaining = DeferredPoolCapacity;
     }
