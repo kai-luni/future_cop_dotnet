@@ -123,7 +123,14 @@ public sealed record DirectSpawnArgs(
     short SlotValue,
     byte SrcColumn,
     int Mask,
-    EnemyEntity? Target);
+    EnemyEntity? Target)
+{
+    /// <summary>The firing entity's +0x14, saved when gSpawnDirectShot.c:73,102 builds the request.</summary>
+    public int? ShooterRecordId { get; init; }
+
+    /// <summary>The firing entity's +0x18, copied into the shot by gSpawnDirectShot.c:76.</summary>
+    public byte Kind { get; init; }
+}
 
 /// <summary>Arguments recorded for the secondary gSpawnTypeAtOwner spawns (func_800402DC, 8005F6E8.c:441-448).</summary>
 public sealed record TypeAtOwnerSpawn(int Column, int Kind, int OwnerRet, int[] Position, int MarkerWord);

@@ -372,6 +372,9 @@ public sealed class ProjectileContact : LiveEntity
     /// <summary>Entity type 2 (8005E47C.c: args.kind = 2).</summary>
     public override int DispatchType => 2;
 
+    /// <summary>obj+0x18: compared for type-2 pairs (gHandleDirectShotProjectile.c:141).</summary>
+    public byte Kind { get; init; }
+
     /// <summary>obj+0x50/+0x54/+0x58: the position the message-4 blast is centred on.</summary>
     public (int X, int Y, int Z) Position => (_position.X, _y, _position.Z);
 

@@ -167,16 +167,16 @@ public sealed partial class LevelScene
     {
         _fireEnabled = true;
         _ = Weapons;
-        // func_8002FC90:188-199 refills the control block the fire path spends from, and the gauge
-        // bits raise the entity's +0x1C health word (8002FC90.c:164-169 writes the same word the
-        // damage path subtracts from, 80058210.c:101-102), not the +0x1E weapon-limit scale.
+        // gApplyPlayerResupply.c:188-199 refills the live weapon control block. Its health path
+        // reads and writes the entity's +0x1C and caps it at that entity's +0x1E (:145-163).
         if (_pickups is null)
         {
             _pickupField = WeaponPickups.FromMission(_file.Bytes, WeaponCatalog.LoadRegistry(_file), Map);
             _pickupField.OnRetired = RetirePickupEntity;
             _pickups = new PickupItems(_pickupField,
                 PlayerResupplyState.ForWalker(Weapons!.Slots, () => PlayerUnit?.Health ?? 0,
-                    v => { if (PlayerUnit is { } unit) unit.Health = (short)v; }, 0x7F00));
+                    v => { if (PlayerUnit is { } unit) unit.Health = (short)v; },
+                    () => PlayerUnit?.MaxHealth ?? 0));
         }
         EnableObjectives();
         // gBeamPartUpdate (func_8006B23C) traces the segment against the level map every frame

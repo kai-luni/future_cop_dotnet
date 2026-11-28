@@ -116,6 +116,41 @@ public class WeaponPickupRespawnTests
     }
 
     [ConftFact]
+    public void HealthPickupFromHalfArmourStopsAtPlayerMaxHealth()
+    {
+        var scene = CreatePrecinctAssaultScene();
+        var item = Assert.Single(scene.Pickups!.Items, i => i.SectionId == 103);
+        var walker = scene.Walker!;
+        (walker.X, walker.Y, walker.Z) = (item.X, item.Y, item.Z);
+        scene.AttachWalker(walker);
+
+        // gApplyPlayerResupply.c:145-163 writes +0x1C and clamps at the entity's +0x1E.
+        var player = scene.PlayerUnit!;
+        Assert.Equal(1000, player.MaxHealth);
+        player.Health = 500;
+        scene.AdvanceWalker(1, 0, AnalogPad.Digital);
+
+        Assert.Equal(player.MaxHealth, player.Health);
+        Assert.True(item.Collected);
+    }
+
+    [ConftFact]
+    public void ResupplyGaugeReadsArmourAfterPlayerTakesDamage()
+    {
+        var scene = CreatePrecinctAssaultScene();
+        var player = scene.PlayerUnit!;
+        var resupply = scene.Pickups!.Player;
+        short before = player.Health;
+
+        // gApplyPlayerHealthDamage.c:101-102 changes +0x1C; gApplyPlayerResupply.c:145-163
+        // uses that same live word when it adds health.
+        player.ApplyHit(50, 0x8001);
+
+        Assert.Equal(before - 50, player.Health);
+        Assert.Equal(player.Health, resupply.Gauge);
+    }
+
+    [ConftFact]
     public void PrecinctAssaultPickupRespawnTimingAndVisibilityMatchRetailTsacDelays()
     {
         var scene = CreatePrecinctAssaultScene();
@@ -141,13 +176,12 @@ public class WeaponPickupRespawnTests
         var healthItem = Assert.Single(pickups.Items, i => i.SectionId == 103);
         var reserveItem = Assert.Single(pickups.Items, i => i.SectionId == 284);
 
-        // Collect health pickup 103 and reserve pickup 284. The gauge drives the entity's +0x1C
-        // health word (8002FC90.c:164-169), which AttachWalker seeds from the body.
-        walker.Health = 1234;
+        // gApplyPlayerResupply.c:145-163 refills live armour (+0x1C) up to the entity maximum (+0x1E).
         (walker.X, walker.Y, walker.Z) = (healthItem.X, healthItem.Y, healthItem.Z);
         scene.AttachWalker(walker);
+        scene.PlayerUnit!.Health = 600;
         scene.AdvanceWalker(1, 0, AnalogPad.Digital);
-        Assert.Equal(0x7F00, scene.PlayerUnit!.Health);
+        Assert.Equal(scene.PlayerUnit.MaxHealth, scene.PlayerUnit.Health);
         Assert.Equal(0, slot103.TotalSpawned);
 
         slots.Reserve[1] = 0;
@@ -199,9 +233,9 @@ public class WeaponPickupRespawnTests
         // Collect the respawned health pickup a second time and verify second payout.
         (walker.X, walker.Y, walker.Z) = (respawned103.X, respawned103.Y, respawned103.Z);
         scene.AttachWalker(walker);
-        walker.Health = 2000;
+        scene.PlayerUnit!.Health = 700;
         scene.AdvanceWalker(1, 0, AnalogPad.Digital);
-        Assert.Equal(0x7F00, scene.PlayerUnit!.Health);
+        Assert.Equal(scene.PlayerUnit.MaxHealth, scene.PlayerUnit.Health);
         Assert.Equal(0, slot103.TotalSpawned);
         Assert.Equal(9, pickups.RemainingCount);
 

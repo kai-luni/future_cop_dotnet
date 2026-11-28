@@ -5,11 +5,11 @@ using FutureCop.Game.Mech;
 namespace FutureCop.View;
 
 /// <summary>
-/// The hostile side of the level's fire path: one <see cref="EnemyWorld"/> holding a view of every
+/// The army side of the level's fire path: one <see cref="EnemyWorld"/> holding a view of every
 /// spawned Csac unit plus the player, the per-unit attack slot installed by the army handler at
 /// +0xA0 (<c>gInitAttackSchedulerSlot</c>, 80060668.c:77-107; 8002AE54), the scheduler step
-/// (<c>func_80060238</c>) and the direct shots it fires (func_8005E47C) flown until they reach the
-/// player, where they are delivered as message 11 of the player handler (800584BC.c:117-119).
+/// (<c>func_80060238</c>) and the direct shots it fires (func_8005E47C) delivered to their contacts
+/// as message 11 (800620D8.c:99-100).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -50,7 +50,8 @@ public sealed class LevelEnemyFire
         public int DirX, DirY, DirZ;
         public int Scale;
         public int Damage;
-        public int ShooterRecordId;
+        public int? ShooterRecordId;
+        public byte Kind;
         public byte SlotIndex;
         public int Leash;
         public int Age;
@@ -200,7 +201,7 @@ public sealed class LevelEnemyFire
 
     /// <summary>
     /// Steps the armed units' attack slots that no mover drives, flies the direct shots the army
-    /// world recorded into the player, and advances the shots already in the air.
+    /// world recorded, and delivers their contacts (800620D8.c:99-100).
     /// </summary>
     public void Tick(int delta, PlayerUnit player, CollisionCoord playerCoord, EntityWorld world)
     {
@@ -252,7 +253,8 @@ public sealed class LevelEnemyFire
             DirZ = args.AimZ,
             Scale = speed,
             Damage = args.Def.W0C,                                  // weapon obj+0x00, 8005F6E8.c:414
-            ShooterRecordId = _units.Find(b => ReferenceEquals(b.Unit.AttackSlot, args.Slot))?.Unit.RecordId ?? 0,
+            ShooterRecordId = args.ShooterRecordId,
+            Kind = args.Kind,
             SlotIndex = (byte)args.Def.W1A,
             HomeX = args.MuzzleX, HomeY = args.MuzzleY, HomeZ = args.MuzzleZ,
             Leash = leash > 0 ? leash & ~0xFF : int.MaxValue,
@@ -261,6 +263,8 @@ public sealed class LevelEnemyFire
 
     private void AdvanceShots(int delta, PlayerUnit player, CollisionCoord playerCoord, EntityWorld world)
     {
+        if (_shots.Count == 0) return;
+        var active = world.Active.ToArray();
         for (int i = _shots.Count - 1; i >= 0; i--)
         {
             var shot = _shots[i];
@@ -272,20 +276,71 @@ public sealed class LevelEnemyFire
                 shot.Z = unchecked(shot.Z + (int)(((long)shot.DirZ * shot.Scale) >> 16));
             }
             var shotCoord = new CollisionCoord(shot.X, shot.Y, shot.Z, 0x400, 0x400, 0x400);
-            bool hit = !player.Dead && EntityPairCollision.ReachesPartTest(playerCoord, shotCoord);
-            if (hit) DeliverHit(player, shot, world);
+            bool hit = DeliverContacts(shot, shotCoord, player, playerCoord, world, active);
             int leashX = shot.X - shot.HomeX, leashY = shot.Y - shot.HomeY, leashZ = shot.Z - shot.HomeZ;
             int dist = Octagonal(leashX, leashY, leashZ);
             if (hit || dist > shot.Leash || shot.Age > 0x5DC) _shots.RemoveAt(i);
         }
     }
 
-    private void DeliverHit(PlayerUnit player, Shot shot, EntityWorld world)
+    private bool DeliverContacts(Shot shot, CollisionCoord shotCoord, PlayerUnit player,
+        CollisionCoord playerCoord, EntityWorld world, LiveEntity[] active)
     {
-        // The contact carries the firing unit's +0x14 (8005E47C.c:73) and the weapon damage word
-        // (obj+0x00, copied to +0x1A by 8002A5F4.c:131 / 80035904.c:209).
-        var contact = new ProjectileContact(shot.ShooterRecordId, unchecked((short)shot.Damage),
-            shot.SlotIndex, shot.X, shot.Z, shot.Y);
+        // The player is held outside EntityWorld in the scene; preserve its existing hit path.
+        ProjectileContact? contact = null;
+        bool playerHit = !player.Dead && PassesShotGate(shot, player) &&
+            EntityPairCollision.ReachesPartTest(playerCoord, shotCoord);
+        if (playerHit)
+        {
+            contact = CreateContact(shot);
+            DeliverPlayerHit(player, contact, world);
+        }
+
+        bool spawned = false;
+        foreach (var entity in active)
+        {
+            // The collision grid skips inactive entries and flag 4 (80062C3C.c / 80062874.c).
+            if (ReferenceEquals(entity, player) || entity.RuntimeId <= 0 || (entity.Flags & 4) != 0 ||
+                entity.Coord is not { } coord || !PassesShotGate(shot, entity) ||
+                !EntityPairCollision.ReachesPartTest(coord, shotCoord)) continue;
+
+            contact ??= CreateContact(shot);
+            // gTestEntityPairCollision's candidate gate and message exchange (800623FC.c,
+            // 800620D8.c:99-100). Base damage reads the projectile id on lethal hits
+            // (gApplyEntityBaseDamage.c:114-121); give this contact that id before delivery.
+            if ((entity.Flags & LiveEntity.PairGateFlag) != 0 && entity.HandleMessage(10, world, contact) == 0)
+                continue;
+            if (!spawned)
+            {
+                world.Spawn(contact);
+                spawned = true;
+            }
+            entity.HandleMessage(11, world, contact);
+            contact.HandleMessage(11, world, entity);
+        }
+
+        return playerHit || spawned;
+    }
+
+    private static bool PassesShotGate(Shot shot, LiveEntity target)
+    {
+        // gHandleDirectShotProjectile.c:127-143 rejects the owner by masked record id and
+        // rejects same-kind type-2 projectiles. It does not compare teams for other entities.
+        if (shot.ShooterRecordId is int owner && (owner & 0x3FFF) == (target.RecordId & 0x3FFF))
+            return false;
+        return target is not ProjectileContact other || other.Kind != shot.Kind;
+    }
+
+    private static ProjectileContact CreateContact(Shot shot) =>
+        // gSpawnDirectShot.c:73-76,101 carries the firing unit's +0x14 and +0x18, and the damage
+        // word (obj+0x00, copied to +0x1A by 8002A5F4.c:131 / 80035904.c:209).
+        new(shot.ShooterRecordId ?? 0, unchecked((short)shot.Damage), shot.SlotIndex, shot.X, shot.Z, shot.Y)
+        {
+            Kind = shot.Kind,
+        };
+
+    private void DeliverPlayerHit(PlayerUnit player, ProjectileContact contact, EntityWorld world)
+    {
         // Message 10 is the pair gate of gTestEntityPairCollision (800620D8): a zero answer vetoes
         // the contact before message 11 applies it (8002A5F4.c:299-301).
         if (player.HandleMessage(10, world, contact) == 0) return;

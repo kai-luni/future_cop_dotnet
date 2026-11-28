@@ -26,6 +26,132 @@ public class EnemyFireSceneTests
         unit.DirZ = 0;
     }
 
+    [ConftFact]
+    public void FriendlyArmyDirectShotDamagesThePlayer()
+    {
+        var scene = CreateDirectContactScene(out var tankRecord, out int playerTeam);
+        var shooter = SpawnTank(scene, tankRecord with { Id = 0x1800, Team = playerTeam });
+        var player = scene.PlayerUnit!;
+        var (x, y, z) = scene.MechWorld;
+        short before = player.Health;
+        Assert.Equal(playerTeam, shooter.Team);
+
+        // gHandleDirectShotProjectile.c:127-143 does not veto teammates. The player accepts
+        // message 11 and takes damage without a team test (gHandlePlayerEntityMsg.c:88-93,117-119;
+        // gHandlePlayerHitMessage.c:82-95).
+        QueueDirectShot(scene, shooter, x, y, z);
+        TickDirectContacts(scene, playerTeam);
+
+        Assert.Equal(before - 50, player.Health);
+        Assert.Equal(1, scene.EnemyFire!.HitsDelivered);
+    }
+
+    [ConftFact]
+    public void ArmyDirectShotDamagesAnEnemyTankButNotTheOwnerRecord()
+    {
+        var scene = CreateDirectContactScene(out var tankRecord, out int playerTeam);
+        var shooter = SpawnTank(scene, tankRecord with { Id = 0x1800, Team = playerTeam });
+        var ownerRecordMatch = SpawnTank(scene, tankRecord with { Id = shooter.RecordId | 0x4000, Team = playerTeam });
+        var target = SpawnTank(scene, tankRecord with { Id = 0x1801, Team = 3 - playerTeam });
+        Assert.NotEqual(shooter.Team, target.Team);
+        var (x, y, z) = scene.MechWorld;
+        x += 0x8000;
+        foreach (var tank in new[] { shooter, ownerRecordMatch, target })
+        {
+            (tank.X, tank.Y, tank.Z) = (x, y, z);
+            tank.Coord = tank.Coord!.Value with { X = x, Y = y, Z = z };
+        }
+
+        short shooterBefore = shooter.Health;
+        short matchBefore = ownerRecordMatch.Health;
+        short targetBefore = target.Health;
+        short playerBefore = scene.PlayerUnit!.Health;
+
+        // The shot rejects both the shooter and the matching 14-bit owner record
+        // (gHandleDirectShotProjectile.c:127-143). Message 11 goes to the tank's base-damage path
+        // (gHandleType5Entity.c:189-194,354-357; gResolveRailMoverContact.c:82-88,128-133;
+        // gApplyEntityBaseDamage.c:87-103).
+        QueueDirectShot(scene, shooter, x, y, z);
+        TickDirectContacts(scene, playerTeam);
+
+        Assert.Equal(targetBefore - 50, target.Health);
+        Assert.Equal(shooterBefore, shooter.Health);
+        Assert.Equal(matchBefore, ownerRecordMatch.Health);
+        Assert.Equal(playerBefore, scene.PlayerUnit.Health);
+        Assert.Equal(0, scene.EnemyFire!.ShotCount);
+    }
+
+    [ConftFact]
+    public void ArmyDirectShotExcludesOnlySameKindProjectileContacts()
+    {
+        var scene = CreateDirectContactScene(out var tankRecord, out int playerTeam);
+        var shooter = SpawnTank(scene, tankRecord with { Id = 0x1800, Team = playerTeam });
+        var (x, y, z) = scene.MechWorld;
+        x += 0x8000;
+        var coord = new CollisionCoord(x, y, z, 0x400, 0x400, 0x400);
+        var sameKind = new ProjectileContact(0x1801, 1, 0, x, z, y)
+        {
+            Health = 1, Coord = coord, Kind = (byte)playerTeam,
+        };
+        var otherKind = new ProjectileContact(0x1802, 1, 0, x, z, y)
+        {
+            Health = 1, Coord = coord, Kind = (byte)(3 - playerTeam),
+        };
+        scene.Entities!.Spawn(sameKind);
+        scene.Entities.Spawn(otherKind);
+
+        // gHandleDirectShotProjectile.c:141 excludes only type-2 contacts with matching +0x18.
+        // A different-kind pair receives message 11 (800620D8.c:99-100), which sets +0x1C
+        // to -1 for a normal direct shot (gHandleDirectShotProjectile.c:144-158).
+        QueueDirectShot(scene, shooter, x, y, z);
+        TickDirectContacts(scene, playerTeam);
+
+        Assert.Equal(1, sameKind.Health);
+        Assert.Equal(-1, otherKind.Health);
+    }
+
+    private static LevelScene CreateDirectContactScene(out EntityRecord tankRecord, out int playerTeam)
+    {
+        string mission = LevelSceneRetirementTests.FindMission()!;
+        var scene = new LevelScene(mission);
+        scene.EnableMechMovement();
+        scene.EnableFiring();
+        playerTeam = scene.Objectives!.Score.PlayerTeams[0];
+        tankRecord = MissionEntities.Parse(File.ReadAllBytes(mission)).First(r =>
+            r.Type == 5 && r.Container == EntityContainer.Csac && r.U8(0x24) == 6);
+        return scene;
+    }
+
+    private static SpawnedCsacUnit SpawnTank(LevelScene scene, EntityRecord record)
+    {
+        var spawner = scene.CsacSpawner!;
+        return Assert.IsType<SpawnedCsacUnit>(spawner.TrySpawn(spawner.Register(record)!, 1));
+    }
+
+    private static void QueueDirectShot(LevelScene scene, SpawnedCsacUnit shooter, int x, int y, int z)
+    {
+        var slot = Assert.IsType<AttackSlot>(shooter.AttackSlot);
+        // Feed the flight queue at gSpawnDirectShot's boundary, using a one-tick path that ends
+        // at the desired contact point (gSpawnDirectShot.c:90-103).
+        scene.ArmyAttackWorld!.DirectShots.Add(new DirectSpawnArgs(slot,
+            new AttackDefinition { Type = 2, W0C = 50, W12 = 0x100 },
+            x - 0x1000, y, z, 0x10000, 0, 0, 0, 2, 0, 0, 0, 0, null)
+        {
+            ShooterRecordId = shooter.RecordId,
+            Kind = (byte)shooter.Team,
+        });
+    }
+
+    private static void TickDirectContacts(LevelScene scene, int playerTeam)
+    {
+        var (x, y, z) = scene.MechWorld;
+        var world = scene.Entities!;
+        world.CullActive(x, z);
+        var fire = scene.EnemyFire!;
+        fire.Sync(scene.CsacSpawner!.SpawnedUnits, x, y, z, playerTeam);
+        fire.Tick(1, scene.PlayerUnit!, new CollisionCoord(x, y, z, 0x400, 0x400, 0x400), world);
+    }
+
     [RetailFact]
     public void EnemyShotLosesArmourAndNegativeHealthRetiresThenRespawnsThePlayer()
     {

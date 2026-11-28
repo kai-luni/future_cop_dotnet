@@ -233,7 +233,11 @@ public static class EnemyWeaponFire
                     if ((slot.Flags & 0x2000) != 0) temp |= 2;
                     ret = env.SpawnDirectShot(new DirectSpawnArgs( // 8005F6E8.c:414-416
                         slot, s2, pos[0], pos[1], pos[2], vec[0], vec[1], vec[2], s4,
-                        type, slot.TargetClass06, (short)slot.Value08, (byte)s2.W1B, temp, s1));
+                        type, slot.TargetClass06, (short)slot.Value08, (byte)s2.W1B, temp, s1)
+                    {
+                        ShooterRecordId = actor.Word14,
+                        Kind = actor.Type18,
+                    });
                     goto Tail;
             }
 
