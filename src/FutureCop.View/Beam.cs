@@ -45,10 +45,16 @@ public sealed class Beam
             unchecked(x + Offset(direction[0], length)),
             unchecked(y + Offset(direction[1], length)),
             unchecked(z + Offset(direction[2], length)));
+        _rawEnd = End;
     }
 
     // func_8006B23C:340-342: the MIPS multiply keeps the low signed 32 bits before shifting.
     private static int Offset(int axis, int length) => unchecked(((axis >> 4) * length) >> 8);
+
+    // The unclipped far end of func_8006B23C:340-342. The original recomputes v38 from the owner's
+    // axis on every frame before it traces (:after_movement), so the trace always sees the full
+    // segment; the port re-derives the same segment here instead of remembering a shortened End.
+    private readonly (int X, int Y, int Z) _rawEnd;
 
     /// <summary>The firing half of the weapon record.</summary>
     public ShotDefinition Definition { get; }
@@ -68,10 +74,11 @@ public sealed class Beam
     public (int X, int Y, int Z) End { get; private set; }
 
     /// <summary>
-    /// True once <see cref="ClipToGround"/> pulled the far end onto the level surface. This is the
-    /// port's <c>s5 &amp; 0xFF</c> of func_8006B23C:346-350, the map-hit word the radial spread of
-    /// :356 tests; it stays set for the rest of the beam's life, because the segment it describes
-    /// does not move between the frames the beam is drawn.
+    /// True when the last <see cref="ClipToGround"/> call found the far end below the level surface and
+    /// pulled it back onto it. This is the port's <c>s5 &amp; 0xFF</c> of func_8006B23C:346-350, the map-hit
+    /// word the radial spread of :356 tests. Retail recomputes the segment and re-traces it on every
+    /// frame of the beam's life, so <see cref="LevelWeapons.AdvanceBeams"/> calls the clip again each
+    /// frame; this flag always describes that call's trace.
     /// </summary>
     public bool ClippedToGround { get; private set; }
 
@@ -89,9 +96,11 @@ public sealed class Beam
 
     /// <summary>
     /// func_8006B23C:346-349: the far end is pulled back to the level surface when the beam hits it.
-    /// The port samples the floor along the segment and keeps the first point that is not above it;
+    /// The port samples the floor along the segment and keeps the first point strictly below it;
     /// <see cref="ClippedToGround"/> records that the clip fired, which is the trace result the
-    /// radial spread of :356 needs.
+    /// radial spread of :356 needs. A segment that only grazes the surface or starts on it is not a
+    /// hit: gTraceMapRay (func_800684AC) reports a crossing, and a beam fired at floor height from a
+    /// mech standing on that floor must not count as a map hit on its first sample.
     /// </summary>
     /// <param name="map">The mission map.</param>
     public void ClipToGround(LevelMap map)
@@ -100,14 +109,16 @@ public sealed class Beam
         if (Length == 0) return;
         // Walk the actual start-to-end segment in sixteen steps; the first floor contact is kept.
         const int Steps = 16;
-        var far = End;
+        var far = _rawEnd;
+        End = far;
+        ClippedToGround = false;
         for (int i = 1; i <= Steps; i++)
         {
             int x = X + (int)(((long)far.X - X) * i / Steps);
             int y = Y + (int)(((long)far.Y - Y) * i / Steps);
             int z = Z + (int)(((long)far.Z - Z) * i / Steps);
             int ground = LevelGround.Height(map, x, y + 0x1000, z, out _);
-            if (y <= ground)
+            if (y < ground)
             {
                 End = (x, ground, z);
                 ClippedToGround = true;

@@ -140,6 +140,14 @@ public sealed class LevelScene
                     v => Walker!.Health = (short)v, 0x7F00));
         }
         EnableObjectives();
+        // gBeamPartUpdate (func_8006B23C) traces the segment against the level map every frame
+        // (:346) and delivers its callback into the entity table (:196-201). Both wirings are the
+        // level's: without them a live beam would only be drawn and never clipped or delivered.
+        Weapons!.BeamGroundMap = Map;
+        Weapons!.BeamHitWorld = _entities;
+        // cb.unk00 = self->unk14: the scene passes the player actor id ORed with 0x8000, the same
+        // source word the projectile contacts carry (ApplyBaseDamage strips it with 0x7FFF).
+        Weapons!.BeamSourceWord = unchecked((uint)Actor.Id) | 0x8000;
         BindInitialPickupsToCsacSpawner();
     }
 
@@ -501,6 +509,8 @@ public sealed class LevelScene
 
         // :178 gCullActiveEntitiesSolo rebuilds D_800A8F90 for this frame: the command pass, the
         // map-zone scan (80031DE8.c:90) and the deferred updates all read that table.
+        _walkerFrameOpen = false;
+        _frameIndex++;
         CullActiveSolo();
         // :179 gDispatchQueuedEntityCommands: the pairs scripts queued before this frame.
         int dispatched = DispatchQueuedCommands(dt);
@@ -527,8 +537,15 @@ public sealed class LevelScene
     /// order lives in <see cref="AdvanceSoloFrame"/>; this entry point stays for previews and tests
     /// that step the spawner and the pad clock on their own.
     /// </summary>
+    /// <remarks>
+    /// Called right after <see cref="AdvanceWalker"/> it continues that frame, so it does not repeat
+    /// the queued-command pass the walker's retirement stage already ran; called on its own it opens
+    /// its own frame. <see cref="CommandPassCount"/> makes that ownership observable.
+    /// </remarks>
     public void AdvanceSkyCaptain(int dt)
     {
+        if (!_walkerFrameOpen) _frameIndex++;
+        _walkerFrameOpen = false;
         _skyCaptain?.Advance(dt, this);
         if (EnableCsacSpawner && _csacSpawner is not null)
         {
@@ -562,8 +579,33 @@ public sealed class LevelScene
     /// script or in the pad trigger that ran it. gStepPendingMessages (8004DB74) retries full slot
     /// tables first.
     /// </summary>
-    private int DispatchQueuedCommands(int dt) =>
-        _entities is { } world ? PurchasePads?.RunEntityCommands(world, dt) ?? 0 : 0;
+    /// <remarks>
+    /// Retail runs this pass once per frame (800271A4.c:179). The port has three drivers that can
+    /// reach it - <see cref="AdvanceSoloFrame"/>, <see cref="AdvanceWalker"/>'s retirement stage and
+    /// <see cref="AdvanceSkyCaptain"/> - and the legacy pair calls the last two in one frame, so a
+    /// frame marker makes the pass idempotent within <see cref="_frameIndex"/>: the second and third
+    /// caller of the same frame return 0 without touching the queue. Pairs queued during a pass stay
+    /// pending until the next frame's pass, which is where the retail order puts them as well.
+    /// </remarks>
+    private int DispatchQueuedCommands(int dt)
+    {
+        if (_entities is not { } world) return 0;
+        if (_lastCommandPassFrame == _frameIndex) return 0;
+        _lastCommandPassFrame = _frameIndex;
+        CommandPassCount++;
+        return PurchasePads?.RunEntityCommands(world, dt) ?? 0;
+    }
+
+    private long _frameIndex;
+    private long _lastCommandPassFrame = -1;
+    private bool _walkerFrameOpen;
+
+    /// <summary>
+    /// Number of queued-command passes the scene has executed. Retail runs at most one per frame;
+    /// the golden-order tests read this to hold the legacy <see cref="AdvanceWalker"/> +
+    /// <see cref="AdvanceSkyCaptain"/> pair to that rule.
+    /// </summary>
+    public int CommandPassCount { get; private set; }
 
     /// <summary>
     /// gBroadcastEntityMessage(6, dt, 0) (:180) over both halves of the port's entity storage: the
@@ -641,9 +683,9 @@ public sealed class LevelScene
         // func_8004CECC: the (kind, value) pairs a script queued this frame act only after the issuing
         // script returned, so gRetireEntity (8004CECC.c:108-114) never nests in the script or in the
         // pad trigger that ran it. gStepPendingMessages (8004DB74) retries full slot tables first.
-        // The solo frame dispatches the queue in its own phase before message 6 (800271A4.c:179);
-        // only the legacy AdvanceSkyCaptain path still dispatches here.
-        if (dispatchCommands && _entities is { } commandWorld) pads.RunEntityCommands(commandWorld, dt);
+        // The solo frame dispatches the queue in its own phase before message 6 (800271A4.c:179); the
+        // legacy AdvanceSkyCaptain path dispatches through the same once-per-frame marker.
+        if (dispatchCommands) DispatchQueuedCommands(dt);
         pads.SyncToMatchScore(objectives.Score);
         if (_skyCaptain is { } skyAfter) pads.SyncToEconomy(skyAfter.Economy);
     }
@@ -970,6 +1012,10 @@ public sealed class LevelScene
     public int AdvanceWalker(int steps, uint flags, AnalogPad pad)
     {
         if (_walker is null || _walkerWorld is null) throw new InvalidOperationException("Attach a walker first");
+        // One legacy frame: the walker's retirement stage owns the queued-command pass of this frame,
+        // and a following AdvanceSkyCaptain continues the same frame (see CommandPassCount).
+        _frameIndex++;
+        _walkerFrameOpen = true;
         // D_800A8F90 membership for the map-zone scan of this frame (80031DE8.c:119-144).
         CullActiveSolo();
         int ticks = steps * RetailClock.LocomotionTicks;
@@ -1741,6 +1787,14 @@ public sealed class LevelScene
         }
     }
 
+    /// <summary>
+    /// Diagnostic switch of <see cref="Tri"/>: when true the modulated texel is written without the
+    /// PS1 semi-transparency blend (the tpage ABR mode). Production never sets it; the golden
+    /// attribution test uses it to reproduce the digests of the pre-blend baseline, which proves that
+    /// the blend is the only cause of the re-recorded frame 0 / frame 120 hashes.
+    /// </summary>
+    internal bool SemiBlendDisabled { get; set; }
+
     /// <summary>Textured, colour-modulated triangle; xy = packed screen word, uv = low 16 bits (u | v &lt;&lt; 8).</summary>
     internal void Tri(uint xy0, uint uv0, uint c0, uint xy1, uint uv1, uint c1, uint xy2, uint uv2, uint c2,
         ushort tpage, ushort clut, bool semi)
@@ -1821,7 +1875,7 @@ public sealed class LevelScene
                 int vr = Math.Min(255, (int)(tr * (b0 * r0 + b1 * r1 + b2 * r2) / 128.0));
                 int vg = Math.Min(255, (int)(tg * (b0 * g0 + b1 * g1 + b2 * g2) / 128.0));
                 int vb = Math.Min(255, (int)(tb * (b0 * b0c + b1 * b1c + b2 * b2c) / 128.0));
-                if (semi && (raw & 0x8000) != 0)
+                if (!SemiBlendDisabled && semi && (raw & 0x8000) != 0)
                 {
                     int br = rgbBuf[rowBase], bg = rgbBuf[rowBase + 1], bb = rgbBuf[rowBase + 2];
                     switch (abr)
@@ -1909,6 +1963,46 @@ public sealed class LevelScene
     /// <summary>Scratch rotation for <see cref="UnitMatrix"/>; filled per unit, consumed by Compose.</summary>
     private readonly int[] _unitBasis = new int[9];
 
+    /// <summary>
+    /// Rotation basis of one Csac unit, as <see cref="UnitMatrix"/> hands it to the GTE. Exposed to
+    /// tests so the rows can be compared against the retail basis per heading instead of only
+    /// comparing rendered images.
+    /// </summary>
+    internal static int[] UnitBasisOf(SpawnedCsacUnit unit)
+    {
+        var basis = new int[9];
+        FillUnitBasis(unit, basis);
+        return basis;
+    }
+
+    /// <summary>
+    /// Fills <paramref name="basis"/> with the rotation of <paramref name="unit"/>: the hover basis
+    /// while the flyer has one, the fixed-yaw basis of a ground mover, otherwise the identity.
+    /// </summary>
+    private static void FillUnitBasis(SpawnedCsacUnit unit, int[] basis)
+    {
+        if (unit.HoverMover is { } hover && (hover.BasisRows[2][0] | hover.BasisRows[2][1] | hover.BasisRows[2][2]) != 0)
+        {
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                    basis[i * 3 + j] = hover.BasisRows[i][j];
+            return;
+        }
+        // gOrientEntityBasis's fixed-yaw branch (func_80037EB4, gOrientEntityBasis.c:75-90) needs the
+        // +0x140 path direction the mover keeps. A unit without an initialized mover has no such
+        // direction, so it keeps the identity placement of gInitObjectFromDef - testing DirX/DirZ
+        // instead would rotate a unit whose rail-mover initialization failed, because the spawner's
+        // default heading is (0x10000, 0).
+        if (unit.IsMobile)
+        {
+            basis[0] = unit.DirZ; basis[1] = 0; basis[2] = -unit.DirX;
+            basis[3] = 0; basis[4] = 0x10000; basis[5] = 0;
+            basis[6] = unit.DirX; basis[7] = 0; basis[8] = unit.DirZ;
+            return;
+        }
+        IdentityRotation.CopyTo(basis, 0);
+    }
+
     /// <summary>Unrotated placement of a model at a world position, relative to the mech origin.</summary>
     private Gte.Mat PlacedMatrix(int x, int y, int z, Gte.Mat view)
     {
@@ -1922,14 +2016,15 @@ public sealed class LevelScene
 
     /// <summary>
     /// Model matrix of one Csac unit at its world position, rotated by the heading its locomotion
-    /// mover keeps. Retail orients such an entity through gOrientEntityBasis (func_8001A8E8).
+    /// mover keeps. Retail orients such an entity through gOrientEntityBasis (func_80037EB4).
     /// </summary>
     /// <remarks>
     /// <para>
     /// Ground movers (rail path types 5 and 28) take the fixed-yaw branch of gOrientEntityBasis
-    /// (8001A8E8.c:118-126), which builds the basis straight from the path direction vector at
-    /// +0x140: row0 = (dz, 0, -dx), row1 = (0, 1, 0), row2 = (dx, 0, dz). gStepPathMover re-runs it
-    /// every step (8005027C.c:256), so a curve turns continuously instead of snapping.
+    /// (func_80037EB4, src/game/renderer-scene/gOrientEntityBasis.c:75-90), which builds the basis
+    /// straight from the path direction vector at +0x140: row0 = (dz, 0, -dx), row1 = (0, 1, 0),
+    /// row2 = (dx, 0, dz). gStepPathMover re-runs it every step (8005027C.c:256), so a curve turns
+    /// continuously instead of snapping.
     /// </para>
     /// <para>
     /// Flyers (type-9 hover mover) use the full three-axis body basis instead: gUpdateHoverEnemy
@@ -1940,7 +2035,9 @@ public sealed class LevelScene
     /// </para>
     /// <para>
     /// Units without a mover (static spawner output) keep the identity orientation, like
-    /// gInitObjectFromDef places them.
+    /// gInitObjectFromDef places them. The test is <see cref="SpawnedCsacUnit.IsMobile"/>, not the
+    /// heading words: the spawner seeds DirX/DirZ with (0x10000, 0) even when its rail-mover
+    /// initialization failed, so a heading test would turn such a unit by 90 degrees.
     /// </para>
     /// </remarks>
     private Gte.Mat UnitMatrix(SpawnedCsacUnit unit, Gte.Mat view)
@@ -1948,24 +2045,8 @@ public sealed class LevelScene
         int lx = (unit.X - MechWorld.X) >> 4;
         int ly = (unit.Y - MechWorld.Y) >> 4;
         int lz = (unit.Z - MechWorld.Z) >> 4;
-        int[] basis = _unitBasis; // scratch, consumed by Compose below
-        if (unit.HoverMover is { } hover && (hover.BasisRows[2][0] | hover.BasisRows[2][1] | hover.BasisRows[2][2]) != 0)
-        {
-            for (int i = 0; i < 3; i++)
-                for (int j = 0; j < 3; j++)
-                    basis[i * 3 + j] = hover.BasisRows[i][j];
-        }
-        else if (unit.DirX != 0 || unit.DirZ != 0)
-        {
-            basis[0] = unit.DirZ; basis[1] = 0; basis[2] = -unit.DirX;
-            basis[3] = 0; basis[4] = 0x10000; basis[5] = 0;
-            basis[6] = unit.DirX; basis[7] = 0; basis[8] = unit.DirZ;
-        }
-        else
-        {
-            basis = IdentityRotation;
-        }
-        var local = new Gte.Mat(basis, lx << 4, ly << 4, lz << 4);
+        FillUnitBasis(unit, _unitBasis); // scratch, consumed by Compose below
+        var local = new Gte.Mat(_unitBasis, lx << 4, ly << 4, lz << 4);
         return ScriptRender.Compose(local, view);
     }
 
