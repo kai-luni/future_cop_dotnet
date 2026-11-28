@@ -83,6 +83,37 @@ public sealed class LevelScene
     private MechBody? _walker;
     private FutureCop.Game.Mech.MechWorld? _walkerWorld;
     private bool _animateWalker;
+    private PlayerUnit? _playerUnit;
+    private LevelEnemyFire? _enemyFire;
+
+    /// <summary>
+    /// The player entity of the solo session (8005908C), created with the walker in
+    /// <see cref="AttachWalker"/>. Its health word feeds the HUD armour gauge and its retire/respawn
+    /// state gates the walker update, so the scene can lose the level instead of running on.
+    /// </summary>
+    public PlayerUnit? PlayerUnit => _playerUnit;
+
+    /// <summary>
+    /// The hostile fire path, or null until <see cref="EnableEnemyFire"/>. Created lazily so a static
+    /// preview does not scan the mission for attack definitions.
+    /// </summary>
+    public LevelEnemyFire? EnemyFire
+    {
+        get
+        {
+            if (_enemyFire is null && _enemyFireEnabled) _enemyFire = new LevelEnemyFire(_file.Bytes, Map);
+            return _enemyFire;
+        }
+    }
+
+    private bool _enemyFireEnabled;
+
+    /// <summary>Enables the enemy-to-player fire path; the scene then steps the units' attack slots.</summary>
+    public void EnableEnemyFire()
+    {
+        _enemyFireEnabled = true;
+        _ = EnemyFire;
+    }
 
     /// <summary>Use the mission's player record and body model for the interactive WALK viewer.</summary>
     public void EnableMechMovement()
@@ -188,6 +219,9 @@ public sealed class LevelScene
     public void EnableObjectives()
     {
         if (_objectives is not null) return;
+        // Enemy fire is part of the running level (message 6 steps the attack scheduler of every
+        // unit), not of a static preview; the table is built on first use in RunEntityWorldTick.
+        _enemyFireEnabled = true;
         var records = MissionEntities.Load(_file);
         _playerTeam = records.FirstOrDefault(r => r.Type == 1 && r.Id == Actor.Id)?.Team ?? 0;
         var outpostRecords = records.Where(r => r.Type == CaptureObjective.EntityType).ToList();
@@ -989,6 +1023,12 @@ public sealed class LevelScene
             GroundObjects = ObjectRegistry.ProbeGroundObjects,
         };
         MechWorld = (body.X, body.Y, body.Z);
+        // func_8005908C: one player unit per session; its checkpoint (+0xC4) is the position
+        // func_80058714:138 restores after the death countdown.
+        _playerUnit = new PlayerUnit(Actor.Id, body.X, body.Y, body.Z, body.Health)
+        {
+            Checkpoint = (body.X, body.Z),
+        };
         UpdatePlayerTarget(Actor.Id, body);
         if (_purchasePads is { } pads) pads.TargetCandidatesStale = true;
         ObjectRegistry.CullActiveElevators(body.X, body.Z);
@@ -1052,12 +1092,59 @@ public sealed class LevelScene
         // word for callers that only drive locomotion, so the step uses the union and the trigger
         // gets what the masking left of it.
         uint padWord = flags | _padWord;
-        int result = FutureCop.Game.Mech.MechPlayer.Update(_walker, _walkerWorld, ticks, steps,
-            ref padWord, out bool formChanged);
-        // Bit 0 of the out word is per call (func_800588D4:260-265 spawns on it that frame only).
-        FormChanged = formChanged;
-        WalkerSteps += steps;
+        var playerUnit = _playerUnit;
+        bool wasDead = playerUnit?.Dead == true;
+        if (playerUnit is not null && !wasDead)
+        {
+            // The pickup/resupply path writes walker.Health; the entity's +0x1C is the word the
+            // retail hit path subtracts from, so the frame starts from the live armour value.
+            playerUnit.Health = _walker.Health;
+            playerUnit.WorldX = _walker.X;
+            playerUnit.WorldY = _walker.Y;
+            playerUnit.WorldZ = _walker.Z;
+        }
+        int result = 0;
+        if (!wasDead)
+        {
+            result = FutureCop.Game.Mech.MechPlayer.Update(_walker, _walkerWorld, ticks, steps,
+                ref padWord, out bool formChanged);
+            // Bit 0 of the out word is per call (func_800588D4:260-265 spawns on it that frame only).
+            FormChanged = formChanged;
+            WalkerSteps += steps;
+        }
+        else
+        {
+            FormChanged = false;
+        }
         MechWorld = (_walker.X, _walker.Y, _walker.Z);
+        if (playerUnit is not null)
+        {
+            if (!wasDead && !playerUnit.Dead)
+            {
+                playerUnit.WorldX = _walker.X;
+                playerUnit.WorldY = _walker.Y;
+                playerUnit.WorldZ = _walker.Z;
+            }
+            // func_800588D4:223-236 ticks the hit flash, the damage timer and the respawn countdown.
+            playerUnit.Tick(ticks);
+            if (wasDead && !playerUnit.Dead)
+            {
+                // func_80058714:138-166 restores the checkpoint position and the full health.
+                _walker.X = playerUnit.WorldX;
+                _walker.Z = playerUnit.WorldZ;
+                MechWorld = (_walker.X, _walker.Y, _walker.Z);
+            }
+            // The HUD reads the walker's +0x1E; a dead player shows an empty gauge, not a negative one.
+            _walker.Health = playerUnit.Dead ? (short)0 : playerUnit.Health;
+        }
+        if (_enemyFire is not null && playerUnit is not null && _entities is not null && !playerUnit.Dead)
+        {
+            var fireTarget = CoordOf(_parts[0].Model.Id, _walker.X, _walker.Y, _walker.Z);
+            _enemyFire.Sync(_csacSpawner?.SpawnedUnits ?? Array.Empty<SpawnedCsacUnit>(),
+                _walker.X, _walker.Y, _walker.Z, _playerTeam);
+            _enemyFire.Tick(ticks, playerUnit, fireTarget, _entities);
+            _walker.Health = playerUnit.Dead ? (short)0 : playerUnit.Health;
+        }
         _weapons?.AdvanceShots(frames);
         // Beams live on the 60 Hz frame, like the trigger that spawns them.
         for (int f = 0; f < frames; f++) _weapons?.AdvanceBeams();

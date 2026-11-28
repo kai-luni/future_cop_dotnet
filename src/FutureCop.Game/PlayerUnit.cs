@@ -116,8 +116,13 @@ public sealed class PlayerUnit : LiveEntity
         set { _checkpointX = value.X; _checkpointZ = value.Z; }
     }
 
-    /// <summary>True while the player has been retired and waits for the respawn countdown.</summary>
-    public bool Dead => (Flags & DeadFlags) != 0;
+    /// <summary>
+    /// True while the player has been retired and waits for the respawn countdown.
+    /// Bit 0 of the word is not part of the liveness test: func_80058D78.c sets 0xA5, but
+    /// func_800588D4.c:232 clears only 0xA6 before the respawn and gRespawnPlayerEntity
+    /// (80058714.c:127) keeps bit 0, so it survives the respawn.
+    /// </summary>
+    public bool Dead => (Flags & (DeadFlags & ~1u)) != 0;
 
     /// <summary>How often the player has been retired; the first death uses the long countdown.</summary>
     public int DeathCount { get; private set; }
