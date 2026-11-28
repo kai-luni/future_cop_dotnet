@@ -432,15 +432,15 @@ public sealed class MenuFlow
 
         // func_8002703C caps each frame at 0x3C clock ticks; func_800588D4 carries the
         // remainder and passes one locomotion substep per eight ticks to func_800549F0.
-        _pendingWalkerTicks += Math.Min(seconds * RetailClock.TicksPerSecond, 0x3C);
+        int frameTicks = (int)Math.Min(seconds * RetailClock.TicksPerSecond, 0x3C);
+        _pendingWalkerTicks += frameTicks;
         // D_8009FAA4 (gFrameTime) is a monotonically growing s32 clock in retail (8002703C.c:15,71).
         // HUD consumers test bit 0x40 (8006BF44.c:79, 8006C080.c:72), bit 0x80 (80047F30.c:194,217,256;
         // 80047BE8.c:18,78-79 via u8 load >= 0x80), and bits 0x180 (8005A9C4.c:125), so do not truncate
         // the clock to 8 bits.
-        int frameTime = unchecked(Globals.FrameTime + (int)Math.Min(seconds * RetailClock.TicksPerSecond, 0x3C));
+        int frameTime = unchecked(Globals.FrameTime + frameTicks);
         Globals = Globals with { FrameTime = frameTime };
         int steps = (int)(_pendingWalkerTicks / 8);
-        if (steps == 0) return;
         _pendingWalkerTicks -= steps * 8;
         PadButtons buttons = HeldPadButtons() | externalButtons;
         MechInput.RefreshPadWords(_padWords, buttons, PadMapping.Default);
@@ -449,9 +449,10 @@ public sealed class MenuFlow
         // walker just received from func_800576A8.
         Level.HeldButtons = buttons;
         Level.HeldPadWord = flags;
-        Level.AdvanceWalker(steps, flags, externalPad);
-        // Message 6 of the Sky Captain with the same tick count the walker ran (800271A4.c:180).
-        Level.AdvanceSkyCaptain(steps * RetailClock.LocomotionTicks);
+        // One solo frame with the retail phase order (800271A4.c:177-217): gFrameDelta stays the
+        // frame's own clock delta, the substeps only say how much locomotion the frame carries. The
+        // scene owns cull, message 6, map zones, deferred updates, spawners and the sweep.
+        Level.AdvanceSoloFrame(frameTicks, steps, flags, externalPad);
         Camera = Camera with { PresetState = Level.ChaseCamera.State };
         if (Level.Weapons != null)
         {

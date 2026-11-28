@@ -424,8 +424,8 @@ public sealed class LevelScene
 
     /// <summary>
     /// The entity list (D_8009FA40) for outposts, their child parts, trigger attachments, spawned units
-    /// and projectile contacts, or null until the live level is enabled. <see cref="AdvanceWalker"/>
-    /// runs its retirement stages every frame.
+    /// and projectile contacts, or null until the live level is enabled. <see cref="AdvanceSoloFrame"/>
+    /// culls and sweeps it once per frame.
     /// </summary>
     public EntityWorld? Entities => _entities;
 
@@ -462,7 +462,7 @@ public sealed class LevelScene
 
     /// <summary>
     /// Opt-in flag to advance purchase pads, drain <see cref="CsacSpawner"/> and broadcast
-    /// message 6 over <see cref="ObjectRegistry"/> during <see cref="AdvanceSkyCaptain"/>; the drain runs
+    /// message 6 over <see cref="ObjectRegistry"/> during <see cref="AdvanceSoloFrame"/>; the drain runs
     /// before the map-zone scan of that frame.
     /// </summary>
     public bool EnableCsacSpawner { get; set; }
@@ -470,7 +470,63 @@ public sealed class LevelScene
     /// <summary>The 1P Precinct Assault Sky Captain, or null until the live level is enabled.</summary>
     public SkyCaptainSystem? SkyCaptain => _skyCaptain;
 
-    /// <summary>Message 6 of the Sky Captain (800271A4.c:180) for <paramref name="dt"/> clock ticks.</summary>
+    /// <summary>The counters of the last <see cref="AdvanceSoloFrame"/> call.</summary>
+    public SoloFrameResult LastSoloFrame { get; private set; }
+
+    /// <summary>
+    /// One solo simulation frame (<c>gRunSoloSessionFrame</c>, <c>800271A4.c:177-217</c>) in the
+    /// retail phase order: the cull (<c>:178</c>), the queued entity commands (<c>:179</c>), message 6
+    /// (<c>:180</c>), the map-zone triggers (<c>:181</c>), the deferred updates (<c>:182</c>), the
+    /// entity world tick (<c>:183</c>, whose player update runs <paramref name="steps"/> locomotion
+    /// substeps), the region-pass projectile pairs (<c>:200</c>), the registered spawners (<c>:210</c>)
+    /// and the retirement sweep (<c>:212</c>).
+    /// </summary>
+    /// <remarks>
+    /// This is the only owner of that order. Input decoding stays in the host, drawing in the
+    /// renderer, and a call covers exactly one frame: the per-frame passes run once, no matter how
+    /// many locomotion substeps the frame carries. <paramref name="dt"/> is the frame's own clock
+    /// delta (<c>gFrameDelta</c>), not the tick count of the substeps.
+    /// </remarks>
+    /// <param name="dt">The frame delta in retail clock ticks (<c>gFrameDelta</c>, <c>8002703C.c:15,71</c>).</param>
+    /// <param name="steps">Locomotion substeps of this frame (one per eight ticks, <c>func_800588D4</c>).</param>
+    /// <param name="flags">The translated pad word the player update consumes.</param>
+    /// <param name="pad">The analog pad state of the frame.</param>
+    /// <returns>The pass counters of the frame.</returns>
+    public SoloFrameResult AdvanceSoloFrame(int dt, int steps, uint flags, AnalogPad pad)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(dt);
+        ArgumentOutOfRangeException.ThrowIfNegative(steps);
+        if (steps > 0 && (_walker is null || _walkerWorld is null))
+            throw new InvalidOperationException("Attach a walker first");
+
+        // :178 gCullActiveEntitiesSolo rebuilds D_800A8F90 for this frame: the command pass, the
+        // map-zone scan (80031DE8.c:90) and the deferred updates all read that table.
+        CullActiveSolo();
+        // :179 gDispatchQueuedEntityCommands: the pairs scripts queued before this frame.
+        int dispatched = DispatchQueuedCommands(dt);
+        // :180 gBroadcastEntityMessage(6, gFrameDelta, 0), including the type-37 Sky Captain tick.
+        int message6 = BroadcastMessage6(dt);
+        // :181 gUpdateMapZoneTriggers (80031DE8.c) with the pad clock of the frame.
+        RunMapZoneTriggers(dt);
+        // :182 gProcessDeferredEntityUpdates: message 4 for entities whose health went below 0.
+        RunDeferredUpdates();
+        // :183 gRunEntityWorldTick: the player update with this frame's locomotion substeps.
+        if (steps > 0) _ = RunEntityWorldTick(steps, flags, pad);
+        // :200 func_80026D5C region pass: the projectile pairs leave their shot list here.
+        DeliverShotContactsPhase();
+        // :210 gUpdateRegisteredSpawners: a due unit spawns before the sweep sees the list.
+        int spawned = RunRegisteredSpawners(dt);
+        // :212 gSweepRetiredEntities: message 5 and the unlink, once per frame.
+        int swept = SweepRetiredEntities();
+        return LastSoloFrame = new SoloFrameResult(dt, steps, dispatched, message6, spawned, swept);
+    }
+
+    /// <summary>
+    /// Message 6 of the Sky Captain (800271A4.c:180) for <paramref name="dt"/> clock ticks, with the
+    /// legacy Csac and pad stages of a scene driven without the walker update. The full retail frame
+    /// order lives in <see cref="AdvanceSoloFrame"/>; this entry point stays for previews and tests
+    /// that step the spawner and the pad clock on their own.
+    /// </summary>
     public void AdvanceSkyCaptain(int dt)
     {
         _skyCaptain?.Advance(dt, this);
@@ -485,14 +541,66 @@ public sealed class LevelScene
             // and the command pass (func_8004CECC) read it. AdvanceWalker normally ran it already for
             // this frame; this path can also run without the walker step, so it culls on its own.
             _entities?.CullActive(_walker?.X ?? MechWorld.X, _walker?.Z ?? MechWorld.Z);
-            AdvancePurchasePads(dt);
+            AdvancePurchasePads(dt, dispatchCommands: true);
             // gRunSoloSessionFrame (800271A4.c:210-212) sweeps retired entities after spawners and
             // timers, decrementing Csac TotalSpawned via gRecordSpawnedUnitRetirement (8004D598.c:51-52).
             _entities?.SweepRetired();
         }
     }
 
-    private void AdvancePurchasePads(int dt)
+    /// <summary>gCullActiveEntitiesSolo (:178) for the entity list D_8009FA40 and the placed elevators.</summary>
+    private void CullActiveSolo()
+    {
+        int x = _walker?.X ?? MechWorld.X, z = _walker?.Z ?? MechWorld.Z;
+        _entities?.CullActive(x, z);
+        ObjectRegistry.CullActiveElevators(x, z);
+    }
+
+    /// <summary>
+    /// gDispatchQueuedEntityCommands (:179, func_8004CECC): the (kind, value) pairs a script queued
+    /// before this frame act only after the issuing script returned, so the pass never nests in the
+    /// script or in the pad trigger that ran it. gStepPendingMessages (8004DB74) retries full slot
+    /// tables first.
+    /// </summary>
+    private int DispatchQueuedCommands(int dt) =>
+        _entities is { } world ? PurchasePads?.RunEntityCommands(world, dt) ?? 0 : 0;
+
+    /// <summary>
+    /// gBroadcastEntityMessage(6, dt, 0) (:180) over both halves of the port's entity storage: the
+    /// active table D_800A8F90 (<see cref="EntityWorld.BroadcastMessage"/>, func_8004CD6C) and the
+    /// live-object registry D_8009F800 that carries the map objects and Csac wrappers
+    /// (<see cref="MapObjectRegistry.BroadcastMessage6"/>). The type-37 Sky Captain tick is the
+    /// message-6 arm of func_800357C0 and runs in the same phase.
+    /// </summary>
+    private int BroadcastMessage6(int dt)
+    {
+        int delivered = _entities?.BroadcastMessage(LiveObjectRegistry.MessageFrameTick, dt) ?? 0;
+        // func_8004CD6C.c:41-54 skips entries with id <= 0; an unallocated registry reports zero.
+        delivered += ObjectRegistry.BroadcastMessage6(dt);
+        _skyCaptain?.Advance(dt, this);
+        return delivered;
+    }
+
+    /// <summary>gUpdateMapZoneTriggers (:181) with the pad clock, timer and score sync of the frame.</summary>
+    private void RunMapZoneTriggers(int dt) => AdvancePurchasePads(dt, dispatchCommands: false);
+
+    /// <summary>gProcessDeferredEntityUpdates (:182, 8004CE04.c:49-66).</summary>
+    private void RunDeferredUpdates() => _entities?.ProcessDeferredUpdates();
+
+    /// <summary>gUpdateRegisteredSpawners (:210, 800616A0.c): the Csac slot timers of the frame.</summary>
+    private int RunRegisteredSpawners(int dt) =>
+        EnableCsacSpawner && _csacSpawner is not null ? _csacSpawner.Drain(dt) : 0;
+
+    /// <summary>gSweepRetiredEntities (:212, 8004D598.c:39-71): message 5, the unlink and the free.</summary>
+    private int SweepRetiredEntities() => _entities?.SweepRetired() ?? 0;
+
+    /// <summary>The region-pass projectile pairs of the frame (<see cref="DeliverShotContacts"/>).</summary>
+    private void DeliverShotContactsPhase()
+    {
+        if (_entities is { } world) DeliverShotContacts(world);
+    }
+
+    private void AdvancePurchasePads(int dt, bool dispatchCommands)
     {
         if (_purchasePads is not { } pads || _objectives is not { } objectives) return;
         _purchaseFrameTime = unchecked(_purchaseFrameTime + dt);
@@ -533,7 +641,9 @@ public sealed class LevelScene
         // func_8004CECC: the (kind, value) pairs a script queued this frame act only after the issuing
         // script returned, so gRetireEntity (8004CECC.c:108-114) never nests in the script or in the
         // pad trigger that ran it. gStepPendingMessages (8004DB74) retries full slot tables first.
-        if (_entities is { } commandWorld) pads.RunEntityCommands(commandWorld, dt);
+        // The solo frame dispatches the queue in its own phase before message 6 (800271A4.c:179);
+        // only the legacy AdvanceSkyCaptain path still dispatches here.
+        if (dispatchCommands && _entities is { } commandWorld) pads.RunEntityCommands(commandWorld, dt);
         pads.SyncToMatchScore(objectives.Score);
         if (_skyCaptain is { } skyAfter) pads.SyncToEconomy(skyAfter.Economy);
     }
@@ -844,20 +954,46 @@ public sealed class LevelScene
 
     /// <summary>
     /// Retail chase-camera preset state (<c>info-&gt;state</c>, <c>src/game/800569EC.c:228-246</c>)
-    /// stepped on every <see cref="AdvanceWalker"/> call from the translated pad word and live MapZones.
+    /// stepped on every <see cref="AdvanceSoloFrame"/> call from the translated pad word and live MapZones.
     /// </summary>
     public ChaseCameraState ChaseCamera { get; } = new();
 
     /// <summary>The attached walker body, so callers can read its health for the HUD.</summary>
     public MechBody? Walker => _walker;
 
-    /// <summary>Advance the persistent walker by caller-supplied retail steps and input flags.</summary>
+    /// <summary>
+    /// Legacy locomotion driver: culls the frame's entity table, runs the player update with
+    /// <paramref name="steps"/> substeps and then the retirement stages in the order this preview
+    /// path always used. The retail frame order lives in <see cref="AdvanceSoloFrame"/>; a host that
+    /// wants the frame should call that one instead.
+    /// </summary>
     public int AdvanceWalker(int steps, uint flags, AnalogPad pad)
     {
         if (_walker is null || _walkerWorld is null) throw new InvalidOperationException("Attach a walker first");
         // D_800A8F90 membership for the map-zone scan of this frame (80031DE8.c:119-144).
-        _entities?.CullActive(_walker.X, _walker.Z);
-        ObjectRegistry.CullActiveElevators(_walker.X, _walker.Z);
+        CullActiveSolo();
+        int ticks = steps * RetailClock.LocomotionTicks;
+        int frames = ticks / RetailClock.TicksPerFrame;
+        int result = RunEntityWorldTick(steps, flags, pad);
+        if (frames > 0) AdvanceRetirement();
+        // Tick placed type-10 elevators on the walker clock when EnableCsacSpawner is off; when
+        // EnableCsacSpawner is on, the solo frame broadcasts message 6 over LiveObjects once.
+        if (!EnableCsacSpawner && ticks > 0 && ObjectRegistry.Elevators.Count > 0)
+        {
+            foreach (var lift in ObjectRegistry.Elevators.ToArray())
+                lift.OnMessage(LiveObjectRegistry.MessageFrameTick, ticks, 0);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// The entity world tick of the frame (<c>gRunEntityWorldTick</c>, <c>800271A4.c:183</c>): the
+    /// player unit update of <c>func_800588D4</c> with <paramref name="steps"/> locomotion substeps,
+    /// then the shot, beam, pickup, capture, recoil, pose and chase-camera steps that hang off it.
+    /// </summary>
+    private int RunEntityWorldTick(int steps, uint flags, AnalogPad pad)
+    {
+        if (_walker is null || _walkerWorld is null) throw new InvalidOperationException("Attach a walker first");
         _walkerWorld.Pads[0] = pad;
         // func_800588D4:259 runs the player unit update, not the bare walker: func_80055988 applies the
         // position shift, the L1+R1 form change, the control masks, and then dispatches to the walker
@@ -898,38 +1034,29 @@ public sealed class LevelScene
         // and gate states 5 and 6 on gTestCameraZoneOverlap (80031B40.c:74-89).
         ChaseCamera.Step(padWord, ActiveMapZones, _walker.X, _walker.Z, PlayerCollisionRadius,
             frozen: _walker.Frozen != 0);
-        if (frames > 0) AdvanceRetirement();
-        // Tick placed type-10 elevators on the walker clock when EnableCsacSpawner is off; when
-        // EnableCsacSpawner is on, AdvanceSkyCaptain broadcasts message 6 over LiveObjects once.
-        if (!EnableCsacSpawner && ticks > 0 && ObjectRegistry.Elevators.Count > 0)
-        {
-            foreach (var lift in ObjectRegistry.Elevators.ToArray())
-                lift.OnMessage(LiveObjectRegistry.MessageFrameTick, ticks, 0);
-        }
         return result;
     }
 
     /// <summary>
-    /// The entity stages of the solo frame (800271A4.c:177-212) that turn a lethal hit into message 5:
-    /// the cull (:178, func_8004DF28), the deferred updates that send message 4 to every entity whose
-    /// health went below 0 (:182, func_8004CE04), the pair collision of the region pass that delivers
-    /// message 11 (:191, func_80026D5C -&gt; 80062FB4 -&gt; 80062614 -&gt; 800623FC -&gt; 800620D8) and the
-    /// retirement sweep that sends message 5 (:212, func_8004D598). The walker step above stands in
-    /// for the message-6 broadcast of :180, so a shot fired this frame is tested this frame, and a
-    /// lethal hit retires on the next frame, as in retail. A call that advances several frames at once
-    /// runs the stages once, after the batched shot motion.
+    /// The retirement stages of the legacy <see cref="AdvanceWalker"/> driver, in the order that path
+    /// always used: the cull (:178, func_8004DF28), the deferred updates that send message 4 to every
+    /// entity whose health went below 0 (:182, func_8004CE04), the pair collision of the region pass
+    /// that delivers message 11 (:191, func_80026D5C -&gt; 80062FB4 -&gt; 80062614 -&gt; 800623FC -&gt;
+    /// 800620D8), the queued command pass and the retirement sweep that sends message 5 (:212,
+    /// func_8004D598). The solo frame runs the same phases in the retail order through
+    /// <see cref="AdvanceSoloFrame"/>.
     /// </summary>
     private void AdvanceRetirement()
     {
         if (_entities is not { } world || _walker is null) return;
-        world.CullActive(_walker.X, _walker.Z);
-        world.ProcessDeferredUpdates();
+        CullActiveSolo();
+        RunDeferredUpdates();
         DeliverShotContacts(world);
         // A capture script of this step can queue a 0x3D pair through OnPostCaptureScript; the entry
         // pass applies it before the sweep, as func_8004CECC does. The pending-message timers are
         // stepped by the session frame in AdvancePurchasePads, so no elapsed time is passed here.
-        PurchasePads?.RunEntityCommands(world);
-        world.SweepRetired();
+        DispatchQueuedCommands(0);
+        SweepRetiredEntities();
     }
 
     /// <summary>
@@ -1012,7 +1139,7 @@ public sealed class LevelScene
 
     /// <summary>
     /// The translated pad word gWeaponSlotInput reads (func_800576A8, stored at state + 0x30). The
-    /// caller sets this before <see cref="AdvanceWalker"/>: it is the same word
+    /// caller sets this before <see cref="AdvanceSoloFrame"/>: it is the same word
     /// <see cref="MechInput.TranslatePadButtons"/> produced for the walker, not the raw button set.
     /// </summary>
     public uint HeldPadWord
