@@ -322,12 +322,8 @@ public sealed class DeferredScenePropTests
         Assert.True(scene.ScenePropPrimitives > 0, "the visible props produced no faces");
     }
 
-    /// <summary>
-    /// The two home-base pad volumes belong to the normal frame; the remaining walker pads still
-    /// need the debug overlay, so the two counters stay disjoint.
-    /// </summary>
     [RetailFact]
-    public void HomeBasePadVolumesAreDrawnWithoutTheDebugOverlay()
+    public void HomeBaseTriggerVolumesAreOnlyDrawnInTheDebugOverlay()
     {
         var scene = new LevelScene(Mission());
         scene.EnableObjectives();
@@ -339,15 +335,10 @@ public sealed class DeferredScenePropTests
 
         scene.Render(new LevelCamera(0.0, 20.0, 0x1200));
 
-        // Two type-14 boxes, each four edges plus two diagonals (8003151C.c draws none of this;
-        // the outline is the viewer's stand-in for the invisible trigger volume).
-        Assert.Equal(12, scene.BasePadLines);
         Assert.Equal(0, scene.PadMarkerLines);
 
         scene.ShowPadMarkers = true;
         scene.Render(new LevelCamera(0.0, 20.0, 0x1200));
-        // The overlay adds the other walker pads near the base (pad 47/51 are already drawn above).
-        Assert.True(scene.PadMarkerLines > 0);
-        Assert.Equal(12, scene.BasePadLines);
+        Assert.True(scene.PadMarkerLines >= 12);
     }
 }

@@ -37,7 +37,7 @@ public sealed record LevelCamera(double Yaw = 30.0, double Elevation = 35.0, int
 /// (PlayerForm) at the clip-rect centre in the static viewer, or at the mission spawn for WALK.
 /// The software rasterizer only turns the emitted packets into pixels; it is a viewer, not a GPU port.
 /// </summary>
-public sealed class LevelScene
+public sealed partial class LevelScene
 {
     public const int Width = 320;
     public const int Height = 240;
@@ -253,6 +253,7 @@ public sealed class LevelScene
         // (gLoadActorChunk.c:109-110 -> func_80084110 -> gSpawnSceneNode). CONFT.MIS carries 89,
         // among them the five Cobj-62 props of the P1 base pad cells (8,12)..(9,13).
         ObjectRegistry.PlaceDeferredSceneAssets(records);
+        LoadTerrainSigns(records);
 
         _csacSpawner = new CsacUnitSpawner(ObjectRegistry, world: _entities)
         {
@@ -948,28 +949,8 @@ public sealed class LevelScene
     public int PadMarkerLines { get; private set; }
 
     /// <summary>
-    /// Outline lines the last <see cref="Render"/> drew for the home-base purchase pads that are
-    /// drawn in every frame (CONFT ids 47 and 51, <see cref="HomeBasePurchasePadIds"/>), independent
-    /// of <see cref="ShowPadMarkers"/>.
-    /// </summary>
-    public int BasePadLines { get; private set; }
-
-    /// <summary>
-    /// Diagnostic switch for the second todo-50 addition: when true <see cref="Render"/> leaves the
-    /// two home-base pad outlines out of the frame (<see cref="BasePadLines"/> becomes 0) and draws
-    /// nothing else differently. Together with <see cref="ScenePropsDisabled"/>, which drops the 89
-    /// Cact type-0x60 static nodes, the pair reproduces the pre-todo-50 frame, because that commit
-    /// drew neither the props nor the pad volumes and placement has no other side effect.
-    /// Production never sets it.
-    /// </summary>
-    internal bool BasePadOutlinesDisabled { get; set; }
-
-    /// <summary>
     /// Diagnostic switch of the Cact type-0x60 pass: when true <see cref="Render"/> leaves the
-    /// static scene nodes out of the frame while the home-base pad outlines stay on, proving what
-    /// the props alone contribute. Placement itself has no other side effect, so the switch is
-    /// pixel-equivalent to skipping <see cref="MapObjectRegistry.PlaceDeferredSceneAssets"/>.
-    /// <see cref="BasePadOutlinesDisabled"/> adds the pad outlines. Production never sets it.
+    /// static scene nodes out of the frame. Production never sets it.
     /// </summary>
     internal bool ScenePropsDisabled { get; set; }
 
@@ -1663,6 +1644,7 @@ public sealed class LevelScene
             }
         }
         PickupPrimitives = pickupPrims;
+        QueueTerrainSigns(view, ref drawOrder);
 
         // Outposts (type 0x24): the record's own model and the child gInitObjectFromDef spawns from the
         // second aRSL model (8002C584.c:286-295), both at the outpost position, unrotated like pickups.
@@ -1788,9 +1770,6 @@ public sealed class LevelScene
             skyCaptain++;
         }
         SkyCaptainPrimitives = skyCaptain;
-        // The home-base purchase pad volumes are part of the normal frame (see PadMarkers); the rest
-        // of the walker pads stay an explicit debug overlay.
-        BasePadLines = BasePadOutlinesDisabled ? 0 : PadMarkers(view, basePurchaseOnly: true);
         PadMarkerLines = ShowPadMarkers ? PadMarkers(view) : 0;
         return _drawQueue.Count;
     }
@@ -1816,12 +1795,7 @@ public sealed class LevelScene
     /// list (8004DF28.c:101,142), not its octagonal distance, overflow adjustment, or drawing rules.
     /// </remarks>
     /// <param name="view">View matrix of the frame.</param>
-    /// <param name="basePurchaseOnly">
-    /// Draw only <see cref="HomeBasePurchasePadIds"/>, the two home-base pads that are part of the
-    /// normal frame, instead of every walker pad of the debug overlay. The two sets are disjoint,
-    /// so no pad is outlined twice when the overlay is on.
-    /// </param>
-    private int PadMarkers(Gte.Mat view, bool basePurchaseOnly = false)
+    private int PadMarkers(Gte.Mat view)
     {
         if (_purchasePads is not { Pads.Count: > 0 } pads) return 0;
         const int maxPadDist = 0x38000;
@@ -1830,9 +1804,6 @@ public sealed class LevelScene
         {
             if (!pad.RequiresWalkerMode) continue;
             if (pad.IsRetired) continue;
-            bool homeBase = pad.Kind == PurchasePadKind.TriggerAttachment
-                && HomeBasePurchasePadIds.Contains(pad.RecordId);
-            if (homeBase != basePurchaseOnly) continue;
             bool mapZone = pad.Kind == PurchasePadKind.MapZone;
             if (mapZone && (pad.Flags & 2) == 0 && pad.Released) continue;
             if (Math.Abs(pad.WorldX - MechWorld.X) >= maxPadDist || Math.Abs(pad.WorldZ - MechWorld.Z) >= maxPadDist)
@@ -1851,15 +1822,6 @@ public sealed class LevelScene
         }
         return lines;
     }
-
-    /// <summary>
-    /// Type-14 purchase-pad record ids of the home base in every Precinct Assault map: 47 is the
-    /// vehicle pad (RPNS script 0x63x) and 51 the aircraft pad (0x65x) in CONFT, HK and OVMP; JOKE
-    /// and SLIM carry no type-14 record with either id. Retail draws nothing for a pad volume
-    /// (<c>80031C74.c</c>, <c>8002F8B8.c</c> test only), so the port has to show these two boxes to
-    /// make the buy pads visible at all.
-    /// </summary>
-    public static readonly IReadOnlyList<int> HomeBasePurchasePadIds = new[] { 47, 51 };
 
     private static readonly byte[] PadZoneColour = { 0x40, 0xFF, 0x40 };
     private static readonly byte[] PadAttachmentColour = { 0xFF, 0xD0, 0x20 };
