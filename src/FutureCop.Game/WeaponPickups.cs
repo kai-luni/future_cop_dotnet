@@ -180,15 +180,23 @@ public sealed class PlayerResupplyState
     {
         ArgumentNullException.ThrowIfNull(gauge);
         ArgumentNullException.ThrowIfNull(setGauge);
-        var state = new PlayerResupplyState(slots) { GaugeMax = gaugeMax, _gauge = gauge() };
-        state.OnGaugeChanged = setGauge;
+        return new PlayerResupplyState(slots) { GaugeMax = gaugeMax, _readGauge = gauge, OnGaugeChanged = setGauge };
+    }
+
+    /// <summary>Binds +0x1C and +0x1E to the current entity (gApplyPlayerResupply.c:145-163).</summary>
+    public static PlayerResupplyState ForWalker(WeaponSlots slots, Func<int> gauge, Action<int> setGauge,
+        Func<int> gaugeMax)
+    {
+        ArgumentNullException.ThrowIfNull(gaugeMax);
+        var state = ForWalker(slots, gauge, setGauge, 0);
+        state._readGaugeMax = gaugeMax;
         return state;
     }
 
-    /// <summary>+0x1C: the gauge word the health bits raise.</summary>
+    /// <summary>+0x1C: the live gauge word the health bits read and raise (gApplyPlayerResupply.c:145-163).</summary>
     public int Gauge
     {
-        get => _gauge;
+        get => _readGauge?.Invoke() ?? _gauge;
         set
         {
             _gauge = value;
@@ -197,6 +205,7 @@ public sealed class PlayerResupplyState
     }
 
     private int _gauge;
+    private Func<int>? _readGauge;
 
     /// <summary>
     /// Called whenever the health bits write +0x1C, so a host can mirror the word into its own
@@ -205,8 +214,19 @@ public sealed class PlayerResupplyState
     /// </summary>
     public Action<int>? OnGaugeChanged { get; set; }
 
-    /// <summary>+0x1E: its maximum, also the +0x1E the spawn place lookup writes (func_8002FA20:88).</summary>
-    public int GaugeMax { get; set; }
+    /// <summary>+0x1E: the entity maximum used by both resupply paths (gApplyPlayerResupply.c:145-163).</summary>
+    public int GaugeMax
+    {
+        get => _readGaugeMax?.Invoke() ?? _gaugeMax;
+        set
+        {
+            _readGaugeMax = null;
+            _gaugeMax = value;
+        }
+    }
+
+    private int _gaugeMax;
+    private Func<int>? _readGaugeMax;
 
     /// <summary>+0x324: first timer, set to 0x34BC by payload bit 0x40000.</summary>
     public int TimerA { get; set; }

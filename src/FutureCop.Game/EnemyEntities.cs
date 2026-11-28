@@ -123,7 +123,14 @@ public sealed record DirectSpawnArgs(
     short SlotValue,
     byte SrcColumn,
     int Mask,
-    EnemyEntity? Target);
+    EnemyEntity? Target)
+{
+    /// <summary>The firing entity's +0x14, saved when gSpawnDirectShot.c:73,102 builds the request.</summary>
+    public int? ShooterRecordId { get; init; }
+
+    /// <summary>The firing entity's +0x18, copied into the shot by gSpawnDirectShot.c:76.</summary>
+    public byte Kind { get; init; }
+}
 
 /// <summary>Arguments recorded for the secondary gSpawnTypeAtOwner spawns (func_800402DC, 8005F6E8.c:441-448).</summary>
 public sealed record TypeAtOwnerSpawn(int Column, int Kind, int OwnerRet, int[] Position, int MarkerWord);
@@ -224,6 +231,11 @@ public sealed class EnemyWorld
     }
 
     public Func<uint> Random { get; set; } = () => 0u;
+    /// <summary>
+    /// Probe func_800684AC handed to actor blocks whose owner did not bind their own
+    /// (<see cref="EnemyEntity.LineOfSightProbe"/>); the scene sets it to MechCollision.Ray.
+    /// </summary>
+    public Func<EnemyEntity, EnemyEntity, bool>? DefaultLineOfSightProbe { get; set; }
     public Func<byte, EnemyEntity, (int X, int Y, int Z)>? TransformPartVertex { get; set; }
     public Func<EnemyEntity, EnemyEntity, int>? OnTraceMapRay { get; set; }
     public List<(int Id, int X, int Z, int Arg)> SoundsPlayed { get; } = new();

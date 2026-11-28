@@ -37,7 +37,7 @@ public sealed record LevelCamera(double Yaw = 30.0, double Elevation = 35.0, int
 /// (PlayerForm) at the clip-rect centre in the static viewer, or at the mission spawn for WALK.
 /// The software rasterizer only turns the emitted packets into pixels; it is a viewer, not a GPU port.
 /// </summary>
-public sealed class LevelScene
+public sealed partial class LevelScene
 {
     public const int Width = 320;
     public const int Height = 240;
@@ -48,6 +48,11 @@ public sealed class LevelScene
 
     private readonly MisFile _file;
     private readonly TextureBank _textures;
+    /// <summary>
+    /// The 3DTA texture animations of the loaded mission, stepped once per frame like the retail
+    /// list <c>D_8009F564</c> (func_800136C8, called with gFrameDelta from 8002703C.c:113).
+    /// </summary>
+    private readonly TextureAnimationSet _textureAnimations;
     private IReadOnlyList<PlayerPart> _parts;
     private readonly Dictionary<int, Dictionary<int, TextureRecord>> _texByModel = new();
     private readonly Dictionary<int, Model> _modelsById = new();
@@ -83,6 +88,39 @@ public sealed class LevelScene
     private MechBody? _walker;
     private FutureCop.Game.Mech.MechWorld? _walkerWorld;
     private bool _animateWalker;
+    private PlayerUnit? _playerUnit;
+    private LevelEnemyFire? _enemyFire;
+
+    /// <summary>
+    /// The player entity of the solo session (8005908C), created with the walker in
+    /// <see cref="AttachWalker"/>. Its health word feeds the HUD armour gauge and its retire/respawn
+    /// state gates the walker update, so the scene can lose the level instead of running on.
+    /// </summary>
+    public PlayerUnit? PlayerUnit => _playerUnit;
+
+    /// <summary>
+    /// The hostile fire path. <see cref="EnableObjectives"/> builds it for the running level, so the
+    /// playable entry (MenuFlow calls EnableFiring, which calls EnableObjectives) arms enemy fire
+    /// without an explicit <see cref="EnableEnemyFire"/>.
+    /// </summary>
+    public LevelEnemyFire? EnemyFire
+    {
+        get
+        {
+            if (_enemyFire is null && _enemyFireEnabled)
+                _enemyFire = new LevelEnemyFire(_file.Bytes, Map, ArmyAttackWorld?.Table, () => ArmyAttackWorld);
+            return _enemyFire;
+        }
+    }
+
+    private bool _enemyFireEnabled;
+
+    /// <summary>Enables the enemy-to-player fire path; the scene then steps the units' attack slots.</summary>
+    public void EnableEnemyFire()
+    {
+        _enemyFireEnabled = true;
+        _ = EnemyFire;
+    }
 
     /// <summary>Use the mission's player record and body model for the interactive WALK viewer.</summary>
     public void EnableMechMovement()
@@ -129,15 +167,16 @@ public sealed class LevelScene
     {
         _fireEnabled = true;
         _ = Weapons;
-        // func_8002FC90:188-199 refills the control block the fire path spends from, and the gauge
-        // bits at +0x1C/+0x1E raise the same health word the walker carries.
+        // gApplyPlayerResupply.c:188-199 refills the live weapon control block. Its health path
+        // reads and writes the entity's +0x1C and caps it at that entity's +0x1E (:145-163).
         if (_pickups is null)
         {
             _pickupField = WeaponPickups.FromMission(_file.Bytes, WeaponCatalog.LoadRegistry(_file), Map);
             _pickupField.OnRetired = RetirePickupEntity;
             _pickups = new PickupItems(_pickupField,
-                PlayerResupplyState.ForWalker(Weapons!.Slots, () => Walker!.Health,
-                    v => Walker!.Health = (short)v, 0x7F00));
+                PlayerResupplyState.ForWalker(Weapons!.Slots, () => PlayerUnit?.Health ?? 0,
+                    v => { if (PlayerUnit is { } unit) unit.Health = (short)v; },
+                    () => PlayerUnit?.MaxHealth ?? 0));
         }
         EnableObjectives();
         // gBeamPartUpdate (func_8006B23C) traces the segment against the level map every frame
@@ -148,6 +187,9 @@ public sealed class LevelScene
         // cb.unk00 = self->unk14: the scene passes the player actor id ORed with 0x8000, the same
         // source word the projectile contacts carry (ApplyBaseDamage strips it with 0x7FFF).
         Weapons!.BeamSourceWord = unchecked((uint)Actor.Id) | 0x8000;
+        // The type-0x25 Sky Captain is not in the entity list; the pair collision still sees it
+        // (8004CE04.c:54-65 walks the grid, and 800620D8.c:99-100 sends message 14 to every entry).
+        if (_skyCaptain?.Target is { } captain) Weapons!.ExtraHitTargets.Add(captain);
         BindInitialPickupsToCsacSpawner();
     }
 
@@ -188,6 +230,10 @@ public sealed class LevelScene
     public void EnableObjectives()
     {
         if (_objectives is not null) return;
+        // Enemy fire is part of the running level (message 6 steps the attack scheduler of every
+        // unit), not of a static preview. The path itself is built at the end of this method, once
+        // the army world it steps the units against exists.
+        _enemyFireEnabled = true;
         var records = MissionEntities.Load(_file);
         _playerTeam = records.FirstOrDefault(r => r.Type == 1 && r.Id == Actor.Id)?.Team ?? 0;
         var outpostRecords = records.Where(r => r.Type == CaptureObjective.EntityType).ToList();
@@ -198,6 +244,9 @@ public sealed class LevelScene
         // come from one source of truth (including DebugFallbackSpawn).
         _skyCaptain = new SkyCaptainSystem();
         _skyCaptain.BindMap(Map);
+        // The model table backs the body's collision coordinate (func_80013AF0 reads the frame bounds
+        // of the instance at spawn), so it has to be wired before SpawnFromRecords creates the target.
+        _skyCaptain.ModelSource = id => _modelsById.TryGetValue(id, out var m) ? m : null;
         _skyCaptain.SpawnFromRecords(records, MechWorld,
             pos => LevelGround.Height(Map, pos[0], pos[1], pos[2], out _), Actor.Id, objectives);
         int droneTeam = _skyCaptain.Drone is not null ? _skyCaptain.Team : -1;
@@ -236,6 +285,15 @@ public sealed class LevelScene
             SpawnObjective(objectives[i], outpostRecords[i].Container == EntityContainer.Csac);
         }
 
+        // The drone body answers its messages through the same script runner and model table as the
+        // rest of the level: func_800357C0 -> gHandleTumblingFlyer -> gEntityBaseHandler, whose damage
+        // and retire scripts run in gInterpretEntityScript (8002AA1C.c:128-130, 800324E0.c:257).
+        if (_skyCaptain is not null)
+        {
+            _skyCaptain.SourceWorld = _entities;
+            _skyCaptain.RunScript = RunEntityScript;
+        }
+
         // Place supported Cact mission actors: type-10 elevators (CONFT: 4 [15, 24, 37, 39],
         // JOKE: 2 [262, 249], SLIM: 2 [262, 249], HK: 0, OVMP: 0).
         //
@@ -254,7 +312,9 @@ public sealed class LevelScene
             SinglePlayerTeam = droneTeam,
             Player0Team = _playerTeam,
             // The mission-wide coarse grid built by func_800695A8 (BindMap above).
-            HeightGrid = _skyCaptain.HeightGrid,
+            HeightGrid = _skyCaptain!.HeightGrid,
+            // The clip table of the spawned model (model +0x30) backs the entity's animation track.
+            AnimationClips = id => _modelsById.TryGetValue(id, out var m) ? m.AnimationClips : null,
         };
         _csacSpawner.LoadPathNetworks(_file.Bytes,
             (x, z, mode) => LevelGround.PlacementHeight(Map, x, z, mode) ?? 0);
@@ -268,6 +328,8 @@ public sealed class LevelScene
             });
         if (_purchasePads is null)
             _csacSpawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(_file.Bytes, r));
+        // Todo 02: the army attack world the type 5/9/28 handlers fire into (see LevelSceneArmy.cs).
+        EnableArmyAttackWorld();
         if (_purchasePads is not null)
         {
             _purchasePads.VmState.GameSession[RpnsVmState.SessionPlayerCount] = 1;
@@ -320,6 +382,10 @@ public sealed class LevelScene
         ObjectRegistry.FinishLevelLoad();
         ObjectRegistry.ScreenState = MapObjectRegistry.ScreenStateImmediatePlay;
         ObjectRegistry.CullActiveElevators(MechWorld.X, MechWorld.Z);
+        // Build the fire path here, after the army world exists: the playable entry (MenuFlow calls
+        // EnableFiring, which calls this method) must not need an explicit EnableEnemyFire, and
+        // RunEntityWorldTick gates the tick on the field being non-null.
+        _ = EnemyFire;
     }
 
     private void BindInitialPickupsToCsacSpawner()
@@ -507,6 +573,10 @@ public sealed class LevelScene
         if (steps > 0 && (_walker is null || _walkerWorld is null))
             throw new InvalidOperationException("Attach a walker first");
 
+        // 8002703C.c:110-114: gStepAnimations(gFrameDelta) runs in the frame-time step, before the
+        // passes below, so the frame that is drawn after this call already shows the stepped frame.
+        if (!TextureAnimationsDisabled) _textureAnimations.Advance(dt);
+
         // :178 gCullActiveEntitiesSolo rebuilds D_800A8F90 for this frame: the command pass, the
         // map-zone scan (80031DE8.c:90) and the deferred updates all read that table.
         _walkerFrameOpen = false;
@@ -514,6 +584,15 @@ public sealed class LevelScene
         CullActiveSolo();
         // :179 gDispatchQueuedEntityCommands: the pairs scripts queued before this frame.
         int dispatched = DispatchQueuedCommands(dt);
+        // D_8009FA58 holds the player positions of the previous frame's player update (:183 runs after
+        // :180), which is what the army handlers see in func_8004E80C during this message 6.
+        if (_walker is { } walker)
+        {
+            UpdatePlayerTargets();
+            // Publish the player target before the army handlers step their shared slots.
+            _enemyFire?.Sync(_csacSpawner?.SpawnedUnits ?? Array.Empty<SpawnedCsacUnit>(),
+                walker.X, walker.Y, walker.Z, _playerTeam);
+        }
         // :180 gBroadcastEntityMessage(6, gFrameDelta, 0), including the type-37 Sky Captain tick.
         int message6 = BroadcastMessage6(dt);
         // :181 gUpdateMapZoneTriggers (80031DE8.c) with the pad clock of the frame.
@@ -549,6 +628,8 @@ public sealed class LevelScene
         _skyCaptain?.Advance(dt, this);
         if (EnableCsacSpawner && _csacSpawner is not null)
         {
+            // D_8009FA58 as the last player update left it (see AdvanceSoloFrame).
+            if (_walker is { }) UpdatePlayerTargets();
             ObjectRegistry.BroadcastMessage6(dt);
             // func_800616A0 (gUpdateRegisteredSpawners) runs in the entity update, before the node
             // list walk of func_80031DE8 (:90): a unit due this frame stands in D_800A8F90 for this
@@ -739,6 +820,7 @@ public sealed class LevelScene
         target.Z = position.Z;
         target.Radius = position.Radius;
         target.Busy = body.Form != 0;
+        SyncArmyPlayerTarget(id, target);
     }
 
     /// <summary>
@@ -989,6 +1071,20 @@ public sealed class LevelScene
             GroundObjects = ObjectRegistry.ProbeGroundObjects,
         };
         MechWorld = (body.X, body.Y, body.Z);
+        // func_8005908C: one player unit per session; its checkpoint (+0xC4) is the full position
+        // func_80058714:138 copies back after the death countdown, and :169-171 refills the three
+        // weapon slots to their scaled maximum before the animation reset.
+        _playerUnit = new PlayerUnit(Actor.Id, body.X, body.Y, body.Z, body.Health, new PlayerUnitHooks
+        {
+            Respawned = _ =>
+            {
+                if (_pickupField is null || !_fireEnabled) return;
+                for (int slot = 0; slot < 3; slot++) _pickupField.RefillAmmo(Weapons!.Slots, slot, -1);
+            },
+        })
+        {
+            Checkpoint = (body.X, body.Y, body.Z),
+        };
         UpdatePlayerTarget(Actor.Id, body);
         if (_purchasePads is { } pads) pads.TargetCandidatesStale = true;
         ObjectRegistry.CullActiveElevators(body.X, body.Z);
@@ -1052,12 +1148,58 @@ public sealed class LevelScene
         // word for callers that only drive locomotion, so the step uses the union and the trigger
         // gets what the masking left of it.
         uint padWord = flags | _padWord;
-        int result = FutureCop.Game.Mech.MechPlayer.Update(_walker, _walkerWorld, ticks, steps,
-            ref padWord, out bool formChanged);
-        // Bit 0 of the out word is per call (func_800588D4:260-265 spawns on it that frame only).
-        FormChanged = formChanged;
-        WalkerSteps += steps;
+        var playerUnit = _playerUnit;
+        bool wasDead = playerUnit?.Dead == true;
+        if (playerUnit is not null && !wasDead)
+        {
+            // The entity's +0x1C health word is the authority (80058210.c:101-102 subtracts the
+            // damage there); the walker's +0x1E stays the fall-damage scale MechWalker:886 reads.
+            playerUnit.WorldX = _walker.X;
+            playerUnit.WorldY = _walker.Y;
+            playerUnit.WorldZ = _walker.Z;
+        }
+        int result = 0;
+        if (!wasDead)
+        {
+            result = FutureCop.Game.Mech.MechPlayer.Update(_walker, _walkerWorld, ticks, steps,
+                ref padWord, out bool formChanged);
+            // Bit 0 of the out word is per call (func_800588D4:260-265 spawns on it that frame only).
+            FormChanged = formChanged;
+            WalkerSteps += steps;
+        }
+        else
+        {
+            FormChanged = false;
+        }
         MechWorld = (_walker.X, _walker.Y, _walker.Z);
+        if (playerUnit is not null)
+        {
+            if (!wasDead && !playerUnit.Dead)
+            {
+                playerUnit.WorldX = _walker.X;
+                playerUnit.WorldY = _walker.Y;
+                playerUnit.WorldZ = _walker.Z;
+            }
+            // func_800588D4:223-236 ticks the hit flash, the damage timer and the respawn countdown.
+            playerUnit.Tick(ticks);
+            if (wasDead && !playerUnit.Dead)
+            {
+                // func_80058714:138 copies the whole checkpoint Vec3 back into the model coordinate.
+                _walker.X = playerUnit.WorldX;
+                _walker.Y = playerUnit.WorldY;
+                _walker.Z = playerUnit.WorldZ;
+                MechWorld = (_walker.X, _walker.Y, _walker.Z);
+            }
+        }
+        // Shots still move and expire during the respawn countdown; the contact gate
+        // rejects a dead player. Pausing the shot queue would dump it at the checkpoint.
+        if (_enemyFire is not null && playerUnit is not null && _entities is not null)
+        {
+            var fireTarget = CoordOf(_parts[0].Model.Id, _walker.X, _walker.Y, _walker.Z);
+            _enemyFire.Sync(_csacSpawner?.SpawnedUnits ?? Array.Empty<SpawnedCsacUnit>(),
+                _walker.X, _walker.Y, _walker.Z, _playerTeam);
+            _enemyFire.Tick(ticks, playerUnit, fireTarget, _entities);
+        }
         _weapons?.AdvanceShots(frames);
         // Beams live on the 60 Hz frame, like the trigger that spawns them.
         for (int f = 0; f < frames; f++) _weapons?.AdvanceBeams();
@@ -1312,6 +1454,7 @@ public sealed class LevelScene
         }
         Map = LevelMap.FromMisFile(misPath);
         _textures = TextureBank.FromMisFile(misPath);
+        _textureAnimations = new TextureAnimationSet(_file.Models);
         // D_800A8EA4 = gTexpageBaseTable[9] = the packed word of Cbmp slot 9 (80063C5C.c:144).
         var hudPage = _textures.Resources.FirstOrDefault(r => r.Id == HudTexpageResourceId);
         HudTexpageWord = hudPage is null ? 0u : ((uint)hudPage.Clut << 16) | hudPage.Tpage;
@@ -1565,16 +1708,20 @@ public sealed class LevelScene
         // Sky Captain: its record model placed with the body basis (+0x2C rows) at +0x50. First light;
         // the row/column convention of the basis against the GTE matrix is not verified yet.
         int skyCaptain = 0;
-        if (_skyCaptain is { Visible: true } sky && _modelsById.TryGetValue(sky.ModelId, out var skyModel)
-            && skyModel.Vertices.TryGetValue(1, out var skyVerts) && skyVerts.Count > 0)
+        if (_skyCaptain is { Visible: true } sky && _modelsById.TryGetValue(sky.ModelId, out var skyModel))
         {
             var body = sky.Drone!.Body;
-            var r = body.BasisRows;
-            var local = new Gte.Mat(new[] { r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2] },
-                ((body.Pos[0] - MechWorld.X) >> 4) << 4, ((body.Pos[1] - MechWorld.Y) >> 4) << 4,
-                ((body.Pos[2] - MechWorld.Z) >> 4) << 4);
-            var matrix = ScriptRender.Compose(local, view);
-            skyCaptain += QueueModel(skyModel, skyVerts, 0, matrix, 0xFF, ref drawOrder);
+            // 800324E0.c:163-164 advances +0x120 and hands +0x12C to gSetModelFrame.
+            int skyFrame = Math.Max(0, (int)(body.Animation?.Frame ?? 0));
+            if (skyModel.Vertices.TryGetValue(skyFrame + 1, out var skyVerts) && skyVerts.Count > 0)
+            {
+                var r = body.BasisRows;
+                var local = new Gte.Mat(new[] { r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2] },
+                    ((body.Pos[0] - MechWorld.X) >> 4) << 4, ((body.Pos[1] - MechWorld.Y) >> 4) << 4,
+                    ((body.Pos[2] - MechWorld.Z) >> 4) << 4);
+                var matrix = ScriptRender.Compose(local, view);
+                skyCaptain += QueueModel(skyModel, skyVerts, skyFrame, matrix, 0xFF, ref drawOrder);
+            }
         }
 
         // Type-10 elevators placed in ObjectRegistry (func_80041488: yaw basis from source +0x36 at
@@ -1636,10 +1783,13 @@ public sealed class LevelScene
                 // Type-0x10 pickups are drawn through the _pickups pass above (ground-snapped by
                 // func_8002FA20), never a second time as a generic Csac unit.
                 if (unit.EntityType == WeaponPickups.PlacementPayloadType) continue;
+                // gSetModelFrame(instance, o->unk12C) picks the tracked frame (800382B4.c:282-283);
+                // frame n is vertex mega-block n + 1 of the 3DBB record.
+                int frame = Math.Max(0, (int)(unit.Animation?.Frame ?? 0));
                 if (!_modelsById.TryGetValue(unit.ModelId, out var model)
-                    || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
+                    || !model.Vertices.TryGetValue(frame + 1, out var verts) || verts.Count == 0) continue;
                 var matrix = UnitMatrix(unit, view);
-                spawnedUnits += QueueModel(model, verts, 0, matrix, 0xFF, ref drawOrder);
+                spawnedUnits += QueueModel(model, verts, frame, matrix, 0xFF, ref drawOrder);
             }
         }
         SpawnedUnitPrimitives = spawnedUnits;
@@ -1794,6 +1944,14 @@ public sealed class LevelScene
     /// the blend is the only cause of the re-recorded frame 0 / frame 120 hashes.
     /// </summary>
     internal bool SemiBlendDisabled { get; set; }
+
+    /// <summary>
+    /// Diagnostic switch for the 3DTA texture flipbooks: when true the frame stepper leaves them on
+    /// the on-disc frame. Production never sets it; the golden attribution test uses it next to
+    /// <see cref="SemiBlendDisabled"/> so its pre-blend digests stay comparable across commits that
+    /// predate the flipbooks.
+    /// </summary>
+    internal bool TextureAnimationsDisabled { get; set; }
 
     /// <summary>Textured, colour-modulated triangle; xy = packed screen word, uv = low 16 bits (u | v &lt;&lt; 8).</summary>
     internal void Tri(uint xy0, uint uv0, uint c0, uint xy1, uint uv1, uint c1, uint xy2, uint uv2, uint c2,
@@ -2121,6 +2279,10 @@ public sealed class LevelScene
     internal void DrawModelFace(TexturedFace face, Model model)
     {
         bool hasRec = TextureLookup(model).TryGetValue(face.TextureOffset, out var rec);
+        // func_800136C8:155-172 writes the active 3DTA frame straight into the 3DTL record, so the
+        // face samples the swapped UV pair; the colour and texture-page words stay untouched.
+        if (hasRec && _textureAnimations.TryGetUvPair(model.Id, rec.Offset, out var animatedA, out var animatedB))
+            rec = rec with { Uv0 = animatedA, Uv1 = animatedB };
         uint uvA = hasRec ? rec.Uv0 : 0, uvB = hasRec ? rec.Uv1 : 0;
         uint UV(int i) => i switch
         {

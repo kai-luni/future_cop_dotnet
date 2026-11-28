@@ -38,12 +38,20 @@ public static class MechAnimation
     /// func_80044B34(self, track, speed, direction) on any track of the unit (func_80055988 also
     /// drives the companion track at model + 0xA0); the unit's queued commands run on that track.
     /// </summary>
-    public static uint Advance(MechBody body, AnimTrack track, MechWorld world, int speed, int direction)
+    public static uint Advance(MechBody body, AnimTrack track, MechWorld world, int speed, int direction) =>
+        Advance(body.Commands, track, world.Random.Next, speed, direction);
+
+    /// <summary>
+    /// func_80044B34(self, track, speed, direction) for an entity without a walker body: a spawned
+    /// Csac unit or a hover enemy keeps its own command queue (entity +0x0C) and its own track
+    /// (+0x120), and draws from the mission generator (800324E0.c:162, 80038500.c:266).
+    /// </summary>
+    public static uint Advance(byte[] commands, AnimTrack track, Func<int> nextRandom, int speed, int direction)
     {
         unchecked
         {
             if (track.Clips == null) return 0;
-            RunScript(body.Commands, track);
+            RunScript(commands, track);
             if ((track.Flags & 2) != 0) return 0;
             var clip = track.Clip;
             uint bits = 0;
@@ -68,13 +76,13 @@ public static class MechAnimation
                 }
                 if ((clip.Flags & 0x40) != 0)
                 {
-                    int r = world.Random.Next() & 0x3F;
+                    int r = nextRandom() & 0x3F;
                     direction = r >= 0x2B ? 2 : r < 0x16 ? 0 : 1;
                 }
                 if (track.Step == 0) return bits;
                 if ((clip.Flags & 0x20) != 0)
                 {
-                    int temp = (0x80 - (world.Random.Next() & 0xFF)) * speed;
+                    int temp = (0x80 - (nextRandom() & 0xFF)) * speed;
                     speed += temp >> 9;
                 }
                 track.Elapsed += speed;

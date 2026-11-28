@@ -123,6 +123,8 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
     private readonly Func<int>? _nextRandom;
     private readonly EntityWorld? _world;
     private readonly CsacHoverWorld? _hoverWorld;
+    private readonly EnemyWorld? _attackWorld;
+    private EnemyEntity? _attackOwner;
 
     public SpawnedCsacUnit(
         int id,
@@ -134,7 +136,10 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
         Func<int>? nextRandom = null,
         Func<int, int, int, int>? querySurfaceHeight = null,
         EntityWorld? world = null,
-        HeightGrid? heightGrid = null)
+        HeightGrid? heightGrid = null,
+        IReadOnlyList<AnimationClip>? animationClips = null,
+        AttackDefinitionTable? attackTable = null,
+        EnemyWorld? attackWorld = null)
     {
         Id = id;
         SourceSlot = sourceSlot;
@@ -187,6 +192,45 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
                 SyncFromRailMover();
             }
         }
+
+        // The general handler switch of func_8002AE54: types 5, 9 and 28 install the attack
+        // scheduler slot at +0xA0 in their message-2 arm (800378BC.c:103, 80032180.c:205,
+        // 800397AC.c:31-38). A unit without the attack world keeps the slot unarmed.
+        _attackWorld = attackWorld;
+        ArmyHandler = ArmyTypeHandler.Create(record, attackTable);
+        if (ArmyHandler is not null && attackWorld is not null)
+        {
+            // The unit's own entity block: func_80060238 uses it as the actor and
+            // func_800600E8 as the search context (8004E80C.c:113-134 reads its position).
+            _attackOwner = attackWorld.NewOwner();
+            _attackOwner.Mode16 = (byte)EntityType;
+            _attackOwner.Type18 = (byte)Team;
+            _attackOwner.Word14 = (ushort)RecordId;
+            _attackOwner.LineOfSightProbe = attackWorld.DefaultLineOfSightProbe;
+            SyncAttackOwner();
+            // Type 9 steps the slot from the tail of func_800324E0 (800324E0.c:372-373), and only
+            // when the entity's +0xA0 word is set - gInitHoverEnemy stores the slot pointer there
+            // (80032180.c:205), so an armed unit carries a non-zero word.
+            if (_hoverWorld is not null)
+            {
+                _hoverWorld.AttackStep = StepArmyAttack;
+                if (HoverMover is { } hover && ArmyHandler.HasAttack) hover.FA0 = 1;
+            }
+        }
+
+        // The animation track (+0x120) exists only when the model carries a clip table: the gate of
+        // 800324E0.c:162 / 800382B4.c:255 is the model instance's speed word, which every army model
+        // of the mission leaves at 0.
+        if (animationClips is { Count: > 0 } && nextRandom is not null)
+        {
+            Animation = new UnitAnimation(animationClips, nextRandom);
+            if (HoverMover is { } hover)
+            {
+                hover.Animation = Animation;
+                hover.F12C = Animation.Frame;
+                hover.AnimCounter = 1;
+            }
+        }
     }
 
     /// <inheritdoc/>
@@ -224,7 +268,10 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
 
     /// <inheritdoc/>
     public override int HandleMessage(int message, EntityWorld world, object? data) =>
-        BaseHandler(message, this, world, data);
+        message == 4 && HoverMover is { } hover && _nextRandom is not null
+            && HoverEnemyTick.EnterDeathTumble(hover, _nextRandom)
+            ? 0                                   // gHandleTumblingFlyer.c:74-99
+            : BaseHandler(message, this, world, data);
 
     public int Id { get; }
     public CsacSpawnerSlot SourceSlot { get; }
@@ -250,6 +297,19 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
     public RailPathMover? RailMover { get; }
     /// <summary>True when this unit has an initialized retail locomotion mover.</summary>
     public bool IsMobile => HoverMover is not null || RailMover is { IsInitialized: true };
+    /// <summary>
+    /// The per-type handler func_8002AE54 installs for this dispatch type (types 5, 9 and 28),
+    /// or null for the other records a Csac request can carry.
+    /// </summary>
+    public ArmyTypeHandler? ArmyHandler { get; }
+    /// <summary>Entity + 0xA0 attack scheduler slot of the army handler, or null.</summary>
+    public AttackSlot? AttackSlot => ArmyHandler?.Slot;
+    /// <summary>
+    /// The unit's animation track (entity +0x120 with the queue at +0x0C), or null when its model has
+    /// no clip table. The draw path submits <see cref="UnitAnimation.Frame"/> through gSetModelFrame
+    /// (800324E0.c:163-164, 800382B4.c:282-283).
+    /// </summary>
+    public UnitAnimation? Animation { get; }
     /// <summary>Specialized mission runtime created on spawn (null for other dispatch types).</summary>
     public IRegisteredMapObject? RuntimeObject { get; internal set; }
     /// <summary>Spawn mode argument passed by func_800616A0 to func_8006125C (1 = normal/timer, 0 = high-nibble burst).</summary>
@@ -306,9 +366,46 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
             Z = unchecked(rail.Z + offsetZ);
             DirX = rail.Dir[0];
             DirZ = rail.Dir[2];
+            // func_800382B4 message 9 tail: func_80060238 on the +0xA0 slot (800382B4.c:292-293).
+            StepArmyAttack(dt);
             if (rail.Retired && _world is not null)
                 LiveEntity.Retire(this, _world);
         }
+    }
+
+    /// <summary>
+    /// Runs the army handler's attack step for <paramref name="dt"/> when the unit owns a slot,
+    /// an actor block and an attack world; otherwise it is the retail <c>+0xA0 == 0</c> guard
+    /// (800382B4.c:292, 800324E0.c:372).
+    /// </summary>
+    private int StepArmyAttack(int dt)
+    {
+        if (ArmyHandler is not { } handler || _attackOwner is null || _attackWorld is null)
+            return 0;
+        SyncAttackOwner();
+        return handler.Step(dt, _attackOwner, _attackWorld);
+    }
+
+    /// <summary>Publishes the unit's live position, facing and team into its actor block.</summary>
+    private void SyncAttackOwner()
+    {
+        if (_attackOwner is null) return;
+        _attackOwner.PositionX = X;
+        _attackOwner.PositionY = Y;
+        _attackOwner.PositionZ = Z;
+        _attackOwner.Vec5CX = X;
+        _attackOwner.Vec5CY = Y;
+        _attackOwner.Vec5CZ = Z;
+        _attackOwner.FacingX = DirX;
+        _attackOwner.FacingY = 0;
+        _attackOwner.FacingZ = DirZ;
+        _attackOwner.HeadingX = DirX;
+        _attackOwner.HeadingY = 0;
+        _attackOwner.HeadingZ = DirZ;
+        _attackOwner.Team14 = unchecked((ushort)Team);
+        _attackOwner.FlagWord24 = Flags;
+        // A retired unit must stop being a candidate of func_8004E80C (8004E80C.c:131).
+        _attackOwner.State1C = (Flags & RetiredFlag) != 0 ? unchecked((short)-1) : (short)0;
     }
 
     private void SyncFromHoverMover()
@@ -353,7 +450,10 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
             : _groundSampler?.Invoke(pos[0], pos[2]) ?? 0;
         public int GetGroundHeight(int[] pos) => _groundSampler?.Invoke(pos[0], pos[2]) ?? 0;
         public HoverEnemyHit? FindTargetEntity(HoverEnemy o) => null;
-        public void StepAttackScheduler(HoverEnemy o, int dt) { }
+        // 800324E0.c:372-373 steps the entity's +0xA0 slot; the unit forwards that to its
+        // ArmyTypeHandler slot so a type-9 drone fires from the same place as retail.
+        public Func<int, int>? AttackStep { get; set; }
+        public void StepAttackScheduler(HoverEnemy o, int dt) => AttackStep?.Invoke(dt);
         public void SpawnEntitySlotTypes(int tableIndex, HoverEnemy o, int a2, int a3, int a4) { }
         public void FlagQuartileChange(HoverEnemy o) { }
         public int SessionWord13() => 0;
@@ -361,7 +461,14 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
         public void RunDeathScript(HoverEnemy o) { }
         public bool IsPlayerBlockClass(int id) => false;
         public void CreditPlayerKill() { }
-        public void AdvanceAnimation(HoverEnemy o, int dt) { }
+        public void AdvanceAnimation(HoverEnemy o, int dt)
+        {
+            // gUpdateHoverEnemy.c:162-165: gAdvanceAnimTrack(o, o + 0x120, dt, 0) and
+            // gSetModelFrame(o->unk28, o->unk12C).
+            if (o.Animation is not { } anim) return;
+            anim.Advance(dt);
+            o.F12C = anim.Frame;
+        }
     }
 
     internal void SyncRuntimePosition()
@@ -468,6 +575,26 @@ public sealed class CsacUnitSpawner
     /// probe for callers without a mission grid.
     /// </summary>
     public HeightGrid? HeightGrid { get; set; }
+
+    /// <summary>
+    /// D_800A2300 attack definitions of the loaded mission (<see cref="AttackDefinitionLoader"/>).
+    /// Every spawned type 5/9/28 unit resolves its record descriptor against this table
+    /// (func_80060668). Null leaves their +0xA0 slots unarmed.
+    /// </summary>
+    public AttackDefinitionTable? AttackTable { get; set; }
+
+    /// <summary>
+    /// Attack world the spawned units fire into (actor blocks, shot sink, target list).
+    /// Null keeps the spawner headless: units walk but do not fight.
+    /// </summary>
+    public EnemyWorld? AttackWorld { get; set; }
+
+    /// <summary>
+    /// Clip table of a spawned model (model +0x30), resolved per model id by the scene. Null or an
+    /// empty table leaves the unit without an animation track, which is the retail state of every
+    /// army model in the shipped Precinct Assault missions (800324E0.c:162 gate).
+    /// </summary>
+    public Func<int, IReadOnlyList<AnimationClip>?>? AnimationClips { get; set; }
 
     /// <summary>Number of registered Csac spawner slots (D_8009F800.count).</summary>
     public int Count => _count;
@@ -773,7 +900,8 @@ public sealed class CsacUnitSpawner
 
         var pathNetwork = ResolvePathNetwork(slot.Record);
         var unit = new SpawnedCsacUnit(_nextRuntimeId++, slot, spawnMode, UnitMessageHandler,
-            SampleGround, pathNetwork, Random.Next, QuerySurfaceHeight, _world, HeightGrid);
+            SampleGround, pathNetwork, Random.Next, QuerySurfaceHeight, _world, HeightGrid,
+            AnimationClips?.Invoke(slot.ModelId), AttackTable, AttackWorld);
         unit.SlotIndex = (byte)slot.Record.U8(0x20); // 8002A5F4.c:127
         unit.RuntimeObject = _registry?.CreateMissionObject(slot.Record, unit.Id);
         unit.SyncRuntimePosition();

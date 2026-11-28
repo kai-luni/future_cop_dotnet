@@ -254,6 +254,12 @@ public sealed class MisFile
                             BinaryPrimitives.ReadInt32LittleEndian(r.Slice(12))));
                     }
                     break;
+                case "3DTA":
+                    // func_80012E48:66-73: the chunk header becomes the AnimNode (count = chunk
+                    // index, entries at chunk + 0x0C), src becomes animEnd + src and dst becomes
+                    // triangleList + dst. The frame words live after the entry table.
+                    ReadTextureAnimations(model, span, chunk.Index);
+                    break;
                 case "3DMI":
                     model.MeshTable = new short[span.Length / 2];
                     for (int i = 0; i < model.MeshTable.Length; i++)
@@ -262,6 +268,43 @@ public sealed class MisFile
             }
         }
         return model.Polygons.Count > 0 || model.Header.Length > 0 ? model : null;
+    }
+
+    /// <summary>
+    /// Reads the entries of a 3DTA chunk. Entry layout matches the retail AnimEntry
+    /// (func_800136C8:4-13): max, cur, type, flags, rate (s16), timer (s16), src and dst offsets.
+    /// </summary>
+    private static void ReadTextureAnimations(Model model, ReadOnlySpan<byte> span, int count)
+    {
+        if (count < 0 || count * 16 > span.Length) return;
+        int table = count * 16;
+        for (int i = 0; i < count; i++)
+        {
+            var e = span.Slice(i * 16, 16);
+            int width = (e[3] & 1) != 0 ? 4 : 3;
+            int src = BinaryPrimitives.ReadInt32LittleEndian(e.Slice(8));
+            int dst = BinaryPrimitives.ReadInt32LittleEndian(e.Slice(12));
+            var frames = new ushort[e[0]][];
+            bool complete = true;
+            for (int f = 0; f < e[0] && complete; f++)
+            {
+                var frame = new ushort[width];
+                for (int k = 0; k < width; k++)
+                {
+                    int o = table + src + f * width * 2 + k * 2;
+                    if (src < 0 || o < table || o + 2 > span.Length)
+                    {
+                        complete = false;
+                        break;
+                    }
+                    frame[k] = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(o));
+                }
+                frames[f] = frame;
+            }
+            if (!complete || dst < 0 || dst >= 0x10000) continue;
+            model.TextureAnimations.Add(new TextureAnimation(e[0], e[2], e[3],
+                BinaryPrimitives.ReadInt16LittleEndian(e.Slice(4)), (ushort)dst, frames));
+        }
     }
 
     private static List<Vertex> ReadVertexList(ReadOnlySpan<byte> span)

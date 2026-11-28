@@ -484,7 +484,9 @@ public sealed class MenuFlow
     internal HudGameBlock BuildHud()
     {
         var walker = Level?.Walker;
-        int health = walker?.Health ?? 0;
+        // The armour gauge reads the entity's +0x1C health word, the one the damage path subtracts
+        // (80058210.c:101-102); +0x1E is the fixed fall-damage scale MechWalker:886 multiplies.
+        int health = Level?.PlayerUnit?.Health ?? 0;
         int max = _maxHealth > 0 ? _maxHealth : Math.Max(health, 1);
         // The gauge record scales its value onto 0..0x60: value * (0x600000 / divisor) >> 16. Feeding the
         // health and the reciprocal of max health reproduces the retail height, so the port uses the

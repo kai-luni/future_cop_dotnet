@@ -250,26 +250,13 @@ public static class EnemyAttackScheduler
                         owner, owner.State1C < 0 ? 1 : 0, 0));
                 }
 
-                // Fire/acquire gates (80060238.c:264-281).
-                if (slot.Target18 is not null)
-                {
-                    if ((slot.Flags & 0x4000) == 0)
-                        goto Fire;                          // 80060238.c:265-271 (L60584 -> L605EC)
-                    if ((byte)Acquire(slot, frameDelta, owner, env) != 0)
-                        goto Fire;                          // 80060238.c:272-275
-                    if (slot.Target18 != null)
-                        goto Fire;                          // 80060238.c:279-281
-                    return 0;                               // 80060238.c:282-283 (L60600)
-                }
-                if ((slot.Flags & 0x4000) != 0)
-                {
-                    if ((byte)Acquire(slot, frameDelta, owner, env) != 0)
-                        goto Fire;                          // 80060238.c:272-275
-                    if ((slot.Flags & 0x4000) != 0 && slot.Target18 != null)
-                        goto Fire;                          // 80060238.c:276-281
-                    return 0;                               // L60600
-                }
-                return 0;                                   // no target, no 0x4000: L60600
+                // A cached target without 0x4000 fires directly; otherwise retail tries
+                // acquisition even when the flag is clear (L605A8).
+                if (slot.Target18 is not null && (slot.Flags & 0x4000) == 0)
+                    goto Fire;
+                if ((byte)Acquire(slot, frameDelta, owner, env) == 0 &&
+                    ((slot.Flags & 0x4000) == 0 || slot.Target18 is null))
+                    return 0;
             }
 
         Fire:

@@ -122,6 +122,8 @@ public sealed class SkyCaptainSystem
 
     private LevelMap? _map;
     private int _frameTime;
+    /// <summary>The frame delta of the running <see cref="Advance"/> call (gFrameDelta).</summary>
+    private int _frameDelta;
     private readonly int[] _groundProbe = new int[3];
     private Func<int[], int>? _activeGroundHeight;
     private readonly Func<int, int, int> _sampleGround;
@@ -218,6 +220,24 @@ public sealed class SkyCaptainSystem
     public bool Visible => Drone is not null && Drone.Body.FA != 5;
 
     /// <summary>
+    /// The body as the damage chain sees it (func_800357C0, 800357C0.c:117-201). Wired into the
+    /// player's hit candidates by <c>LevelScene.EnableFiring</c>.
+    /// </summary>
+    public SkyCaptainTarget? Target { get; private set; }
+
+    /// <summary>Local player record id the msg 9/11/14 identity latch compares (800357C0.c:163-195).</summary>
+    public int? LocalPlayerId { get; set; }
+
+    /// <summary>The entity world whose script runner the body's messages use (gInterpretEntityScript).</summary>
+    public EntityWorld? SourceWorld { get; set; }
+
+    /// <summary>Runs an RPNS offset with the scene's VM: <c>gInterpretEntityScript(entity, offset, a, b)</c>.</summary>
+    public Action<int, int, int>? RunScript { get; set; }
+
+    /// <summary>Model lookup for the body's collision coordinate (the scene's model table).</summary>
+    public Func<int, Model?>? ModelSource { get; set; }
+
+    /// <summary>
     /// Spawns the Sky Captain from the first type-0x25 record, a Cact before a Csac (the Cact is
     /// built at load time by func_8004D6D4; a Csac only registers a spawner, func_80060E74).
     /// </summary>
@@ -249,8 +269,10 @@ public sealed class SkyCaptainSystem
         Record = record;
         ModelId = record.Model();
         Team = record.Team;
+        LocalPlayerId = playerId;
         BuildStrategyUnits(records, playerId, playerPos, objectives);
         Drone = Create(record, playerPos, groundHeight);
+        Target = new SkyCaptainTarget(this, record);
         Spawner.ConfigureFromRecords(records, Team,
             (Drone.Body.Pos[0], Drone.Body.Pos[1], Drone.Body.Pos[2]), playerPos);
         Spawner.Reset(Economy);
@@ -503,12 +525,27 @@ public sealed class SkyCaptainSystem
     private void AdvanceCore(int dt, Func<int[], int> groundHeight, bool runBuildOrderSpawner)
     {
         _frameTime = unchecked(_frameTime + dt);
+        // The damage of the last frame reaches the body before the tick reads it: the collision pass
+        // writes the target's health, and +0x1C is the word the tick and the draw share.
+        if (Drone is { } live && Target is { } targetBody) live.Body.F1C = targetBody.Health;
         // 800357C0.c:141-144: msg 6 returns 0 while +0xFA == 5, the drone tick does not run.
         if (Drone is { } d && d.Body.FA != 5)
         {
             PullFromBody(d);
             StrategicDroneTick.Tick(d.Drone, new TickWorld(this, d, groundHeight), dt);
         }
+        if (Drone is { } sync && Target is { } after) after.Health = sync.Body.F1C;
+        // 8004CE04.c:59-60 sends message 4 to every entity whose health word is negative, once per
+        // frame and after the message 6 pass. The drone body is not in the port's entity list, so its
+        // delivery lives here; func_800357C0 answers it with the +0x100 countdown and re-arms the
+        // body once it expires (800357C0.c:148-161) instead of retiring it.
+        if (Target is { Health: < 0 } dead && SourceWorld is { } world)
+        {
+            _frameDelta = dt;
+            HandleDroneMessage(4, world, dead, null);
+        }
+        if (Drone is { } rearmSync && Target is { } rearms) rearms.Health = rearmSync.Body.F1C;
+        if (Target is { } moving) moving.RefreshCoord();
         // Opt-in port extension beyond retail: materialize build-order production and keep already
         // spawned units moving even when the drone is inactive or in state 5, unless the live CSAC
         // spawner owns unit movement on the scene.
@@ -525,6 +562,99 @@ public sealed class SkyCaptainSystem
                 _activeGroundHeight = null;
             }
         }
+    }
+
+    /// <summary>
+    /// func_800357C0 message dispatch (800357C0.c:117-201): messages 1/2/6 answer locally, message 4
+    /// counts the dead body down, and everything else reaches the flyer handler func_80032F3C after
+    /// the msg 9/11/14 identity latch.
+    /// </summary>
+    /// <param name="target">The body block the base handler reads and writes.</param>
+    internal int HandleDroneMessage(int message, EntityWorld world, SkyCaptainTarget target, object? data)
+    {
+        var body = Drone?.Body;
+        if (body is null) return -1;
+        switch (message)
+        {
+            case 1: return 0x138;                                                 // :135-136
+            case 2: return 0;                                                     // :138-139 (already spawned)
+            case 6: return 0;                                                     // :141-146 (ticked by Advance)
+            case 4 when body.FA == 5:
+                // :148-161: the corpse timer, then gRearmDroneWander.
+                StepDeadDrone(Drone!, _frameDelta);
+                return 0;
+        }
+        // :163-197: messages 9/11/14 raise the AI event word when the id is the local player's. The
+        // port's source word carries the 0x8000 player-space flag (LevelScene.EnableFiring), which
+        // ApplyBaseDamage strips with 0x7FFF.
+        if (message is 9 or 11 or 14 && LocalPlayerId is { } player && Target is not null)
+        {
+            int id = message switch
+            {
+                14 => data is DirectHit hit ? (int)(hit.SourceWord & 0x3FFF) : -1,
+                11 => data is LiveEntity other ? other.RecordId : -1,
+                _ => -1,
+            };
+            if (id == player) Economy.FE0 = 5;
+        }
+        return HoverHandler(message, world, target, data);
+    }
+
+    /// <summary>
+    /// gHandleTumblingFlyer (80032F3C.c:61-101): message 4 makes the flyer tumble when it is neither
+    /// falling nor down, and retires it otherwise; message 11/14 reach gEntityBaseHandler.
+    /// </summary>
+    private int HoverHandler(int message, EntityWorld world, SkyCaptainTarget target, object? data)
+    {
+        if (message == 4 && Drone is { } d
+            && HoverEnemyTick.EnterDeathTumble(d.Body, () => Random.Next()))
+            return 0;
+        return LiveEntity.BaseHandler(message, target, world, data);
+    }
+
+    /// <summary>
+    /// Message 4 of a dead body (800357C0.c:148-161): subtract the frame delta from +0x100 and re-arm
+    /// the drone when the s16 result is no longer positive.
+    /// </summary>
+    private void StepDeadDrone(StrategicDrone d, int dt)
+    {
+        int diff = d.Body.F100 - dt;
+        d.Body.F100 = unchecked((ushort)diff);
+        if ((short)diff > 0) return;
+        RearmDrone();
+    }
+
+    /// <summary>
+    /// gRearmDroneWander (80035698.c:121-159): health back to the spawn maximum, the AI record words
+    /// restored, the body back at its home position with a random heading and the initial state of the
+    /// spawn (AI record +0x1D, written by func_800331CC:200) re-armed.
+    /// </summary>
+    private void RearmDrone()
+    {
+        if (Drone is not { } d) return;
+        var o = d.Body;
+        var ai = d.Ai;
+        o.F1C = unchecked((short)o.F1E);                                          // :122
+        ai.Limit = unchecked((short)(((short)o.F1E >> 1) - (Random.Next() & 0x3F))); // :123
+        o.F19 &= 0x0F;                                                            // :124
+        o.F4 = ai.BaseF4;                                                         // :126 (ai+0x24)
+        o.Flags24 &= 0xFDFFFFCAu;                                                 // :127
+        o.FA = 4;                                                                 // :131
+        o.F8 = ai.PromoteTo;                                                      // :132 (ai+0x20)
+        ai.TickTimer = 0;                                                         // :133 (ai+0x18)
+        ai.Mode = 0;                                                              // :136 (ai+0x1A)
+        var (sin, cos) = MechMath.SinCos(Random.Next() & 0xFFF);                  // :142
+        o.Dir[0] = sin; o.Dir[1] = 0; o.Dir[2] = cos;                             // :142-146 (+0x78)
+        o.E8[0] = o.E8[1] = o.E8[2] = 0;                                          // :139-141
+        o.Pos[0] = o.D0X; o.Pos[1] = o.D4Y; o.Pos[2] = o.D8Z;                     // :147
+        BuildBasis(o);                                                            // :148 func_800193F8
+        o.FA = ai.InitialFA;                                                      // :158 (ai+0x1D)
+        if (Target is { } target)
+        {
+            target.Health = o.F1C;
+            target.RefreshCoord();
+        }
+        Economy.FE0 = 9;                                                          // :161
     }
 
     /// <summary>Copies the words the tick shares with the body (+0x1C/+0xDC/+0xF4/+0xF8/+0xFA).</summary>
@@ -789,9 +919,91 @@ public sealed class SkyCaptainSystem
         public void FlagQuartileChange(HoverEnemy o) { }
         public int SessionWord13() => _sys.Difficulty;
         public int FrameTime() => _sys._frameTime;
-        public void RunDeathScript(HoverEnemy o) { }
+
+        /// <summary>
+        /// 800324E0.c:272-273: <c>gInterpretEntityScript(o-&gt;f98, 0, -1, o)</c> at the ground impact of a
+        /// type-0x25 body; +0x98 is the record's retire script (8002A5F4.c:109), script 1775 of CONFT
+        /// record 287, which awards the kill score and latches the defeat flag.
+        /// </summary>
+        public void RunDeathScript(HoverEnemy o) => _sys.RunScript?.Invoke(o.F98, 0, -1);
+
         public bool IsPlayerBlockClass(int id) => false;
+
         public void CreditPlayerKill() { }
-        public void AdvanceAnimation(HoverEnemy o, int dt) { }
+
+        /// <summary>800324E0.c:162-165: gAdvanceAnimTrack on +0x120, then gSetModelFrame on +0x12C.</summary>
+        public void AdvanceAnimation(HoverEnemy o, int dt)
+        {
+            if (o.Animation is not { } anim) return;
+            anim.Advance(dt);
+            o.F12C = anim.Frame;
+        }
+    }
+}
+
+/// <summary>
+/// The Sky Captain body as the damage chain sees it. func_800357C0 (800357C0.c:117-201) is the
+/// type-0x25 handler, and retail's pair collision sends message 11 or 14 to it exactly like to any
+/// other entity in the query grid (800620D8.c:99-100); the port's entity list never holds the drone,
+/// so this block hands the same messages to the same base handler.
+/// </summary>
+public sealed class SkyCaptainTarget : LiveEntity
+{
+    private readonly SkyCaptainSystem _system;
+
+    internal SkyCaptainTarget(SkyCaptainSystem system, EntityRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(system);
+        ArgumentNullException.ThrowIfNull(record);
+        _system = system;
+        RecordIdValue = record.Id;
+        // gInitEntityBase copies the script offsets (8002A5F4.c:108-109), health, flags and the
+        // slot column of the spawn definition (8002A5F4.c:127-138).
+        DamageScript = record.Scripts.ElementAtOrDefault(0);
+        RetireScript = record.Scripts.ElementAtOrDefault(1);
+        Health = MaxHealth = unchecked((short)record.Health);
+        SlotIndex = (byte)record.U8(0x20);
+        if (system.Drone is { } drone)
+        {
+            Health = MaxHealth = unchecked((short)drone.Body.F1E);
+            drone.Body.F98 = RetireScript;   // +0x98: the script the impact of :257 runs
+        }
+        RefreshCoord();
+    }
+
+    private int RecordIdValue { get; }
+
+    /// <inheritdoc/>
+    public override int RecordId => RecordIdValue;
+
+    /// <inheritdoc/>
+    public override int DispatchType => SkyCaptainSystem.SkyCaptainType;
+
+    /// <inheritdoc/>
+    public override (int X, int Z) GroundPosition =>
+        _system.Drone is { } d ? (d.Body.Pos[0], d.Body.Pos[2]) : (0, 0);
+
+    /// <summary>
+    /// obj+0x28 coordinate: position +0x50 with the radius, height and width of the model's first
+    /// frame (func_80013AF0 reads them from the 3DBB record, see <see cref="CollisionCoord"/>).
+    /// </summary>
+    internal void RefreshCoord()
+    {
+        if (_system.Drone is not { } d) { Coord = null; return; }
+        var bounds = _system.ModelSource?.Invoke(_system.ModelId)?.FrameBounds;
+        var o = d.Body;
+        Coord = bounds is { Count: > 0 }
+            ? CollisionCoord.FromFrameBounds(o.Pos[0], o.Pos[1], o.Pos[2], bounds)
+            : new CollisionCoord(o.Pos[0], o.Pos[1], o.Pos[2], 0, 0, 0);
+    }
+
+    /// <inheritdoc/>
+    public override int HandleMessage(int message, EntityWorld world, object? data)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        int result = _system.HandleDroneMessage(message, world, this, data);
+        // The damage of message 11/14 lands in +0x1C, the word the tick and the draw read.
+        if (_system.Drone is { } d) d.Body.F1C = Health;
+        return result;
     }
 }
