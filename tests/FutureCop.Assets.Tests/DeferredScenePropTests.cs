@@ -96,6 +96,147 @@ public sealed class DeferredScenePropTests
     }
 
     /// <summary>
+    /// The 89 CONFT type-0x60 props placed the way <see cref="LevelScene"/> places them, including the
+    /// model resolution that supplies the 3DBB bound centre the bucket needs.
+    /// </summary>
+    private static IReadOnlyList<SceneProp> ConftProps()
+    {
+        var file = new MisFile(Mission());
+        var map = LevelMap.FromBytes(file.Bytes);
+        var models = file.Models.ToDictionary(m => m.Id);
+        var registry = new MapObjectRegistry
+        {
+            PlacementHeight = (x, z, rank) => LevelGround.PlacementHeight(map, x, z, rank) ?? 0,
+            ResolveModel = id => models.TryGetValue(id, out var model) ? model : null,
+        };
+        registry.InitMissionSpawnState();
+        Assert.Equal(89, registry.PlaceDeferredSceneAssets(MissionEntities.Load(file)));
+        return registry.SceneProps;
+    }
+
+    private static string HkMission()
+    {
+        string hk = Path.Combine(Path.GetDirectoryName(Mission())!, "HK.MIS");
+        Assert.True(File.Exists(hk), "PA/HK.MIS is missing from the retail disc.");
+        return hk;
+    }
+
+    /// <summary>
+    /// Record 86 is one of the twelve CONFT records whose flag byte +0x1D has bit 0x40. Retail then
+    /// keeps the third matrix angle at 0 and stores the raw +0x16 byte as the positional sound id
+    /// (<c>gSpawnSceneNode.c:316-325</c>); without the gate the port used 84/4096 of a turn
+    /// (~7.4 degrees) as a z tilt and treated a sound id as an angle.
+    /// </summary>
+    [RetailFact]
+    public void ConftSoundFormRecord86StaysUprightAndKeepsItsVoiceId84()
+    {
+        var prop = ConftProps().Single(p => p.Id == 86);
+
+        Assert.Equal(0x42, prop.Flags);
+        Assert.Equal(84, prop.Record.U16(0x16));
+        Assert.Equal(0, prop.Roll);
+        Assert.Equal(84, prop.Voice);
+
+        var basis = new int[9];
+        prop.Basis(basis);
+        var expected = new int[9];
+        MechWalker.RotationMatrix(prop.Yaw, prop.Pitch, 0, expected);
+        Assert.Equal(expected, basis);
+
+        // The gate is what removes the tilt: the raw byte as third angle is a different basis.
+        var ungated = new int[9];
+        MechWalker.RotationMatrix(prop.Yaw, prop.Pitch, prop.Record.U16(0x16), ungated);
+        Assert.NotEqual(expected, ungated);
+    }
+
+    /// <summary>
+    /// Census of the sound form over CONFT: exactly 12 of the 89 records, ten of them model 55 with
+    /// flags 0x42 and Voice 84, two of them model 61 with flags 0x40 and Voice 85. The other 77
+    /// records have no voice id.
+    /// </summary>
+    [RetailFact]
+    public void ConftHasTwelveSoundFormRecordsTenOfModel55AndTwoOfModel61()
+    {
+        var props = ConftProps();
+        var soundForm = props.Where(p => (p.Flags & 0x40) != 0).ToList();
+
+        Assert.Equal(12, soundForm.Count);
+        Assert.Equal(new[] { 86, 92, 94, 98, 121, 131, 137, 141, 143, 159, 335, 336 },
+            soundForm.Select(p => p.Id));
+        Assert.Equal(10, soundForm.Count(p => p.ModelId == 55 && p.Flags == 0x42 && p.Voice == 84));
+        Assert.Equal(2, soundForm.Count(p => p.ModelId == 61 && p.Flags == 0x40 && p.Voice == 85));
+        Assert.All(soundForm, p => Assert.Equal(p.Record.U8(0x16), p.Voice));
+        Assert.All(props.Where(p => (p.Flags & 0x40) == 0), p => Assert.Equal((byte)0, p.Voice));
+    }
+
+    /// <summary>
+    /// HK is the one shipped map where the raw <c>x &gt;&gt; 17</c> origin bucket is wrong: the model
+    /// bound centre rotates 13 of the 151 props into a neighbouring cell. Every prop must match the
+    /// bucket retail computes from <c>FrameBounds[0][0..2] &lt;&lt; 4</c> through the node basis
+    /// (<c>gSpawnSceneNode.c:360-431</c>).
+    /// </summary>
+    [RetailFact]
+    public void HkBucketsAllPropsByTheRotatedBoundCentre()
+    {
+        var file = new MisFile(HkMission());
+        var map = LevelMap.FromBytes(file.Bytes);
+        var models = file.Models.ToDictionary(m => m.Id);
+        var registry = new MapObjectRegistry
+        {
+            PlacementHeight = (x, z, rank) => LevelGround.PlacementHeight(map, x, z, rank) ?? 0,
+            ResolveModel = id => models.TryGetValue(id, out var model) ? model : null,
+        };
+        registry.InitMissionSpawnState();
+        Assert.Equal(151, registry.PlaceDeferredSceneAssets(MissionEntities.Load(file)));
+
+        var basis = new int[9];
+        int drifted = 0;
+        foreach (var prop in registry.SceneProps)
+        {
+            var centre = models[prop.ModelId].FrameBounds[0];
+            prop.Basis(basis);
+            int offsetX = (basis[0] * (centre[0] << 4) + basis[1] * (centre[1] << 4)
+                + basis[2] * (centre[2] << 4)) >> 16;
+            int offsetZ = (basis[6] * (centre[0] << 4) + basis[7] * (centre[1] << 4)
+                + basis[8] * (centre[2] << 4)) >> 16;
+            Assert.Equal((prop.X + offsetX) >> 17, prop.Row);
+            Assert.Equal((prop.Z + offsetZ) >> 17, prop.Column);
+            if (prop.Row != prop.X >> 17 || prop.Column != prop.Z >> 17) drifted++;
+        }
+
+        // Non-vacuous: the centre moves 13 props off their origin bucket, e.g. id 325 from cell
+        // (8, 7) to (9, 7).
+        Assert.Equal(13, drifted);
+        var spot = registry.SceneProps.Single(p => p.Id == 325);
+        Assert.Equal((8, 7), (spot.X >> 17, spot.Z >> 17));
+        Assert.Equal((9, 7), (spot.Row, spot.Column));
+    }
+
+    /// <summary>
+    /// The census the <see cref="SceneProp.Basis"/> remark depends on: HK has 44 of 151 records with a
+    /// negative yaw (+0x14, the branch retail randomises with <c>func_80019668() &amp; 0xFFF</c>) and
+    /// 50 records with non-uniform Q6 scales. No shipped record has a negative scale byte, so the
+    /// jitter of <c>gSpawnSceneNode.c:328-337</c> is unreachable.
+    /// </summary>
+    [RetailFact]
+    public void HkHasFortyFourNegativeYawsAndFiftyNonUniformQ6ScaleRecords()
+    {
+        var records = MissionEntities.Load(new MisFile(HkMission()))
+            .Where(r => r.Container == EntityContainer.Cact && r.Type == Type96).ToList();
+
+        Assert.Equal(151, records.Count);
+        Assert.Equal(44, records.Count(r => unchecked((short)r.U16(0x14)) < 0));
+        Assert.Equal(0, records.Count(r => unchecked((short)r.U16(0x18)) < 0));
+        Assert.Equal(0, records.Count(r => unchecked((short)r.U16(0x16)) < 0));
+
+        Assert.Equal(50, records.Count(r => r.U8(0x1F) != 0x40 || r.U8(0x20) != 0x40 || r.U8(0x21) != 0x40));
+        Assert.Equal(0, records.Count(r =>
+            unchecked((sbyte)r.U8(0x1F)) < 0 || unchecked((sbyte)r.U8(0x20)) < 0 || unchecked((sbyte)r.U8(0x21)) < 0));
+        Assert.Equal(new[] { 0x14, 0x15, 0x17, 0x18, 0x33, 0x40 },
+            records.Select(r => r.U8(0x1F)).Distinct().OrderBy(v => v));
+    }
+
+    /// <summary>
     /// The viewer places the props through the scene pass: at pad 47 only the buckets inside the 5x5
     /// cell window are drawn, which is strictly fewer than all 89 nodes.
     /// </summary>
