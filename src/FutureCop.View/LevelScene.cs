@@ -245,6 +245,8 @@ public sealed class LevelScene
             SessionActive = 1, // D_8009FA94 +0x5C == 1 in Precinct Assault (8006125C.c:50)
             SinglePlayerTeam = droneTeam,
             Player0Team = _playerTeam,
+            // The mission-wide coarse grid built by func_800695A8 (BindMap above).
+            HeightGrid = _skyCaptain.HeightGrid,
         };
         _csacSpawner.LoadPathNetworks(_file.Bytes,
             (x, z, mode) => LevelGround.PlacementHeight(Map, x, z, mode) ?? 0);
@@ -524,6 +526,10 @@ public sealed class LevelScene
                 }
             }
         }
+        // func_8004CECC: the (kind, value) pairs a script queued this frame act only after the issuing
+        // script returned, so gRetireEntity (8004CECC.c:108-114) never nests in the script or in the
+        // pad trigger that ran it. gStepPendingMessages (8004DB74) retries full slot tables first.
+        if (_entities is { } commandWorld) pads.RunEntityCommands(commandWorld, dt);
         pads.SyncToMatchScore(objectives.Score);
         if (_skyCaptain is { } skyAfter) pads.SyncToEconomy(skyAfter.Economy);
     }
@@ -915,6 +921,10 @@ public sealed class LevelScene
         world.CullActive(_walker.X, _walker.Z);
         world.ProcessDeferredUpdates();
         DeliverShotContacts(world);
+        // A capture script of this step can queue a 0x3D pair through OnPostCaptureScript; the entry
+        // pass applies it before the sweep, as func_8004CECC does. The pending-message timers are
+        // stepped by the session frame in AdvancePurchasePads, so no elapsed time is passed here.
+        PurchasePads?.RunEntityCommands(world);
         world.SweepRetired();
     }
 
@@ -940,7 +950,8 @@ public sealed class LevelScene
         {
             var shotCoord = CollisionCoord.FromFrameBounds(shot.X, shot.Y, shot.Z, shot.Model.FrameBounds);
             var projectile = new ProjectileContact(Actor.Id, unchecked((short)shot.Definition.ObjWord00),
-                (byte)shot.Definition.ObjWord0E, shot.X, shot.Z);
+                (byte)shot.Definition.ObjWord0E, shot.X, shot.Z, shot.Y,
+                ProjectileBlast.FromDefinition(shot.Definition, shot.Muzzle.X, shot.Muzzle.Y, shot.Muzzle.Z));
             DeliverShotContact(world, projectile, shotCoord);
             // A contact that was spawned into the list touched an entity: the shot left the weapon.
             if (projectile.RuntimeId != 0) weapons.Shots.Remove(shot);

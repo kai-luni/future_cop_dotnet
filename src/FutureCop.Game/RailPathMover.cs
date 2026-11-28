@@ -992,27 +992,10 @@ public sealed class RailPathMover
     }
 
     /// <summary>Port of <c>gApproximateLength2</c> (<c>func_8001A074</c>, <c>8001A074.c:33-59</c>).</summary>
-    internal static int ApproxLength2(int a, int b)
-    {
-        unchecked
-        {
-            if (a < 0) a = -a;
-            if (b < 0) b = -b;
-            if (a < b) (a, b) = (b, a);
-            int sum = a + b;
-            if ((a >> 1) < b)
-            {
-                sum = (sum << 6) + (sum << 3) + (sum << 1) + a + (b << 5);
-                b = a - b;
-                a = sum >> 7;
-            }
-            return a + (b >> 2) - (b >> 6);
-        }
-    }
+    internal static int ApproxLength2(int a, int b) => Mech.MechMath.ApproxLength2(a, b);
 
     /// <summary>Port of <c>gVectorLength3D</c> (<c>func_8001A100</c>, <c>8001A100.c:38-45</c>).</summary>
-    internal static int VectorLength3D(int x, int y, int z) =>
-        ApproxLength2(ApproxLength2(x, y), z);
+    internal static int VectorLength3D(int x, int y, int z) => Mech.MechMath.VectorLength3D(x, y, z);
 
     private static int AbsSignMask(int v)
     {

@@ -19,3 +19,14 @@ Fehlende oder unlesbare Dateien im Spielfenster sichtbar machen, nicht nur im Lo
 - Ohne Archiv erscheint im Fenster eine verstaendliche Meldung mit Dateipfad.
 - Mit Archiv erscheint keine Meldung.
 - Ein Test deckt den Fall ohne Archiv ab.
+
+## Erledigt
+
+Bereits mit 5461592 behoben und hier nur nachgeprueft: `MenuLabels.Load` fuellt
+`MenuLabels.UnavailablePath`, `MenuFlow.LastLoadErrorPath` die Missionsseite, und
+`X11PanelLayout.FileNotice`/`Window.DrawFileNotice` zeichnen Pfad und Erzeugungsbefehl
+(`python3 scripts/fc_extract.py "<disc>.bin" build/disc/files`) im Fenster.
+
+Tests: `X11MenuPanelTests.UnavailableFrontEndArchiveProducesVisibleExtractionNotice` (fehlend und
+unlesbar), `X11MenuPanelTests` mit vorhandenem Archiv (leerer Hinweis) und
+`MenuFlowTests` fuer den Missionspfad.

@@ -64,14 +64,7 @@ public static class ScriptRender
     }
 
     /// <summary>func_8001846C: sine and cosine in 16.16 from the 4096-step angle table.</summary>
-    public static (int Sin, int Cos) SinCos(int angle)
-    {
-        int a = angle & 0xfff;
-        int i = a & 0x3ff;
-        int s = (int)Math.Round(Math.Sin(i * Math.PI / 2048) * 32768) << 1;
-        int c = (int)Math.Round(Math.Sin((1024 - i) * Math.PI / 2048) * 32768) << 1;
-        return (a >> 10) switch { 0 => (s, c), 1 => (c, -s), 2 => (-s, -c), _ => (-c, s) };
-    }
+    public static (int Sin, int Cos) SinCos(int angle) => RetailAngles.SinCos(angle);
 
     /// <summary>
     /// func_8001006C as the bone compose step: the local matrix is rotated by the parent and the

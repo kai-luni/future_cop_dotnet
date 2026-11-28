@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 using FutureCop.Game.Mech;
 
 namespace FutureCop.Game;
@@ -270,6 +271,12 @@ public sealed class PurchasePadSystem
     private const uint TagText = 0x74455854u;
     private const int SectorStride = 0x6000;
 
+    /// <summary>Number of entries of the pending-message table D_800A2090 (16 bits of D_8009F7A8, 8004D9EC.c:52-53).</summary>
+    public const int PendingCommandSlots = 16;
+
+    /// <summary>Timer a pending message receives, in frame ticks (8004D9EC.c:66, 8004DB74.c:42).</summary>
+    public const int PendingCommandPeriod = 600;
+
     private readonly List<PurchasePad> _pads = new();
     private readonly List<PurchasePad> _activeMapZones = new();
     private readonly Dictionary<int, PurchasePad> _padsById = new();
@@ -277,6 +284,11 @@ public sealed class PurchasePadSystem
     private readonly byte[] _timerBytecode;
     private readonly CsacUnitSpawner? _spawner;
     private readonly EntityWorld _entityWorld;
+
+    // The four entry slots of obj+0x0C per entity (keyed weakly: a swept entity leaves no trace)
+    // and the 16-message table D_800A2090 of gEnqueuePendingMessage (8004D9EC.c:52-68).
+    private readonly ConditionalWeakTable<LiveEntity, EntityCommandQueue> _commandQueues = new();
+    private readonly PendingEntityCommand[] _pendingCommands = new PendingEntityCommand[PendingCommandSlots];
 
     /// <summary>Extracted RPNS bytecode pool.</summary>
     public RpnsPool Pool { get; }
@@ -370,9 +382,11 @@ public sealed class PurchasePadSystem
                             ApplyPadCommand7A(attachment.Pad, arg); // 80031004.c:65-78
                             break;
                         case 0x3D:
-                            entity.Flags |= LiveEntity.ResetFlag; // 8004CECC.c:106-110
-                            if (arg == 1) entity.Flags |= LiveEntity.NoRetireScriptFlag;
-                            LiveEntity.Retire(entity, entityWorld);
+                            // gSendEntityCommand(entity, 0x3D, arg, 1) stores the pair in the
+                            // entity's entry slots (8004DA84.c:57-68); the retire happens on the
+                            // entry pass of func_8004CECC (8004CECC.c:108-114), never nested in
+                            // the script that issued the command.
+                            SendEntityCommand(entity, op, arg);
                             break;
                     }
                 }
@@ -1060,6 +1074,140 @@ public sealed class PurchasePadSystem
     }
 
     /// <summary>
+    /// gSendEntityCommand (func_8004DA84, <c>8004DA84.c:21-69</c>) for one entity: the dispatch-type
+    /// filter, the four kind/value entry slots at obj+0x0C, and the pending-message fallback of
+    /// gEnqueuePendingMessage (func_8004D9EC, <c>8004D9EC.c:47-68</c>) when all four are occupied.
+    /// </summary>
+    /// <returns>True for immediate acceptance or a stored pair, false when the table is full and
+    /// <paramref name="retry"/> is clear (<c>8004DA84.c:65-68</c>).</returns>
+    public bool SendEntityCommand(LiveEntity entity, int kind, int value, bool retry = true)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        // :25-55: types 2/3/4/7/15/23 report success without storing anything, and 18/21 take only
+        // the queued kinds of gIsQueuedCommandKind (func_8004DA58, 8004DA58.c:26-39).
+        if (!AcceptsEntityCommand(entity.DispatchType, kind))
+            return true;
+        var queue = CommandQueueOf(entity);
+        if (queue.TryEnqueue((byte)kind, (byte)value))
+            return true;                                                        // :57-63
+        return retry && EnqueuePendingCommand(entity, (byte)kind, (byte)value);  // :65-68
+    }
+
+    /// <summary>
+    /// Type filter of gSendEntityCommand (<c>8004DA84.c:25-55</c>): true when the pair may be stored
+    /// or the type reports the command as accepted without acting on it.
+    /// </summary>
+    public static bool AcceptsEntityCommand(int dispatchType, int kind) => dispatchType switch
+    {
+        18 or 21 => IsQueuedCommandKind(kind),
+        2 or 3 or 4 or 7 or 15 or 23 => false,
+        _ => true,
+    };
+
+    /// <summary>
+    /// gIsQueuedCommandKind (func_8004DA58, <c>8004DA58.c:26-39</c>): the only kinds a type-18/21
+    /// entity accepts, 0x3C..0x45 and 0x64..0x65, both checked as unsigned ranges.
+    /// </summary>
+    public static bool IsQueuedCommandKind(int kind) =>
+        (uint)(kind - 0x3C) < 10 || (uint)(kind - 0x64) < 2;
+
+    /// <summary>The four entry slots (obj+0x0C) of <paramref name="entity"/>, created on first use.</summary>
+    public EntityCommandQueue CommandQueueOf(LiveEntity entity)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        return _commandQueues.GetValue(entity, static _ => new EntityCommandQueue());
+    }
+
+    /// <summary>Number of pairs waiting in <paramref name="entity"/>'s four entry slots.</summary>
+    public int QueuedCommandCount(LiveEntity entity) =>
+        _commandQueues.TryGetValue(entity, out var queue) ? queue.Count : 0;
+
+    /// <summary>Number of occupied entries of the 16-message table D_800A2090.</summary>
+    public int PendingCommandCount
+    {
+        get
+        {
+            int count = 0;
+            foreach (var pending in _pendingCommands)
+                if (pending.Target is not null) count++;
+            return count;
+        }
+    }
+
+    /// <summary>
+    /// The entry pass of func_8004CECC (<c>8004CECC.c:67-241</c>) for the kinds this port routes, and
+    /// the retry walk of gStepPendingMessages (func_8004DB74, <c>8004DB74.c</c>) that precedes it.
+    /// Every linked entity with a positive runtime id consumes up to four queued pairs: a 0x3D sets
+    /// the reset bit, the no-retire bit for the value 1 and runs gRetireEntity (func_8004D958,
+    /// <c>8004CECC.c:108-114</c>). Compaction follows func_8002A5B4 (<c>:232</c>); a kind without a
+    /// handler here is skipped but stays queued.
+    /// </summary>
+    /// <param name="world">The entity list D_8009FA40 the pass walks.</param>
+    /// <param name="elapsedTicks">Ticks subtracted from each pending-message timer this call.</param>
+    /// <returns>Number of entry pairs applied.</returns>
+    public int RunEntityCommands(EntityWorld world, int elapsedTicks = 0)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        StepPendingCommands(elapsedTicks);
+        int applied = 0;
+        // A snapshot keeps the walk stable when a retire script spawns or links an entity.
+        foreach (var entity in world.Units.ToArray())
+        {
+            if (entity.RuntimeId == 0) continue;                                  // :69-71
+            if (!_commandQueues.TryGetValue(entity, out var queue)) continue;
+            // :76-240 reads entry 0, applies the kind and compacts the pair away; retail keeps
+            // reading the moved-up entry with the index unchanged, so one entity can run four pairs.
+            for (int index = 0; index < EntityCommandQueue.SlotCount && index < queue.Count;)
+            {
+                var (kind, value) = queue[index];
+                if (kind != 0x3D) { index++; continue; }
+                entity.Flags |= LiveEntity.ResetFlag;                             // :109
+                if (value == 1) entity.Flags |= LiveEntity.NoRetireScriptFlag;     // :110-112
+                LiveEntity.Retire(entity, world);                                 // :113
+                queue.RemoveAt(index);
+                applied++;
+            }
+        }
+        return applied;
+    }
+
+    // gEnqueuePendingMessage (8004D9EC.c:52-68): the first free of the 16 message entries with the
+    // target's current id and a 600-tick timer; a full table reports failure.
+    private bool EnqueuePendingCommand(LiveEntity target, byte kind, byte value)
+    {
+        for (int index = 0; index < _pendingCommands.Length; index++)
+        {
+            if (_pendingCommands[index].Target is not null) continue;
+            _pendingCommands[index] = new PendingEntityCommand(target, target.RuntimeId, kind, value);
+            return true;
+        }
+        return false;
+    }
+
+    // gStepPendingMessages (8004DB74.c): each occupied entry loses the elapsed ticks, an expired one
+    // refills its 600-tick period and retries delivery with retry cleared. An id change or a stored
+    // pair clears the entry; a still-full slot table keeps it.
+    private int StepPendingCommands(int elapsedTicks)
+    {
+        int delivered = 0;
+        for (int index = 0; index < _pendingCommands.Length; index++)
+        {
+            ref var pending = ref _pendingCommands[index];
+            if (pending.Target is not { } target) continue;
+            pending.Timer -= elapsedTicks;
+            if (pending.Timer > 0) continue;
+            pending.Timer += PendingCommandPeriod;
+            if (target.RuntimeId != pending.Id) { pending = default; continue; }
+            if (SendEntityCommand(target, pending.Kind, pending.Value, retry: false))
+            {
+                pending = default;
+                delivered++;
+            }
+        }
+        return delivered;
+    }
+
+    /// <summary>
     /// Steps the <c>Cfun</c> script timers (<c>func_80049564</c>, <c>80049564.c:49-82</c>) by
     /// <paramref name="elapsedTicks"/>. When a timer's trigger script returns non-zero, runs its
     /// action script (draining queued tank purchases into <see cref="CsacUnitSpawner"/> and
@@ -1088,4 +1236,85 @@ public sealed class PurchasePadSystem
         }
         return fired;
     }
+}
+
+/// <summary>
+/// The four packed (kind, value) entry slots at obj+0x0C that gSendEntityCommand fills
+/// (<c>8004DA84.c:57-63</c>) and the entry pass of func_8004CECC consumes
+/// (<c>8004CECC.c:72-240</c>). A slot whose kind is zero is free, so kind 0 is never a command.
+/// </summary>
+public sealed class EntityCommandQueue
+{
+    /// <summary>Number of packed two-byte entries (func_8004DA84's four-slot loop, 8004DA84.c:57).</summary>
+    public const int SlotCount = 4;
+
+    private readonly byte[] _kinds = new byte[SlotCount];
+    private readonly byte[] _values = new byte[SlotCount];
+
+    /// <summary>Number of occupied entries: retail ends the walk at the first zero kind (:237-240).</summary>
+    public int Count
+    {
+        get
+        {
+            int count = 0;
+            while (count < SlotCount && _kinds[count] != 0) count++;
+            return count;
+        }
+    }
+
+    /// <summary>The (kind, value) pair at <paramref name="index"/>.</summary>
+    public (byte Kind, byte Value) this[int index] => (_kinds[index], _values[index]);
+
+    /// <summary>Stores the pair in the first slot whose kind is zero (<c>8004DA84.c:57-63</c>).</summary>
+    public bool TryEnqueue(byte kind, byte value)
+    {
+        if (kind == 0) return false;
+        for (int index = 0; index < SlotCount; index++)
+        {
+            if (_kinds[index] != 0) continue;
+            _kinds[index] = kind;
+            _values[index] = value;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// gRemoveEntityCommand (func_8002A5B4, called from <c>8004CECC.c:232</c>): shifts the following
+    /// entries over the removed one and clears the last slot.
+    /// </summary>
+    public void RemoveAt(int index)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, SlotCount);
+        for (int next = index; next < SlotCount - 1; next++)
+        {
+            _kinds[next] = _kinds[next + 1];
+            _values[next] = _values[next + 1];
+        }
+        _kinds[^1] = 0;
+        _values[^1] = 0;
+    }
+}
+
+/// <summary>
+/// One entry of the pending-message table D_800A2090 (struct EntityMessage of
+/// <c>8004D9EC.c:6-12</c>): kind and value bytes, the target's id at enqueue time and the timer.
+/// </summary>
+internal struct PendingEntityCommand
+{
+    public PendingEntityCommand(LiveEntity target, int id, byte kind, byte value)
+    {
+        Target = target;
+        Id = id;
+        Kind = kind;
+        Value = value;
+        Timer = PurchasePadSystem.PendingCommandPeriod;
+    }
+
+    public LiveEntity? Target;
+    public int Id;
+    public byte Kind;
+    public byte Value;
+    public int Timer;
 }

@@ -23,3 +23,15 @@ Typfilter und Queue-Reihenfolge aus Retail uebernehmen, die direkten `Retire`-Au
 - Kommandos an die gefilterten Typen werden verworfen.
 - Ein Retire aus einem Skript laeuft nicht mehr verschachtelt in `RunEntityScript`.
 - Der CONFT-Kauf bleibt 100 → 70.
+
+## Erledigt
+
+- Typfilter und Einreihung liegen in `PurchasePadSystem.SendEntityCommand` (`8004DA84.c:21-69`,
+  `8004DA58.c:26-39`), die Ausfuehrung im Frame-Pass `PurchasePadSystem.RunEntityCommands`
+  (`8004CECC.c:67-241`, 0x3D in `:108-114`); `LevelScene` ruft ihn nach der Pad-Auswertung und vor
+  `SweepRetired` auf.
+- Voller Slot-Tisch faellt mit Retry auf die 16er-Nachrichtentabelle zurueck
+  (`gEnqueuePendingMessage` 8004D9EC.c, `gStepPendingMessages` 8004DB74.c, 600 Ticks).
+- Tests: `tests/FutureCop.Assets.Tests/EntityCommandQueueTests.cs` (Nicht-Verschachtelung, Typfilter
+  2/3/4/7/15/23, Filter 18/21, Retry-Tabelle, Kompaktierung); der CONFT-Kauf 100 → 70 bleibt in
+  `PurchasePathTests`/`SceneCapture*` abgedeckt.

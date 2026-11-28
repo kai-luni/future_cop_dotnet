@@ -1,3 +1,5 @@
+using FutureCop.Game.Mech;
+
 namespace FutureCop.Game;
 
 /// <summary>Vector math units of the Precinct Assault enemy chain (ports of the retail
@@ -10,15 +12,18 @@ public static class EnemyMath
     /// taking the middle 32 bits of the 64-bit product per component
     /// (src/game/8001ACA4.c:34-69). The out array may alias a.
     /// </summary>
+    public static void AddScaled(int[] a, int[] b, int scale, int[] result)
+    {
+        for (int i = 0; i < 3; i++)
+            result[i] = unchecked(a[i] + MechMath.Fmul(b[i], scale));
+    }
+
+    /// <summary>Allocating overload of <see cref="AddScaled(int[], int[], int, int[])"/>.</summary>
     public static void AddScaled(int[] a, int[] b, int scale, out int[] result)
     {
         result = new int[3];
-        for (int i = 0; i < 3; i++)
-            result[i] = unchecked(a[i] + FmulMiddle32(b[i], scale));
+        AddScaled(a, b, scale, result);
     }
-
-    /// <summary>The (hi &lt;&lt; 16) | (lo &gt;&gt; 16) idiom of a signed mult: bits 16..47 of the product.</summary>
-    private static int FmulMiddle32(int a, int b) => unchecked((int)(((long)a * b) >> 16));
 
     /// <summary>
     /// func_8001AB78 gVectorScaleInPlace: multiplies the three components by the
@@ -28,7 +33,7 @@ public static class EnemyMath
     public static void ScaleInPlace(int scale, int[] v)
     {
         for (int i = 0; i < 3; i++)
-            v[i] = FmulMiddle32(v[i], scale);
+            v[i] = MechMath.Fmul(v[i], scale);
     }
 
     /// <summary>

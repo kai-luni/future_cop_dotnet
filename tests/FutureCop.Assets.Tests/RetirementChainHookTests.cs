@@ -311,8 +311,9 @@ public sealed class RetirementChainHookTests
         var weapons = new LevelWeapons(file);
         var record = weapons.RecordOf(WeaponSlots.PrimarySlot)!;   // boot loadout 0x00 = the beam
         Assert.Equal(0x0A, record.HalfA.Action);
-        var beamDef = record.HalfB!;                              // rumbler: damage 512 (def + 0x0C)
+        var beamDef = record.HalfB!;                              // rumbler: damage 2 (def + 0x0C), spread 512 (def + 0x0E)
         Assert.Equal(0x0A, beamDef.Action);
+        Assert.Equal(2, beamDef.ObjWord00);
         Assert.Equal(512, beamDef.DamageWord);
 
         var world = new EntityWorld();
@@ -332,7 +333,7 @@ public sealed class RetirementChainHookTests
         Assert.Equal(1, hits);
         var payload = Assert.Single(target.Hits);
         Assert.Equal(0x8021u, payload.SourceWord);             // cb.unk00 = self->unk14
-        Assert.Equal((short)512, payload.Damage);               // cb.unk04 = s3->unk0C (def + 0x0C)
+        Assert.Equal((short)2, payload.Damage);                 // cb.unk04 = s3->unk0C (def + 0x0C)
         Assert.Equal((byte)1, payload.Kind);                    // cb.unk06 = e->unk1F (def + 0x1F)
         Assert.Null(payload.Attacker);                          // cb.unk08 = self: no live entity
     }
