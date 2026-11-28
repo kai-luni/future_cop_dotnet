@@ -37,7 +37,7 @@ public sealed record LevelCamera(double Yaw = 30.0, double Elevation = 35.0, int
 /// (PlayerForm) at the clip-rect centre in the static viewer, or at the mission spawn for WALK.
 /// The software rasterizer only turns the emitted packets into pixels; it is a viewer, not a GPU port.
 /// </summary>
-public sealed class LevelScene
+public sealed partial class LevelScene
 {
     public const int Width = 320;
     public const int Height = 240;
@@ -268,6 +268,8 @@ public sealed class LevelScene
             });
         if (_purchasePads is null)
             _csacSpawner.RegisterFromRecords(records, r => MissionEntities.ReadSpawnerParameters(_file.Bytes, r));
+        // Todo 02: the army attack world the type 5/9/28 handlers fire into (see LevelSceneArmy.cs).
+        EnableArmyAttackWorld();
         if (_purchasePads is not null)
         {
             _purchasePads.VmState.GameSession[RpnsVmState.SessionPlayerCount] = 1;
@@ -514,6 +516,9 @@ public sealed class LevelScene
         CullActiveSolo();
         // :179 gDispatchQueuedEntityCommands: the pairs scripts queued before this frame.
         int dispatched = DispatchQueuedCommands(dt);
+        // D_8009FA58 holds the player positions of the previous frame's player update (:183 runs after
+        // :180), which is what the army handlers see in func_8004E80C during this message 6.
+        if (_walker is { }) UpdatePlayerTargets();
         // :180 gBroadcastEntityMessage(6, gFrameDelta, 0), including the type-37 Sky Captain tick.
         int message6 = BroadcastMessage6(dt);
         // :181 gUpdateMapZoneTriggers (80031DE8.c) with the pad clock of the frame.
@@ -549,6 +554,8 @@ public sealed class LevelScene
         _skyCaptain?.Advance(dt, this);
         if (EnableCsacSpawner && _csacSpawner is not null)
         {
+            // D_8009FA58 as the last player update left it (see AdvanceSoloFrame).
+            if (_walker is { }) UpdatePlayerTargets();
             ObjectRegistry.BroadcastMessage6(dt);
             // func_800616A0 (gUpdateRegisteredSpawners) runs in the entity update, before the node
             // list walk of func_80031DE8 (:90): a unit due this frame stands in D_800A8F90 for this
@@ -739,6 +746,7 @@ public sealed class LevelScene
         target.Z = position.Z;
         target.Radius = position.Radius;
         target.Busy = body.Form != 0;
+        SyncArmyPlayerTarget(id, target);
     }
 
     /// <summary>

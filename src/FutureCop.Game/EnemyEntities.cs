@@ -224,6 +224,11 @@ public sealed class EnemyWorld
     }
 
     public Func<uint> Random { get; set; } = () => 0u;
+    /// <summary>
+    /// Probe func_800684AC handed to actor blocks whose owner did not bind their own
+    /// (<see cref="EnemyEntity.LineOfSightProbe"/>); the scene sets it to MechCollision.Ray.
+    /// </summary>
+    public Func<EnemyEntity, EnemyEntity, bool>? DefaultLineOfSightProbe { get; set; }
     public Func<byte, EnemyEntity, (int X, int Y, int Z)>? TransformPartVertex { get; set; }
     public Func<EnemyEntity, EnemyEntity, int>? OnTraceMapRay { get; set; }
     public List<(int Id, int X, int Z, int Arg)> SoundsPlayed { get; } = new();
