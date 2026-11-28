@@ -394,13 +394,29 @@ public sealed class LevelWeapons
     }
 
     /// <summary>
-    /// Ages the live beams by one frame and drops the expired ones. Beams run on the 60 Hz frame, not
-    /// on the 5-tick retail clock, so four frames is a visible flash.
+    /// The mission height field the beam trace clips against. When set, <see cref="AdvanceBeams"/>
+    /// re-runs <see cref="Beam.ClipToGround"/> for every live beam each frame before the hit delivery,
+    /// like the per-frame <c>gTraceMapRay</c> at func_8006B23C:346. Null leaves the beams unclipped
+    /// (wireframe previews and tests that drive the clip by hand).
+    /// </summary>
+    public LevelMap? BeamGroundMap { get; set; }
+
+    /// <summary>
+    /// One frame of the beam path (gBeamPartUpdate, func_8006B23C): re-traces the segment against the
+    /// level floor, delivers the direct hits of this frame and ages the beams by one frame. Beams run
+    /// on the 60 Hz frame, not on the 5-tick retail clock, so four frames is a visible flash. The
+    /// scene owns both wirings - the map through <see cref="BeamGroundMap"/>, the entity world
+    /// through <see cref="BeamHitWorld"/>.
     /// </summary>
     public void AdvanceBeams()
     {
         // gWeaponSlotUpdate sends the slot types 0x0A..0x0C and 0x0E to gBeamPartUpdate every frame
-        // the trigger is held, so a live beam delivers its direct hit once per frame.
+        // the trigger is held, so a live beam delivers its direct hit once per frame. The map trace of
+        // :346 runs before the radial spread (:356) and the callback (:366) that read its result, and
+        // retail re-traces the same segment each of those frames.
+        if (BeamGroundMap is { } map)
+            foreach (var beam in Beams)
+                beam.ClipToGround(map);
         if (BeamHitWorld is { } world) DeliverBeamHits(world);
         foreach (var beam in Beams) beam.Advance();
         Beams.RemoveAll(b => b.Expired);
@@ -408,7 +424,8 @@ public sealed class LevelWeapons
 
     /// <summary>
     /// The entity world the beam hits deliver message 14 into (func_8006B23C `do_cb`,
-    /// 8006B23C.c:196-201). Null keeps the beams decorative; the level owns this wiring.
+    /// 8006B23C.c:196-201). <see cref="LevelScene.EnableFiring"/> wires it to the live entity world;
+    /// null keeps the beams decorative (previews, tests that deliver by hand).
     /// </summary>
     public EntityWorld? BeamHitWorld { get; set; }
 
@@ -454,11 +471,11 @@ public sealed class LevelWeapons
     /// <see cref="Beam.ClippedToGround"/>, and a beam with that flag set skips the spread.
     /// </para>
     /// <para>
-    /// The C traces at :346 and spreads at :356 inside one call, once per frame the trigger is held,
-    /// and this method is that call - <see cref="AdvanceBeams"/> runs it once per beam per frame. The
-    /// clip result belongs to the beam rather than to a frame: the segment is fixed at spawn, so the
-    /// next frame re-traces the same points and would hit the same ground. The flag therefore gates
-    /// every frame of the beam's <see cref="Beam.LifeFrames"/> life, which is what retail does too.
+    /// The C traces at :346 and spreads at :356 inside one call, once per frame the trigger is held.
+    /// The trace is the caller's job: <see cref="AdvanceBeams"/> re-clips every live beam against
+    /// <see cref="BeamGroundMap"/> right before this method, so the flag always reflects this frame's
+    /// trace. The segment is fixed at spawn, so re-tracing lands on the same ground and the flag
+    /// gates every frame of the beam's <see cref="Beam.LifeFrames"/> life, like retail.
     /// </para>
     /// </remarks>
     /// <param name="world">The entity world the beams deliver into (see <see cref="BeamHitWorld"/>).</param>

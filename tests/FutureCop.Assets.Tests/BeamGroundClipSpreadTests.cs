@@ -58,7 +58,8 @@ public sealed class BeamGroundClipSpreadTests
         var (sx, _, sz) = scene.MechWorld;
 
         // Straight down from 0x4000 above the floor with a 0x800 reach: the unclipped far end is
-        // 0x4000 below the floor, the clip stops at the second of its sixteen samples (y == ground).
+        // 0x4000 below the floor, the clip stops at the first sample below the surface and reports the
+        // surface height at that XZ.
         var beam = new Beam(def, sx, ground + 0x4000, sz, new[] { 0, -0x10000, 0 }, 0x800);
         Assert.Equal(ground - 0x4000, beam.End.Y);
         beam.ClipToGround(scene.Map);
@@ -68,6 +69,12 @@ public sealed class BeamGroundClipSpreadTests
         Assert.Equal(ground, beam.End.Y);
         Assert.Equal(sx, beam.End.X);
         Assert.Equal(sz, beam.End.Z);
+
+        // The scene re-traces every frame (AdvanceBeams): the second call starts from the unclipped
+        // far end again, so the flag and the end stay the same instead of decaying.
+        beam.ClipToGround(scene.Map);
+        Assert.True(beam.ClippedToGround);
+        Assert.Equal(ground, beam.End.Y);
 
         var end = beam.End;
         // On the (shortened) segment, so the direct half must still reach it.
