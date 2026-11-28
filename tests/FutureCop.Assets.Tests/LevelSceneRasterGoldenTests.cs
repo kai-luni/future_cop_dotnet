@@ -13,30 +13,38 @@ namespace FutureCop.Assets.Tests;
 /// projection bounds (<see cref="LevelScene.QueueModel"/>). Golden SHA-256 digests were recorded
 /// on the pre-optimization baseline commit (<c>c574c46</c>).
 ///
-/// The digests of zone 0 frame 0, zone 3 frame 0 and zone 3 frame 120 were re-recorded when the model
-/// path started honouring the retail semi-transparency bit (<c>func_80015F38:73</c>, tpage ABR bits
-/// 5..6), which blends the player mech's semi parts: 14 changed pixels in an 8x5 box on zone 0, 83
-/// pixels in a 21x20 box on zone 3 frame 0 and 77 pixels in two clusters (75 + 2) around the screen
-/// centre on zone 3 frame 120. Zone 0 frame 120 is unchanged.
+/// The semi-transparency blend (<c>func_80015F38:73</c>, tpage ABR bits 5..6) landed after these
+/// digests and was measured on the pre-todo-50 frame: 14 changed pixels in an 8x5 box at (161,103) on
+/// zone 0 frame 0, 83 pixels in a 21x20 box on zone 3 frame 0 and 77 pixels in two clusters (75 + 2)
+/// around the screen centre on zone 3 frame 120. Once todo 50's props are in the frame the same
+/// switch moves 2018 pixels (133x108 at (161,0)) on zone 0 frame 0 and 8190 (263x157 at (42,0)) on
+/// frame 120; the 14 non-prop pixels of frame 0 are unchanged, so the rest is the props' semi texels.
+/// <see cref="LevelScene.SemiBlendDisabled"/> makes the attribution reproducible: the same open and
+/// the same play input with only the blend switched off. Zone 3 is OVMP, which has no Cact type-0x60
+/// records and no home-base pads, so its no-blend values (<c>0F27FE1D…</c>, <c>3663C781…</c>) are
+/// still the pre-blend digests of <c>aa1d386</c> and the probe pins the blend alone. Zone 0's
+/// no-blend values (<c>52B29872…</c>, <c>B597E0C6…</c>) are not <c>aa1d386</c>'s: they were recorded
+/// with the props present, and they differ from the pre-todo-50 no-blend values
+/// (<c>D756CAE9…</c>, <c>53C1A939…</c>) by the props.
 ///
-/// The attribution is reproducible instead of asserted: <see cref="LevelScene.SemiBlendDisabled"/>
-/// switches the ABR blend of <see cref="LevelScene.Tri"/> off, and
-/// <see cref="WithoutTheSemiBlendTheSameReplayReproducesThePreBlendDigests"/> replays exactly the
-/// frames below with that switch set and expects the pre-blend digests of <c>aa1d386</c> - the commit
-/// before the blend landed. Same input, same code, only the blend differs, so a digest change in these
-/// frames is the blend's and nothing else's (in particular the unit-heading branches of todo 38 paint
-/// no pixel here: they stay active in that probe). To re-derive the values by hand, set
-/// <see cref="LevelScene.SemiBlendDisabled"/> after the level is opened and hash the same two frames.
+/// todo 50 added the 89 Cact type-0x60 static scene nodes (the P1 base props around the spawn) and
+/// the two home-base purchase pad outlines to the normal frame.
+/// <see cref="LevelScene.ScenePropsDisabled"/> leaves the prop pass out and reproduces the
+/// pre-todo-50 frames exactly: frame 0 becomes <c>C8ACDF08…</c> blended and <c>D756CAE9…</c> without
+/// the blend (D756CAE9 is <c>aa1d386</c>'s frame 0, where neither the props nor the blend existed),
+/// frame 120 becomes <c>53C1A939…</c> both ways. Hence at frame 120 the blend changes nothing outside
+/// the props (<c>58292EA4…</c> vs <c>B597E0C6…</c> are 8190 prop pixels), while at frame 0 the pad
+/// outlines paint nothing in the spawn view and the 14 blend pixels are the player mech's, so the
+/// remaining delta is the props'. Both are asserted by
+/// <see cref="WithoutTheDeferredScenePropsTheConftFrameIsThePreTodo50Frame"/>.
 ///
-/// The zone 0 (CONFT) digests were re-recorded again when todo 50 started drawing the Cact type-0x60
-/// static scene nodes (the P1 base props around the spawn) and the two home-base purchase pad
-/// volumes in the normal frame. Attribution probe: with <c>PlaceDeferredSceneAssets</c> skipped the
-/// frame 0 digest returns to the old <c>C8ACDF08…</c> (no-blend: <c>D756CAE9…</c>), so frame 0 is the
-/// props' change alone - the pad outlines paint nothing in the spawn view. Frame 120 changed with
-/// both passes active (<c>58292EA4…</c> vs <c>4A9D690F…</c>); pads only gave <c>53C1A939…</c>, so
-/// both contribute there. The no-blend frame 120 digest no longer coincides with the blended one
-/// (<c>B597E0C6…</c> vs <c>58292EA4…</c>); the pixel-level cause is not attributed. Zone 3 is OVMP
-/// (0 type-96 records) and keeps its digests.
+/// The rework of the scene-prop review findings (the +0x1D bit-0x40 sound form now keeps the third
+/// angle at 0, buckets come from the rotated 3DBB bound centre) left both hashed frames unchanged:
+/// neither frame draws one of the 12 sound-form props (the visible set is 194-197 and 223 at frame 0
+/// and those plus 225, 249, 262 and 368 at frame 120, all model 62 pads; the sound-form buckets are
+/// outside the 5x5 window or rejected by its mask), and CONFT has no prop whose centred bucket
+/// differs from its origin bucket. Re-hashing with the old unrestricted third angle reproduces
+/// <c>F4739454…</c> / <c>58292EA4…</c> byte for byte.
 /// </summary>
 public class LevelSceneRasterGoldenTests
 {
@@ -161,11 +169,14 @@ public class LevelSceneRasterGoldenTests
     }
 
     /// <summary>
-    /// Attribution probe for the three re-recorded digests: the same open and the same 120-frame play
-    /// input, with only the semi-transparency blend of <see cref="LevelScene.Tri"/> switched off. The
-    /// expected values are the digests of <c>aa1d386</c>, the commit before the blend landed; zone 0
-    /// frame 120 is the same in both runs. Because every other stage (terrain, mech, unit heading,
-    /// sorting, projection) is untouched by the switch, this pins the whole digest delta on the blend.
+    /// Attribution probe for the semi-transparency blend: the same open and the same 120-frame play
+    /// input, with only the blend of <see cref="LevelScene.Tri"/> switched off. Zone 3 (OVMP) has no
+    /// Cact type-0x60 records, so its expected values are the pre-blend digests of <c>aa1d386</c>, the
+    /// commit before the blend landed. Zone 0's values are <em>not</em> <c>aa1d386</c>'s - they were
+    /// recorded with todo 50's props in the frame, and its frame 120 differs from the blended
+    /// <c>58292EA4…</c> precisely because the blend rewrites the props' semi texels there. Because
+    /// every other stage (terrain, mech, unit heading, sorting, projection) is untouched by the
+    /// switch, these pin the blend's share of each frame.
     /// </summary>
     [ConftTheory]
     [InlineData(0, "CONFT.MIS",
@@ -186,6 +197,34 @@ public class LevelSceneRasterGoldenTests
         Replay(flow);
         level.Render(flow.Camera);
         Assert.Equal(expectedFrameNHash, Sha256Hex(level.Rgb));
+    }
+
+    /// <summary>
+    /// Automated counterpart of the attribution claim: the same CONFT open with
+    /// <see cref="LevelScene.ScenePropsDisabled"/> set, i.e. the frame the port produced before todo 50
+    /// placed the 89 static scene nodes. The expected values are the pre-todo-50 digests
+    /// (<c>C8ACDF08…</c> blended, <c>D756CAE9…</c> without the blend - the latter is also
+    /// <c>aa1d386</c>'s frame, which had neither the props nor the blend). The 89 nodes stay placed:
+    /// the switch leaves out the draw pass, which is pixel-equivalent because placement has no other
+    /// side effect.
+    /// </summary>
+    [ConftFact]
+    public void WithoutTheDeferredScenePropsTheConftFrameIsThePreTodo50Frame()
+    {
+        var (flow, level) = OpenLevel(0, "CONFT.MIS");
+        Assert.Equal(89, level.ObjectRegistry.SceneProps.Count);
+        level.ScenePropsDisabled = true;
+
+        level.Render(flow.Camera);
+        Assert.Equal(0, level.ScenePropPrimitives);
+        Assert.Equal(0, level.VisibleSceneProps);
+        Assert.Equal("C8ACDF087AFC8E7F674E6155004BB027C5D9696D30436D41C79661A2449AB324",
+            Sha256Hex(level.Rgb));
+
+        level.SemiBlendDisabled = true;
+        level.Render(flow.Camera);
+        Assert.Equal("D756CAE99866A944B67649D9DB0F61DA0AE591A0E967AFFEA8BBFC450ECE0452",
+            Sha256Hex(level.Rgb));
     }
 
     [ConftFact]

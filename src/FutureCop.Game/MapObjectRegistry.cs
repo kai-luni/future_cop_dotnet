@@ -349,18 +349,26 @@ public sealed class LiveObjectRegistry
 /// <c>gSpawnQueuedEntityAndGetId</c> for this type, so nothing is registered in D_8009F800 and no
 /// message reaches the prop. Placement is ground-snapped by
 /// <c>gSpawnSceneNode.c:292-299</c> (only skipped when the alignment code is -99) and bucketed by
-/// <c>(x &gt;&gt; 17, z &gt;&gt; 17)</c> (<c>gSpawnSceneNode.c:429</c>).
+/// the model's 3DBB bound centre rotated into world (<c>gSpawnSceneNode.c:360-431</c>), see
+/// <see cref="Row"/> and <see cref="Column"/>.
 /// </para>
 /// </remarks>
 public sealed class SceneProp
 {
-    internal SceneProp(EntityRecord record, int modelId, int x, int y, int z)
+    private readonly IReadOnlyList<short[]>? _frameBounds;
+
+    internal SceneProp(EntityRecord record, int modelId, int x, int y, int z,
+        IReadOnlyList<short[]>? frameBounds)
     {
         Record = record;
         ModelId = modelId;
         X = x;
         Y = y;
         Z = z;
+        _frameBounds = frameBounds;
+        (int row, int column) = Bucket();
+        Row = row;
+        Column = column;
     }
 
     /// <summary>The source <c>Cact</c> record (the tACT payload that doubles as the spawn request).</summary>
@@ -390,14 +398,44 @@ public sealed class SceneProp
     /// </summary>
     public int AlignmentCode => unchecked((sbyte)Record.U8(0x1C));
 
-    /// <summary>First rotation angle (<c>source +0x14</c>), the Y-axis turn of <c>gBuildRotationMatrix</c>.</summary>
+    /// <summary>
+    /// Node flag byte <c>source +0x1D</c>, copied to node <c>+0x4C</c> (<c>gSpawnSceneNode.c:248</c>).
+    /// Bit 0x01 sets the cell flag 8 and bit 0x02 the cell flag 4 (<c>:249-254</c>); bit 0x40 selects
+    /// the positional-sound form of the rotation block (<c>:316-325</c>, <see cref="Voice"/>).
+    /// </summary>
+    public byte Flags => (byte)Record.U8(0x1D);
+
+    /// <summary>
+    /// First rotation angle (<c>source +0x14</c>), the Y-axis turn of <c>gBuildRotationMatrix</c>.
+    /// Retail replaces a negative value with <c>func_80019668() &amp; 0xFFF</c>
+    /// (<c>gSpawnSceneNode.c:301-307</c>); the port keeps the record value (see <see cref="Basis"/>).
+    /// </summary>
     public int Yaw => unchecked((short)Record.U16(0x14));
 
-    /// <summary>Third rotation angle (<c>source +0x18</c>), the X-axis turn (<c>gSpawnSceneNode.c:314</c>).</summary>
+    /// <summary>
+    /// Third rotation angle (<c>source +0x18</c>), the X-axis turn (<c>gSpawnSceneNode.c:308-315</c>),
+    /// randomised by retail when negative (<c>:312-314</c>).
+    /// </summary>
     public int Pitch => unchecked((short)Record.U16(0x18));
 
-    /// <summary>Second rotation angle (<c>source +0x16</c>), the Z-axis turn (<c>gSpawnSceneNode.c:320</c>).</summary>
-    public int Roll => unchecked((short)Record.U16(0x16));
+    /// <summary>
+    /// Second rotation angle (<c>source +0x16</c>), the Z-axis turn, i.e. the third matrix argument
+    /// of <c>gBuildRotationMatrix</c> (<c>gSpawnSceneNode.c:316-326</c>). Retail uses 0 and stores the
+    /// raw byte as the positional sound id when <see cref="Flags"/> has bit 0x40; a negative value is
+    /// otherwise randomised (<c>:320-323</c>, see <see cref="Basis"/>).
+    /// </summary>
+    public int Roll => (Flags & 0x40) != 0 ? 0 : unchecked((short)Record.U16(0x16));
+
+    /// <summary>
+    /// Positional sound id <c>(u8 source +0x16)</c> as node <c>+0x57</c>
+    /// (<c>gSpawnSceneNode.c:317-325</c>): the low byte of the third angle, taken only when
+    /// <see cref="Flags"/> has bit 0x40, and 0 otherwise. <c>gDrawCellWindowModels.c:236-237</c>
+    /// draws such a node from its attachment-point frame and then calls
+    /// <c>gAssignSceneSoundVoice</c>, which hands <c>+0x57</c> to
+    /// <c>gAllocPositionalSoundChannel</c> (<c>gAssignSceneSoundVoice.c:72</c>). The port exposes the
+    /// id but does not play it; see <see cref="PlaceDeferredSceneAssets"/>.
+    /// </summary>
+    public byte Voice => (Flags & 0x40) != 0 ? (byte)Record.U8(0x16) : (byte)0;
 
     /// <summary>Animation rate <c>source +0x1E</c> (<c>gSpawnSceneNode.c:255-265</c>); 0 = static.</summary>
     public byte AnimateRate => (byte)Record.U8(0x1E);
@@ -418,18 +456,63 @@ public sealed class SceneProp
     /// <summary>Q6 scale of matrix row 2 (<c>source +0x21</c>).</summary>
     public byte ScaleZ => (byte)Record.U8(0x21);
 
-    /// <summary>Scene bucket row <c>x &gt;&gt; 17</c> (<c>gSpawnSceneNode.c:429</c>).</summary>
-    public int Row => X >> 17;
-
-    /// <summary>Scene bucket column <c>z &gt;&gt; 17</c> (<c>gSpawnSceneNode.c:429</c>).</summary>
-    public int Column => Z >> 17;
+    /// <summary>
+    /// Scene bucket row <c>x &gt;&gt; 17</c> of the node origin shifted by the rotated 3DBB bound
+    /// centre (<c>gSpawnSceneNode.c:360-431</c>).
+    /// </summary>
+    public int Row { get; }
 
     /// <summary>
-    /// Node basis of <c>gSpawnSceneNode.c:326-357</c>: <c>gBuildRotationMatrix(yaw, pitch, roll)</c>,
-    /// row scaling by the three Q6 bytes unless all are 0x40, then the upright correction a non-zero
-    /// spin byte selects. The signed-scale random jitter of <c>:331-337</c> is not modelled; every
-    /// shipped type-96 record carries 0x40/0x40/0x40.
+    /// Scene bucket column <c>z &gt;&gt; 17</c> of the node origin shifted by the rotated 3DBB bound
+    /// centre (<c>gSpawnSceneNode.c:360-431</c>).
     /// </summary>
+    public int Column { get; }
+
+    /// <summary>
+    /// Bucket of <c>gSpawnSceneNode.c:360-431</c>. Retail transforms the bound centre of the first
+    /// 3DBB record - the three s16 words at <c>model + 0x34 + 8</c>, i.e.
+    /// <see cref="Model.FrameBounds"/>[0][0..2], <c>&lt;&lt; 4</c> to world units - with the node
+    /// matrix, adds the node origin and buckets <c>&gt;&gt; 17</c>; the raw origin instead drifts by
+    /// a cell near a bucket edge. A model without a 3DBB record falls back to the origin; retail
+    /// dereferences the model there, and every placed node has one.
+    /// </summary>
+    /// <remarks>
+    /// The GTE truncates matrix and vector to 1.12 (12 bits) before the multiply; the port multiplies
+    /// the full 16.16 values and shifts once, which keeps the product exact. The truncated form is at
+    /// most 15 world units off and moves one more HK prop into the neighbouring cell, so the shipped
+    /// counts are 13 here against 14 for a literal GTE emulation.
+    /// </remarks>
+    private (int Row, int Column) Bucket()
+    {
+        if (_frameBounds is not { Count: > 0 } frames || frames[0].Length < 3)
+            return (X >> 17, Z >> 17);
+        var bounds = frames[0];
+        int cx = bounds[0] << 4, cy = bounds[1] << 4, cz = bounds[2] << 4;
+        var basis = new int[9];
+        Basis(basis);
+        // func_8001006C (gGteTransformWords) on words 9..11 of the matrix: the node matrix is 16.16,
+        // the GTE loads it as 1.12 and the result is (matrix * vector) >> 12 << 4 = (matrix * v) >> 16.
+        int x = X + ((basis[0] * cx + basis[1] * cy + basis[2] * cz) >> 16);
+        int z = Z + ((basis[6] * cx + basis[7] * cy + basis[8] * cz) >> 16);
+        return (x >> 17, z >> 17);
+    }
+
+    /// <summary>
+    /// Node basis of <c>gSpawnSceneNode.c:316-349</c>: <c>gBuildRotationMatrix(yaw, pitch, roll)</c>
+    /// with <see cref="Roll"/> (0 for the sound form), row scaling by the three Q6 bytes unless all
+    /// are 0x40, then the upright correction a non-zero spin byte selects.
+    /// </summary>
+    /// <remarks>
+    /// Two random branches of retail are not modelled: a negative angle becomes
+    /// <c>func_80019668() &amp; 0xFFF</c> (<c>gSpawnSceneNode.c:301-323</c>) and a negative Q6 scale
+    /// row is jittered by <c>+64 + func_80019668() % (-2 * scale)</c> (<c>:328-337</c>). The port
+    /// keeps the record values; the angles still mask to 12 bits inside
+    /// <see cref="MechWalker.RotationMatrix"/>. HK is the only shipped map that reaches the angle
+    /// branch (44 of its 151 type-0x60 records carry <c>+0x14 &lt; 0</c>); no shipped record has a
+    /// negative scale byte, so the jitter branch is unreachable, but the Q6 scales are not uniform on
+    /// 50 of HK's 151 records (0x14-0x18, 0x33) and on 6 of JOKE's and 6 of SLIM's 75 (0x3C, 0x43,
+    /// 0x70, 0x79). Both counts are pinned by the HK census test.
+    /// </remarks>
     public void Basis(int[] matrix)
     {
         ArgumentNullException.ThrowIfNull(matrix);
@@ -611,10 +694,20 @@ public sealed class MapObjectRegistry
     /// carries exactly one <c>aRSL</c> entry and that entry is a <c>Cobj</c> (checked over CONFT 89,
     /// HK 151, JOKE 75, SLIM 75, OVMP 0), so <see cref="EntityRecord.Model()"/> reading the first
     /// <c>Cobj</c> is that first entry. The port reproduces the placement
-    /// of <c>gSpawnSceneNode.c:292-349</c>: position from +0x08/+0x10, ground snap through
+    /// of <c>gSpawnSceneNode.c:292-431</c>: position from +0x08/+0x10, ground snap through
     /// <see cref="PlacementHeight"/> for every alignment code except -99, lift <c>(s16 +0x1A) &lt;&lt; 4</c>,
-    /// and the basis built from +0x14/+0x18/+0x16 with the Q6 row scales and the spin-byte upright
-    /// correction.
+    /// the basis built from +0x14/+0x18/+0x16 with the Q6 row scales and the spin-byte upright
+    /// correction, and the cell bucket of the rotated 3DBB bound centre
+    /// (<see cref="SceneProp.Row"/>). <see cref="ResolveModel"/> supplies that centre.
+    /// </para>
+    /// <para>
+    /// Open gap, not wired: the positional sound of a node whose flag byte +0x1D has bit 0x40. Retail
+    /// stores the id in node +0x57 (<c>gSpawnSceneNode.c:317-325</c>), the drawer calls
+    /// <c>gAssignSceneSoundVoice</c> for such a node (<c>gDrawCellWindowModels.c:236-237</c>) and that
+    /// function hands the id to <c>gAllocPositionalSoundChannel</c>
+    /// (<c>gAssignSceneSoundVoice.c:72</c>). The port has no positional channel (its audio path only
+    /// carries the nonpositional bank), so <see cref="SceneProp.Voice"/> exposes the id and those
+    /// props stay silent: 12 of CONFT's 89 records, 5 of HK's 151, 21 each of JOKE's and SLIM's 75.
     /// </para>
     /// <para>
     /// Not modelled: the 250-node pool retry of <c>gSpawnSceneNode.c:236-243</c> and the per-frame
@@ -644,7 +737,8 @@ public sealed class MapObjectRegistry
                 // gSpawnSceneNode.c:296-298. A failed query answers 0 in retail, not the source y.
                 y = (PlacementHeight?.Invoke(x, z, rank) ?? 0) + (unchecked((short)record.U16(0x1A)) << 4);
             }
-            _deferredSceneProps.Add(new SceneProp(record, modelId, x, y, z));
+            _deferredSceneProps.Add(new SceneProp(record, modelId, x, y, z,
+                ResolveModel?.Invoke(modelId)?.FrameBounds));
         }
         return _deferredSceneProps.Count;
     }

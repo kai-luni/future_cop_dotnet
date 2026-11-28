@@ -955,6 +955,15 @@ public sealed class LevelScene
     public int BasePadLines { get; private set; }
 
     /// <summary>
+    /// Diagnostic switch of the Cact type-0x60 pass: when true <see cref="Render"/> leaves the
+    /// static scene nodes out of the frame, reproducing the pixels of the pre-todo-50 baseline and
+    /// proving what the props contribute. Placement itself has no other side effect, so the switch
+    /// is pixel-equivalent to skipping <see cref="MapObjectRegistry.PlaceDeferredSceneAssets"/>.
+    /// Production never sets it.
+    /// </summary>
+    internal bool ScenePropsDisabled { get; set; }
+
+    /// <summary>
     /// Faces the last <see cref="Render"/> drew for the static scene nodes of the Cact type-0x60
     /// branch in <see cref="ObjectRegistry.SceneProps"/>.
     /// </summary>
@@ -1561,13 +1570,13 @@ public sealed class LevelScene
         TilePackets = packetsTotal;
 
         // Static scene nodes of the deferred-scene branch (Cact type 0x60): the node lives in the
-        // (x >> 17, z >> 17) bucket of gSpawnSceneNode.c:429 and gDrawCellWindowModels.c:91-146 only
-        // draws buckets inside the current 5x5 cell window whose mask is non-zero. The per-node
-        // subcell band test (mask & node->unk4E, :96-100) and the spin/animation clock (:149-238)
-        // are not modelled.
+        // (x >> 17, z >> 17) bucket of the rotated 3DBB bound centre (gSpawnSceneNode.c:360-431) and
+        // gDrawCellWindowModels.c:91-146 only draws buckets inside the current 5x5 cell window whose
+        // mask is non-zero. The per-node subcell band test (mask & node->unk4E, :96-100) and the
+        // spin/animation clock (:149-238) are not modelled.
         int scenePropPrims = 0;
         int visibleProps = 0;
-        if (ObjectRegistry.SceneProps.Count > 0)
+        if (!ScenePropsDisabled && ObjectRegistry.SceneProps.Count > 0)
         {
             var propBasis = new int[9];
             foreach (var prop in ObjectRegistry.SceneProps)
