@@ -1121,6 +1121,9 @@ public sealed class LevelScene
     /// </summary>
     public byte[] Ramp { get; } = Enumerable.Repeat((byte)0x80, 256).ToArray();
 
+    /// <summary>Model of the loaded mission by record id (CONFT.MIS model table).</summary>
+    internal Model? ModelById(int id) => _modelsById.TryGetValue(id, out var model) ? model : null;
+
     public LevelScene(string misPath)
     {
         MissionPath = misPath;
@@ -1445,7 +1448,8 @@ public sealed class LevelScene
         // 8006125C.c:74-76 adds them through gSpawnTargetableEntityId. Retirement clears the
         // runtime id (8004D958.c:59) before the sweep unlinks the unit (8004D598.c:55-64).
         // The world holds specialized outpost entities, not their spawner wrappers; the objective
-        // pass above draws them. SpawnedCsacUnit has no heading, so its model is placed unrotated.
+        // pass above draws them. Rail units and flyers carry their heading in the mover (+0x140
+        // direction / +0x78 flight vector), so the model is placed with that basis.
         int spawnedUnits = 0;
         if (_entities is { Units.Count: > 0 } entities)
         {
@@ -1457,7 +1461,7 @@ public sealed class LevelScene
                 if (unit.EntityType == WeaponPickups.PlacementPayloadType) continue;
                 if (!_modelsById.TryGetValue(unit.ModelId, out var model)
                     || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
-                var matrix = PlacedMatrix(unit.X, unit.Y, unit.Z, view);
+                var matrix = UnitMatrix(unit, view);
                 spawnedUnits += QueueModel(model, verts, 0, matrix, 0xFF, ref drawOrder);
             }
         }
@@ -1771,6 +1775,9 @@ public sealed class LevelScene
         0, 0, 0x10000,
     };
 
+    /// <summary>Scratch rotation for <see cref="UnitMatrix"/>; filled per unit, consumed by Compose.</summary>
+    private readonly int[] _unitBasis = new int[9];
+
     /// <summary>Unrotated placement of a model at a world position, relative to the mech origin.</summary>
     private Gte.Mat PlacedMatrix(int x, int y, int z, Gte.Mat view)
     {
@@ -1779,6 +1786,55 @@ public sealed class LevelScene
         int lz = (z - MechWorld.Z) >> 4;
         // 0x10000 is 1.0 in engine matrix units (Gte.Load shifts the rotation right by 4).
         var local = new Gte.Mat(IdentityRotation, lx << 4, ly << 4, lz << 4);
+        return ScriptRender.Compose(local, view);
+    }
+
+    /// <summary>
+    /// Model matrix of one Csac unit at its world position, rotated by the heading its locomotion
+    /// mover keeps. Retail orients such an entity through gOrientEntityBasis (func_8001A8E8).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Ground movers (rail path types 5 and 28) take the fixed-yaw branch of gOrientEntityBasis
+    /// (8001A8E8.c:118-126), which builds the basis straight from the path direction vector at
+    /// +0x140: row0 = (dz, 0, -dx), row1 = (0, 1, 0), row2 = (dx, 0, dz). gStepPathMover re-runs it
+    /// every step (8005027C.c:256), so a curve turns continuously instead of snapping.
+    /// </para>
+    /// <para>
+    /// Flyers (type-9 hover mover) use the full three-axis body basis instead: gUpdateHoverEnemy
+    /// builds rows 0..2 with gBuildBasisZFromPair(dir, up) at +0x2C (800324E0.c:382, 80019310.c:44-49)
+    /// after tilting the up vector by the band error (+0x2000 at :380). Row 2 is the flight vector
+    /// including its y component, which is the nose pitch. <see cref="HoverEnemy.BasisRows"/> already
+    /// holds that basis, built by the same function in the tick, so it is handed over unchanged.
+    /// </para>
+    /// <para>
+    /// Units without a mover (static spawner output) keep the identity orientation, like
+    /// gInitObjectFromDef places them.
+    /// </para>
+    /// </remarks>
+    private Gte.Mat UnitMatrix(SpawnedCsacUnit unit, Gte.Mat view)
+    {
+        int lx = (unit.X - MechWorld.X) >> 4;
+        int ly = (unit.Y - MechWorld.Y) >> 4;
+        int lz = (unit.Z - MechWorld.Z) >> 4;
+        int[] basis = _unitBasis; // scratch, consumed by Compose below
+        if (unit.HoverMover is { } hover && (hover.BasisRows[2][0] | hover.BasisRows[2][1] | hover.BasisRows[2][2]) != 0)
+        {
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                    basis[i * 3 + j] = hover.BasisRows[i][j];
+        }
+        else if (unit.DirX != 0 || unit.DirZ != 0)
+        {
+            basis[0] = unit.DirZ; basis[1] = 0; basis[2] = -unit.DirX;
+            basis[3] = 0; basis[4] = 0x10000; basis[5] = 0;
+            basis[6] = unit.DirX; basis[7] = 0; basis[8] = unit.DirZ;
+        }
+        else
+        {
+            basis = IdentityRotation;
+        }
+        var local = new Gte.Mat(basis, lx << 4, ly << 4, lz << 4);
         return ScriptRender.Compose(local, view);
     }
 
@@ -1842,8 +1898,15 @@ public sealed class LevelScene
         return map;
     }
 
-    /// <summary>Mech face, drawn like WireframeScene.DrawTexturedFace (3DTL record, unmodulated texels).</summary>
-    private void DrawModelFace(TexturedFace face, Model model)
+    /// <summary>
+    /// Mech face, drawn like WireframeScene.DrawTexturedFace (3DTL record, unmodulated texels).
+    /// A face whose loaded flags carry bit 1 keeps the semi-transparency bit of the retail packet
+    /// (<c>tmp = (fl &amp; 2) &lt;&lt; 24</c>, 80015F38.c:73) and is blended by the ABR mode of its
+    /// texture page (tpage bits 5..6): the Sky Captain's searchlight cone is eight such faces over the
+    /// three texture records 0x02F0/0x0300/0x0310 on the additive page 0x00BE (CLUT 0x7F58), which
+    /// painted the scene black while drawn opaque.
+    /// </summary>
+    internal void DrawModelFace(TexturedFace face, Model model)
     {
         bool hasRec = TextureLookup(model).TryGetValue(face.TextureOffset, out var rec);
         uint uvA = hasRec ? rec.Uv0 : 0, uvB = hasRec ? rec.Uv1 : 0;
@@ -1862,17 +1925,17 @@ public sealed class LevelScene
         const uint w = 0x808080;
         uint a = (uint)face.Work.Xy0, b = (uint)face.Work.Xy1, c2 = (uint)face.Work.Xy2, d = (uint)face.Work.Xy3;
         if (face.Type == 3)
-            Tri(a, UV(0), w, b, UV(1), w, c2, UV(2), w, rec.Tpage, rec.Clut, false);
+            Tri(a, UV(0), w, b, UV(1), w, c2, UV(2), w, rec.Tpage, rec.Clut, face.Semi);
         else if (face.Type == 4)
         {
             // Work holds (v0, v1, v3, v2).
-            Tri(a, UV(0), w, b, UV(1), w, c2, UV(3), w, rec.Tpage, rec.Clut, false);
-            Tri(b, UV(1), w, d, UV(2), w, c2, UV(3), w, rec.Tpage, rec.Clut, false);
+            Tri(a, UV(0), w, b, UV(1), w, c2, UV(3), w, rec.Tpage, rec.Clut, face.Semi);
+            Tri(b, UV(1), w, d, UV(2), w, c2, UV(3), w, rec.Tpage, rec.Clut, face.Semi);
         }
         else
         {
-            Tri(a, UV(0), w, b, UV(1), w, c2, UV(2), w, rec.Tpage, rec.Clut, false);
-            Tri(b, UV(1), w, d, UV(3), w, c2, UV(2), w, rec.Tpage, rec.Clut, false);
+            Tri(a, UV(0), w, b, UV(1), w, c2, UV(2), w, rec.Tpage, rec.Clut, face.Semi);
+            Tri(b, UV(1), w, d, UV(3), w, c2, UV(2), w, rec.Tpage, rec.Clut, face.Semi);
         }
     }
 
