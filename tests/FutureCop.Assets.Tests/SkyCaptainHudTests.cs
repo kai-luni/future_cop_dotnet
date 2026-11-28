@@ -85,10 +85,65 @@ public sealed class SkyCaptainHudTests
         Assert.True(hurtBar.Intensity < bar.Intensity, "the gauge did not move when the captain lost health");
     }
 
-    /// <summary>An <see cref="IHudDevice"/> that records the gauge and text calls of func_80047F30.</summary>
+    /// <summary>
+    /// The split-screen case: the second gauge and the stage line belong to the one-player layout
+    /// (<c>80047F30.c:275</c> returns for <c>gPlayerCount != 1</c>), so a 2P frame must draw neither,
+    /// while the P1 texts and plates stay exactly as the same frame without a captain draws them.
+    /// </summary>
+    [Fact]
+    public void TwoPlayerFrameWithLiveSkyCaptain_DrawsNoStageLineOrSecondGauge()
+    {
+        string? path = ConftPath();
+        if (path is null) Assert.NotEqual("1", Environment.GetEnvironmentVariable("FC_REQUIRE_RETAIL"));
+        if (path is null) return;
+
+        var scene = new LevelScene(path);
+        scene.EnableMechMovement();
+        scene.EnableFiring();
+        var sky = Assert.IsType<SkyCaptainSystem>(scene.SkyCaptain);
+        var drone = Assert.IsType<StrategicDrone>(sky.Drone);
+
+        // The port drives the solo frame only (gRunSoloSessionFrame, 800271A4.c; gRunSessionFrame,
+        // func_80027510, has no port equivalent), and its message-6 arm ticks the Sky Captain. The
+        // block a split-screen session reads from D_8009F9EC is therefore this same live block.
+        scene.AdvanceSoloFrame(RetailClock.LocomotionTicks, 1, 0, AnalogPad.Digital);
+        var globals = scene.HudGlobals(new HudGlobals { FrameTime = 0 });
+        var second = Assert.IsType<HudGameBlock>(globals.SecondGame);
+        Assert.Equal(drone.Body.F1C, second.Health);
+        Assert.True(second.Health > 0,
+                    "the live Sky Captain published no health, so this frame cannot prove the gate");
+
+        var first = new HudGameBlock { Health = 0x64, MaxHealth = 0x64, Player = new() };
+        var session = new HudSession { Mode = 1, Stage = 3 };
+
+        // A two-player frame: gPlayerCount == 2 with the live block still in D_8009F9EC.
+        var live = new RecordingHudDevice();
+        HudDraw.Draw(live, first, session, globals with { PlayerCount = 2 });
+
+        Assert.DoesNotContain(live.Texts, t => t.Text == "L04" && t.X == 274 && t.Y == 216);
+        Assert.DoesNotContain(live.Bars, b => b.X == 295);
+
+        // The same block is drawable in a one-player frame, so the two absences above come from the
+        // solo gate and not from a block the layout would have skipped anyway.
+        var solo = new RecordingHudDevice();
+        HudDraw.Draw(solo, first, session, globals with { PlayerCount = 1 });
+        Assert.Contains(solo.Texts, t => t.Text == "L04" && t.X == 274 && t.Y == 216);
+        Assert.Contains(solo.Bars, b => b.X == 295);
+
+        // The same two-player frame without a captain: every P1 text and plate - including the 2P
+        // separator at x 318 - must be identical, and the P1 gauge must keep its intensity.
+        var noCaptain = new RecordingHudDevice();
+        HudDraw.Draw(noCaptain, first, session, globals with { PlayerCount = 2, SecondGame = null });
+        Assert.Equal(noCaptain.Texts, live.Texts);
+        Assert.Equal(noCaptain.Rects, live.Rects);
+        Assert.Equal(noCaptain.Bars, live.Bars);
+    }
+
+    /// <summary>An <see cref="IHudDevice"/> that records the gauge, plate and text calls of func_80047F30.</summary>
     private sealed class RecordingHudDevice : IHudDevice
     {
         public List<(int X, int Y, int Intensity, int R, int G, int B, int Flag)> Bars { get; } = new();
+        public List<(uint Colour, int X, int Y, int W, int H, int Blend)> Rects { get; } = new();
         public List<(string Text, int X, int Y, int Colour)> Texts { get; } = new();
 
         public void Marker() { }
@@ -99,7 +154,8 @@ public sealed class SkyCaptainHudTests
         public void Bar(int x, int y, int intensity, int p3, int p4, int p5, int flag) =>
             Bars.Add((x, y, intensity, p3, p4, p5, flag));
 
-        public void Rect(uint colour, int x, int y, int w, int h, int blend) { }
+        public void Rect(uint colour, int x, int y, int w, int h, int blend) =>
+            Rects.Add((colour, x, y, w, h, blend));
 
         public void Text(string text, int x, int y, int colour) => Texts.Add((text, x, y, colour));
 
