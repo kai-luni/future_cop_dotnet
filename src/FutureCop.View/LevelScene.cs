@@ -48,6 +48,11 @@ public sealed class LevelScene
 
     private readonly MisFile _file;
     private readonly TextureBank _textures;
+    /// <summary>
+    /// The 3DTA texture animations of the loaded mission, stepped once per frame like the retail
+    /// list <c>D_8009F564</c> (func_800136C8, called with gFrameDelta from 8002703C.c:113).
+    /// </summary>
+    private readonly TextureAnimationSet _textureAnimations;
     private IReadOnlyList<PlayerPart> _parts;
     private readonly Dictionary<int, Dictionary<int, TextureRecord>> _texByModel = new();
     private readonly Dictionary<int, Model> _modelsById = new();
@@ -506,6 +511,10 @@ public sealed class LevelScene
         ArgumentOutOfRangeException.ThrowIfNegative(steps);
         if (steps > 0 && (_walker is null || _walkerWorld is null))
             throw new InvalidOperationException("Attach a walker first");
+
+        // 8002703C.c:110-114: gStepAnimations(gFrameDelta) runs in the frame-time step, before the
+        // passes below, so the frame that is drawn after this call already shows the stepped frame.
+        if (!TextureAnimationsDisabled) _textureAnimations.Advance(dt);
 
         // :178 gCullActiveEntitiesSolo rebuilds D_800A8F90 for this frame: the command pass, the
         // map-zone scan (80031DE8.c:90) and the deferred updates all read that table.
@@ -1312,6 +1321,7 @@ public sealed class LevelScene
         }
         Map = LevelMap.FromMisFile(misPath);
         _textures = TextureBank.FromMisFile(misPath);
+        _textureAnimations = new TextureAnimationSet(_file.Models);
         // D_800A8EA4 = gTexpageBaseTable[9] = the packed word of Cbmp slot 9 (80063C5C.c:144).
         var hudPage = _textures.Resources.FirstOrDefault(r => r.Id == HudTexpageResourceId);
         HudTexpageWord = hudPage is null ? 0u : ((uint)hudPage.Clut << 16) | hudPage.Tpage;
@@ -1795,6 +1805,14 @@ public sealed class LevelScene
     /// </summary>
     internal bool SemiBlendDisabled { get; set; }
 
+    /// <summary>
+    /// Diagnostic switch for the 3DTA texture flipbooks: when true the frame stepper leaves them on
+    /// the on-disc frame. Production never sets it; the golden attribution test uses it next to
+    /// <see cref="SemiBlendDisabled"/> so its pre-blend digests stay comparable across commits that
+    /// predate the flipbooks.
+    /// </summary>
+    internal bool TextureAnimationsDisabled { get; set; }
+
     /// <summary>Textured, colour-modulated triangle; xy = packed screen word, uv = low 16 bits (u | v &lt;&lt; 8).</summary>
     internal void Tri(uint xy0, uint uv0, uint c0, uint xy1, uint uv1, uint c1, uint xy2, uint uv2, uint c2,
         ushort tpage, ushort clut, bool semi)
@@ -2121,6 +2139,10 @@ public sealed class LevelScene
     internal void DrawModelFace(TexturedFace face, Model model)
     {
         bool hasRec = TextureLookup(model).TryGetValue(face.TextureOffset, out var rec);
+        // func_800136C8:155-172 writes the active 3DTA frame straight into the 3DTL record, so the
+        // face samples the swapped UV pair; the colour and texture-page words stay untouched.
+        if (hasRec && _textureAnimations.TryGetUvPair(model.Id, rec.Offset, out var animatedA, out var animatedB))
+            rec = rec with { Uv0 = animatedA, Uv1 = animatedB };
         uint uvA = hasRec ? rec.Uv0 : 0, uvB = hasRec ? rec.Uv1 : 0;
         uint UV(int i) => i switch
         {

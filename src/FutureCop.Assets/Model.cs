@@ -71,6 +71,12 @@ public sealed class Model
     public List<TextureRecord> Textures { get; } = new();
     public int AttachmentPointCount { get; set; }
     public List<Vertex> AttachmentPoints { get; } = new();
+    /// <summary>
+    /// 3DTA texture-animation entries: per-frame UV flipbooks the retail loader links into
+    /// <c>D_8009F564</c> (func_80012E48:66-73). Bit 24 of <see cref="Flags"/> marks a loaded model
+    /// that carries this chunk.
+    /// </summary>
+    public List<TextureAnimation> TextureAnimations { get; } = new();
     public List<short> AnimationStarts { get; } = new();
     /// <summary>Full AnmD clip records, indexed like <see cref="AnimationStarts"/>.</summary>
     public List<AnimationClip> AnimationClips { get; } = new();
