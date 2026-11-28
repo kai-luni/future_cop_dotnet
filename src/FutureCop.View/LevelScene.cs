@@ -998,6 +998,50 @@ public sealed class LevelScene
     }
 
     /// <summary>
+    /// The second game block <c>D_8009F9EC</c> (extern at gDrawInGameHud.c:47) as the live one-player
+    /// Sky Captain publishes it. The retail block is the strategic drone object itself - gInitStrategicDrone
+    /// publishes it (<c>gSinglePlayerEntity = obj</c>, gInitStrategicDrone.c:243) - so its +0x1C/+0x1E are the
+    /// body's health and max health (gInitStrategicDrone.c:186-197, gUpdateStrategicDrone.c:134).
+    /// +0x134 is the 0xB4 AI record; gInitHudGauge starts the gauge record at AI +0xA0 with
+    /// (health, maxHealth) (gInitStrategicDrone.c:244-245, gInitHudGauge.c:39-56), which puts the value
+    /// at +0xA4 and the Q16 scale <c>0x600000 / maxHealth</c> at +0xA8. gUpdateStrategicDrone.c:134
+    /// refreshes +0xA4 from the body every tick, so the two words the HUD multiplies at
+    /// gDrawInGameHud.c:299-301 always describe the live health fraction.
+    /// </summary>
+    /// <returns>The block, or null when the mission has no live Sky Captain.</returns>
+    public HudGameBlock? SecondGameBlock
+    {
+        get
+        {
+            if (_skyCaptain?.Drone is not { } drone) return null;
+            int health = drone.Body.F1C;                  // game +0x1C
+            int maxHealth = drone.Body.F1E;               // game +0x1E
+            return new HudGameBlock
+            {
+                Health = health,
+                MaxHealth = maxHealth,
+                Extra = new HudExtraBlock
+                {
+                    A4 = health,                                              // ai +0xA4
+                    A8 = maxHealth > 0 ? 0x600000 / maxHealth : 0,            // ai +0xA8
+                },
+            };
+        }
+    }
+
+    /// <summary>
+    /// The host's HUD globals with <see cref="SecondGameBlock"/> attached: the port's feed for the
+    /// one-player second gauge, stage line and trailing slot icon of gDrawInGameHud.c:118-120,
+    /// :151-152 and gDrawThreeSlotStatusBar.c. The block is set from the live scene on every call and
+    /// is null when the mission has no live Sky Captain (retail keeps D_8009F9EC null then).
+    /// </summary>
+    public HudGlobals HudGlobals(HudGlobals globals)
+    {
+        ArgumentNullException.ThrowIfNull(globals);
+        return globals with { SecondGame = SecondGameBlock };
+    }
+
+    /// <summary>
     /// Opt in to a caller-initialized one-player walker. Initialization and clip records must be
     /// supplied from a verified game state; this viewer does not invent a retail spawn state.
     /// Platforms, dynamic objects, 2P, script/sound side effects and rendered pose are not integrated.
