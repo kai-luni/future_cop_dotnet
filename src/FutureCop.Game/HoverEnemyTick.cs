@@ -23,6 +23,32 @@ public static class HoverEnemyTick
     /// <summary>(s16) read of a u16 field.</summary>
     private static int S16r(int v) => unchecked((int)(short)v);
 
+    /// <summary>
+    /// Message 4 of gHandleTumblingFlyer (gHandleTumblingFlyer.c:74-99, func_80032F3C): a flyer that
+    /// is neither falling (state 3) nor already down (state 5) breaks off into the tumble - state 3,
+    /// the flight vector scaled by +0xF4 as the dive direction and three random spin rates in
+    /// -0x800..0x7FF. A type-0x25 enemy always breaks off; other types pass the 10/16 random gate
+    /// (:84). Returns true when the message was consumed, false when it belongs to the base handler,
+    /// which then retires the entity (:101).
+    /// </summary>
+    public static bool EnterDeathTumble(HoverEnemy o, Func<int> nextRandom)
+    {
+        ArgumentNullException.ThrowIfNull(nextRandom);
+        unchecked
+        {
+            if (o.FA == 5) return false;                                          // :76-78
+            if (o.FA == 3) return true;                                           // :79-82
+            if (o.Type != 0x25 && (nextRandom() & 0xF) >= 0xA) return false;      // :84
+            o.FA = 3;                                                            // :85
+            for (int i = 0; i < 3; i++)
+                o.DC[i] = (int)(((long)o.Dir[i] * o.F4) >> 16);                   // :86-87
+            o.E8[0] = (nextRandom() & 0xFFF) - 0x800;                             // :88
+            o.E8[1] = (nextRandom() & 0xFFF) - 0x800;                             // :89
+            o.E8[2] = (nextRandom() & 0xFFF) - 0x800;                             // :90
+            return true;
+        }
+    }
+
     /// <summary>Ticks one hover enemy; returns 0 like the retail function.</summary>
     public static int Tick(HoverEnemy o, int dt, IHoverEnemyWorld w)
     {

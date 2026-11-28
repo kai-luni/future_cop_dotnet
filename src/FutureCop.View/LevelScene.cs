@@ -153,6 +153,9 @@ public sealed partial class LevelScene
         // cb.unk00 = self->unk14: the scene passes the player actor id ORed with 0x8000, the same
         // source word the projectile contacts carry (ApplyBaseDamage strips it with 0x7FFF).
         Weapons!.BeamSourceWord = unchecked((uint)Actor.Id) | 0x8000;
+        // The type-0x25 Sky Captain is not in the entity list; the pair collision still sees it
+        // (8004CE04.c:54-65 walks the grid, and 800620D8.c:99-100 sends message 14 to every entry).
+        if (_skyCaptain?.Target is { } captain) Weapons!.ExtraHitTargets.Add(captain);
         BindInitialPickupsToCsacSpawner();
     }
 
@@ -203,6 +206,9 @@ public sealed partial class LevelScene
         // come from one source of truth (including DebugFallbackSpawn).
         _skyCaptain = new SkyCaptainSystem();
         _skyCaptain.BindMap(Map);
+        // The model table backs the body's collision coordinate (func_80013AF0 reads the frame bounds
+        // of the instance at spawn), so it has to be wired before SpawnFromRecords creates the target.
+        _skyCaptain.ModelSource = id => _modelsById.TryGetValue(id, out var m) ? m : null;
         _skyCaptain.SpawnFromRecords(records, MechWorld,
             pos => LevelGround.Height(Map, pos[0], pos[1], pos[2], out _), Actor.Id, objectives);
         int droneTeam = _skyCaptain.Drone is not null ? _skyCaptain.Team : -1;
@@ -241,6 +247,15 @@ public sealed partial class LevelScene
             SpawnObjective(objectives[i], outpostRecords[i].Container == EntityContainer.Csac);
         }
 
+        // The drone body answers its messages through the same script runner and model table as the
+        // rest of the level: func_800357C0 -> gHandleTumblingFlyer -> gEntityBaseHandler, whose damage
+        // and retire scripts run in gInterpretEntityScript (8002AA1C.c:128-130, 800324E0.c:257).
+        if (_skyCaptain is not null)
+        {
+            _skyCaptain.SourceWorld = _entities;
+            _skyCaptain.RunScript = RunEntityScript;
+        }
+
         // Place supported Cact mission actors: type-10 elevators (CONFT: 4 [15, 24, 37, 39],
         // JOKE: 2 [262, 249], SLIM: 2 [262, 249], HK: 0, OVMP: 0).
         //
@@ -259,7 +274,9 @@ public sealed partial class LevelScene
             SinglePlayerTeam = droneTeam,
             Player0Team = _playerTeam,
             // The mission-wide coarse grid built by func_800695A8 (BindMap above).
-            HeightGrid = _skyCaptain.HeightGrid,
+            HeightGrid = _skyCaptain!.HeightGrid,
+            // The clip table of the spawned model (model +0x30) backs the entity's animation track.
+            AnimationClips = id => _modelsById.TryGetValue(id, out var m) ? m.AnimationClips : null,
         };
         _csacSpawner.LoadPathNetworks(_file.Bytes,
             (x, z, mode) => LevelGround.PlacementHeight(Map, x, z, mode) ?? 0);
@@ -1583,16 +1600,20 @@ public sealed partial class LevelScene
         // Sky Captain: its record model placed with the body basis (+0x2C rows) at +0x50. First light;
         // the row/column convention of the basis against the GTE matrix is not verified yet.
         int skyCaptain = 0;
-        if (_skyCaptain is { Visible: true } sky && _modelsById.TryGetValue(sky.ModelId, out var skyModel)
-            && skyModel.Vertices.TryGetValue(1, out var skyVerts) && skyVerts.Count > 0)
+        if (_skyCaptain is { Visible: true } sky && _modelsById.TryGetValue(sky.ModelId, out var skyModel))
         {
             var body = sky.Drone!.Body;
-            var r = body.BasisRows;
-            var local = new Gte.Mat(new[] { r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2] },
-                ((body.Pos[0] - MechWorld.X) >> 4) << 4, ((body.Pos[1] - MechWorld.Y) >> 4) << 4,
-                ((body.Pos[2] - MechWorld.Z) >> 4) << 4);
-            var matrix = ScriptRender.Compose(local, view);
-            skyCaptain += QueueModel(skyModel, skyVerts, 0, matrix, 0xFF, ref drawOrder);
+            // 800324E0.c:163-164 advances +0x120 and hands +0x12C to gSetModelFrame.
+            int skyFrame = Math.Max(0, (int)(body.Animation?.Frame ?? 0));
+            if (skyModel.Vertices.TryGetValue(skyFrame + 1, out var skyVerts) && skyVerts.Count > 0)
+            {
+                var r = body.BasisRows;
+                var local = new Gte.Mat(new[] { r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2] },
+                    ((body.Pos[0] - MechWorld.X) >> 4) << 4, ((body.Pos[1] - MechWorld.Y) >> 4) << 4,
+                    ((body.Pos[2] - MechWorld.Z) >> 4) << 4);
+                var matrix = ScriptRender.Compose(local, view);
+                skyCaptain += QueueModel(skyModel, skyVerts, skyFrame, matrix, 0xFF, ref drawOrder);
+            }
         }
 
         // Type-10 elevators placed in ObjectRegistry (func_80041488: yaw basis from source +0x36 at
@@ -1654,10 +1675,13 @@ public sealed partial class LevelScene
                 // Type-0x10 pickups are drawn through the _pickups pass above (ground-snapped by
                 // func_8002FA20), never a second time as a generic Csac unit.
                 if (unit.EntityType == WeaponPickups.PlacementPayloadType) continue;
+                // gSetModelFrame(instance, o->unk12C) picks the tracked frame (800382B4.c:282-283);
+                // frame n is vertex mega-block n + 1 of the 3DBB record.
+                int frame = Math.Max(0, (int)(unit.Animation?.Frame ?? 0));
                 if (!_modelsById.TryGetValue(unit.ModelId, out var model)
-                    || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
+                    || !model.Vertices.TryGetValue(frame + 1, out var verts) || verts.Count == 0) continue;
                 var matrix = UnitMatrix(unit, view);
-                spawnedUnits += QueueModel(model, verts, 0, matrix, 0xFF, ref drawOrder);
+                spawnedUnits += QueueModel(model, verts, frame, matrix, 0xFF, ref drawOrder);
             }
         }
         SpawnedUnitPrimitives = spawnedUnits;
