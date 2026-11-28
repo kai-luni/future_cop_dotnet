@@ -15,6 +15,12 @@ namespace FutureCop.Game;
 /// request (80060838.c:85-95).
 /// </para>
 /// <para>
+/// The field layout is the C <c>Unk60838Entry</c> / <c>S2_5F6E8</c> (gLoadAttackDefinition.c:21-28,
+/// gFireEntityWeapon.c:32-47): the +0x08/+0x0A pair scales by <c>&lt;&lt;12 / 218</c>, the
+/// sub-record fields at +0x12/+0x14 by <c>/300</c> and <c>&lt;&lt;8 / 300</c>, and +0x1A, +0x1B,
+/// +0x1C and +0x1F are single bytes (spawn column, secondary column, sound id, message byte).
+/// </para>
+/// <para>
 /// The port scans the file for those chunks instead of walking the request queue: the nine
 /// definitions of CONFT.MIS sit in requests of their own and the retail dispatch key - the type
 /// word at payload + 0x04 - is the only discriminator the loader needs.
@@ -37,9 +43,8 @@ public static class AttackDefinitionLoader
     private const int EntryLength = 0x20;
 
     /// <summary>Every attack definition of <paramref name="data"/>, in file order.</summary>
-    public static AttackDefinitionTable LoadFromMission(byte[] data)
+    public static AttackDefinitionTable LoadFromMission(ReadOnlySpan<byte> data)
     {
-        ArgumentNullException.ThrowIfNull(data);
         var entries = new List<AttackDefinition>();
         for (int p = 0; p + 12 <= data.Length; p += 4)
         {
@@ -54,7 +59,7 @@ public static class AttackDefinitionLoader
     }
 
     /// <summary>One 0x20-byte entry of D_800A2300 plus the aRSL word (80060838.c:74-95).</summary>
-    private static AttackDefinition ReadEntry(byte[] data, int e, int id)
+    private static AttackDefinition ReadEntry(ReadOnlySpan<byte> data, int e, int id)
     {
         var entry = new AttackDefinition
         {
@@ -68,9 +73,9 @@ public static class AttackDefinitionLoader
             W12 = (ushort)((short)Word16(data, e + 0x12) / 300),    // 800607B8.c:32-34
             W14 = (ushort)ScaleW14(Word16(data, e + 0x14)),         // 800607B8.c:35-37
             W16 = (ushort)Word16(data, e + 0x16),                   // +0x16
-            W1A = (ushort)Word16(data, e + 0x1A),                   // +0x1A
-            W1B = data[e + 0x1B],                                   // +0x1B
-            W1C = (ushort)Word16(data, e + 0x1C),                   // +0x1C
+            W1A = data[e + 0x1A],                                   // +0x1A (u8, S2_5F6E8)
+            W1B = data[e + 0x1B],                                   // +0x1B (u8, S2_5F6E8)
+            W1C = data[e + 0x1C],                                   // +0x1C (u8 sound id, S2_5F6E8)
             W1F = data[e + 0x1F],                                   // +0x1F
             ResolvedW20 = ResolveFirstResource(data, id),           // 80060838.c:85-95
         };
@@ -85,7 +90,7 @@ public static class AttackDefinitionLoader
     /// (80060838.c:85-95). The port keeps the Cobj id of the first resolved pair instead of a host
     /// pointer; CONFT.MIS names Cobj 12 for the shared bolt of keys 1-3.
     /// </summary>
-    private static int ResolveFirstResource(byte[] data, int id)
+    private static int ResolveFirstResource(ReadOnlySpan<byte> data, int id)
     {
         for (int p = 0; p + 12 <= data.Length; p += 4)
         {
@@ -102,9 +107,9 @@ public static class AttackDefinitionLoader
         return 0;
     }
 
-    private static uint Word(byte[] data, int offset) =>
-        BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset));
+    private static uint Word(ReadOnlySpan<byte> data, int offset) =>
+        BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(offset, 4));
 
-    private static int Word16(byte[] data, int offset) =>
-        BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset));
+    private static int Word16(ReadOnlySpan<byte> data, int offset) =>
+        BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(offset, 2));
 }

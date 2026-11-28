@@ -61,13 +61,15 @@ public sealed class LevelEnemyFire
     private readonly List<Shot> _shots = new();
     private readonly EnemyEntity _playerView = new();
 
-    public LevelEnemyFire(ReadOnlySpan<byte> mission, LevelMap map)
+    public LevelEnemyFire(ReadOnlySpan<byte> mission, LevelMap map, AttackDefinitionTable? table = null)
     {
         ArgumentNullException.ThrowIfNull(map);
         _map = map;
         World = new EnemyWorld(0, 64)
         {
-            Table = AttackCatalog.Load(mission),
+            // D_800A2300 is one table per mission: the scene hands its instance over when it has one,
+            // so the army world (LevelSceneArmy) and this path search the same definitions.
+            Table = table ?? AttackDefinitionLoader.LoadFromMission(mission),
             // func_8005F6E8:289-300 draws its jitter from the mission PRNG; a fixed stream keeps the
             // headless path deterministic, the scene can inject the spawner's generator.
             Random = () => 0u,

@@ -106,7 +106,8 @@ public sealed partial class LevelScene
     {
         get
         {
-            if (_enemyFire is null && _enemyFireEnabled) _enemyFire = new LevelEnemyFire(_file.Bytes, Map);
+            if (_enemyFire is null && _enemyFireEnabled)
+                _enemyFire = new LevelEnemyFire(_file.Bytes, Map, ArmyAttackWorld?.Table);
             return _enemyFire;
         }
     }

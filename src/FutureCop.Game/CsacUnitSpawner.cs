@@ -577,7 +577,7 @@ public sealed class CsacUnitSpawner
     public HeightGrid? HeightGrid { get; set; }
 
     /// <summary>
-    /// D_800A2300 attack definitions of the loaded mission (<see cref="AttackCatalog"/>).
+    /// D_800A2300 attack definitions of the loaded mission (<see cref="AttackDefinitionLoader"/>).
     /// Every spawned type 5/9/28 unit resolves its record descriptor against this table
     /// (func_80060668). Null leaves their +0xA0 slots unarmed.
     /// </summary>
