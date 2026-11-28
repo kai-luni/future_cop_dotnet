@@ -430,6 +430,14 @@ public sealed class LevelWeapons
     public EntityWorld? BeamHitWorld { get; set; }
 
     /// <summary>
+    /// Damageable entities that are not part of <see cref="EntityWorld.Active"/>: retail's pair
+    /// collision walks the query grid D_800A8F90 (8004CE04.c:54-65) and sends message 14 to every
+    /// entry, including the type-0x25 Sky Captain, which the port drives from its own drone system
+    /// (800357C0.c) instead of the entity list.
+    /// </summary>
+    public List<LiveEntity> ExtraHitTargets { get; } = new();
+
+    /// <summary>
     /// The source word of a beam hit, <c>cb.unk00 = self-&gt;unk14</c> (func_8006B23C:198): the firing
     /// entity's record id - the scene passes the player actor id ORed with 0x8000, the same word
     /// <see cref="ProjectileContact"/> carries for shots, and ApplyBaseDamage strips it with 0x7FFF
@@ -507,6 +515,18 @@ public sealed class LevelWeapons
             foreach (var entity in world.Active)
             {
                 if (entity.RuntimeId <= 0 || (entity.Flags & 4) != 0 || entity.Coord is not { } coord) continue;
+                var (cx, cy, cz) = ClosestSegmentPoint(beam, coord);
+                if (!EntityPairCollision.ReachesPartTest(coord, new CollisionCoord(cx, cy, cz, 0, 0, 0)))
+                    continue;
+                entity.HandleMessage(14, world, hit);
+                hits++;
+            }
+            foreach (var entity in ExtraHitTargets)
+            {
+                // Entities outside the active list take part the same way. They keep their block id for
+                // their whole life (the type-0x25 drone is never retired, 800357C0.c:148-161), so the
+                // runtime-id gate of the active list does not apply to them.
+                if ((entity.Flags & 4) != 0 || entity.Coord is not { } coord) continue;
                 var (cx, cy, cz) = ClosestSegmentPoint(beam, coord);
                 if (!EntityPairCollision.ReachesPartTest(coord, new CollisionCoord(cx, cy, cz, 0, 0, 0)))
                     continue;

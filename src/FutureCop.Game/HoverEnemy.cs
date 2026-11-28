@@ -54,6 +54,7 @@ public sealed class HoverEnemy
     public int F118;                    // +0x118 descent scale
     public int F11C;                    // +0x11C climb scale
     public short F12C;                  // +0x12C anim frame passed to gSetModelFrame
+    public UnitAnimation? Animation;    // +0x0C commands / +0x120 track behind F12C
     public int RecF48;                  // +0x134 record +0x48 frame-time stamp
     public int RecF3E;                  // +0x134 record +0x3E impact counter
 }

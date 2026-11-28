@@ -134,7 +134,8 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
         Func<int>? nextRandom = null,
         Func<int, int, int, int>? querySurfaceHeight = null,
         EntityWorld? world = null,
-        HeightGrid? heightGrid = null)
+        HeightGrid? heightGrid = null,
+        IReadOnlyList<AnimationClip>? animationClips = null)
     {
         Id = id;
         SourceSlot = sourceSlot;
@@ -187,6 +188,20 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
                 SyncFromRailMover();
             }
         }
+
+        // The animation track (+0x120) exists only when the model carries a clip table: the gate of
+        // 800324E0.c:162 / 800382B4.c:255 is the model instance's speed word, which every army model
+        // of the mission leaves at 0.
+        if (animationClips is { Count: > 0 } && nextRandom is not null)
+        {
+            Animation = new UnitAnimation(animationClips, nextRandom);
+            if (HoverMover is { } hover)
+            {
+                hover.Animation = Animation;
+                hover.F12C = Animation.Frame;
+                hover.AnimCounter = 1;
+            }
+        }
     }
 
     /// <inheritdoc/>
@@ -224,7 +239,10 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
 
     /// <inheritdoc/>
     public override int HandleMessage(int message, EntityWorld world, object? data) =>
-        BaseHandler(message, this, world, data);
+        message == 4 && HoverMover is { } hover && _nextRandom is not null
+            && HoverEnemyTick.EnterDeathTumble(hover, _nextRandom)
+            ? 0                                   // gHandleTumblingFlyer.c:74-99
+            : BaseHandler(message, this, world, data);
 
     public int Id { get; }
     public CsacSpawnerSlot SourceSlot { get; }
@@ -250,6 +268,12 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
     public RailPathMover? RailMover { get; }
     /// <summary>True when this unit has an initialized retail locomotion mover.</summary>
     public bool IsMobile => HoverMover is not null || RailMover is { IsInitialized: true };
+    /// <summary>
+    /// The unit's animation track (entity +0x120 with the queue at +0x0C), or null when its model has
+    /// no clip table. The draw path submits <see cref="UnitAnimation.Frame"/> through gSetModelFrame
+    /// (800324E0.c:163-164, 800382B4.c:282-283).
+    /// </summary>
+    public UnitAnimation? Animation { get; }
     /// <summary>Specialized mission runtime created on spawn (null for other dispatch types).</summary>
     public IRegisteredMapObject? RuntimeObject { get; internal set; }
     /// <summary>Spawn mode argument passed by func_800616A0 to func_8006125C (1 = normal/timer, 0 = high-nibble burst).</summary>
@@ -361,7 +385,14 @@ public sealed class SpawnedCsacUnit : LiveEntity, IRegisteredMapObject, ICsacNod
         public void RunDeathScript(HoverEnemy o) { }
         public bool IsPlayerBlockClass(int id) => false;
         public void CreditPlayerKill() { }
-        public void AdvanceAnimation(HoverEnemy o, int dt) { }
+        public void AdvanceAnimation(HoverEnemy o, int dt)
+        {
+            // gUpdateHoverEnemy.c:162-165: gAdvanceAnimTrack(o, o + 0x120, dt, 0) and
+            // gSetModelFrame(o->unk28, o->unk12C).
+            if (o.Animation is not { } anim) return;
+            anim.Advance(dt);
+            o.F12C = anim.Frame;
+        }
     }
 
     internal void SyncRuntimePosition()
@@ -468,6 +499,13 @@ public sealed class CsacUnitSpawner
     /// probe for callers without a mission grid.
     /// </summary>
     public HeightGrid? HeightGrid { get; set; }
+
+    /// <summary>
+    /// Clip table of a spawned model (model +0x30), resolved per model id by the scene. Null or an
+    /// empty table leaves the unit without an animation track, which is the retail state of every
+    /// army model in the shipped Precinct Assault missions (800324E0.c:162 gate).
+    /// </summary>
+    public Func<int, IReadOnlyList<AnimationClip>?>? AnimationClips { get; set; }
 
     /// <summary>Number of registered Csac spawner slots (D_8009F800.count).</summary>
     public int Count => _count;
@@ -773,7 +811,8 @@ public sealed class CsacUnitSpawner
 
         var pathNetwork = ResolvePathNetwork(slot.Record);
         var unit = new SpawnedCsacUnit(_nextRuntimeId++, slot, spawnMode, UnitMessageHandler,
-            SampleGround, pathNetwork, Random.Next, QuerySurfaceHeight, _world, HeightGrid);
+            SampleGround, pathNetwork, Random.Next, QuerySurfaceHeight, _world, HeightGrid,
+            AnimationClips?.Invoke(slot.ModelId));
         unit.SlotIndex = (byte)slot.Record.U8(0x20); // 8002A5F4.c:127
         unit.RuntimeObject = _registry?.CreateMissionObject(slot.Record, unit.Id);
         unit.SyncRuntimePosition();
