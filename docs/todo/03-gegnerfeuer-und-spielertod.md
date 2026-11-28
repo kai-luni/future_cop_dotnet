@@ -1,19 +1,19 @@
-# Gegnerfeuer und Spielertod
+# Enemy fire and player death
 
 ## Problem
 
-Gegnerische Einheiten teilen keinen Schaden aus, und der Spieler kann nicht sterben. Damit gibt es keinen Druck und kein Scheitern.
+Enemy units deal no damage, and the player cannot die. That removes both pressure and the possibility of failure.
 
-## Beleg
+## Evidence
 
-- Fehlt laut `docs/pa-playable-roadmap.md:142-168`.
-- Der Schadenspfad des Spielers existiert bereits fuer eigene Waffen; die Gegenseite fehlt.
+- Missing according to `docs/pa-playable-roadmap.md:142-168`.
+- The player damage path already exists for the player's own weapons; the opposing side is missing.
 
-## Aufgabe
+## Task
 
-Schuesse gegnerischer Einheiten gegen den Spieler zulassen, Schaden auf die Spielerpanzerung anwenden und den Tod des Spielers behandeln.
+Allow shots from enemy units against the player, apply damage to the player armour and handle the player's death.
 
-## Akzeptanz
+## Acceptance
 
-- Der Spieler verliert bei Treffern sichtbar Panzerung.
-- Bei Panzerung null wird der Tod ausgeloest statt weiterzulaufen.
+- The player visibly loses armour when hit.
+- At zero armour the death is triggered instead of the level simply continuing.

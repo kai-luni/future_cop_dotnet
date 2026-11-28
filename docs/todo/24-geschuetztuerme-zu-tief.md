@@ -1,18 +1,18 @@
-# Precinct Assault: Geschütztürme scheinen zu tief zu stehen
+# Precinct Assault: gun turrets appear sunk into the ground
 
 ## Problem
 
-Einige sichtbare Geschütztürme wirken teilweise im Boden versenkt.
+Some visible gun turrets look partly sunk into the ground.
 
-## Beleg
+## Evidence
 
-Beobachtung beim Spieltest von PR #20. Betroffene Karten und Positionen wurden noch nicht festgehalten; Ursache und Abweichung vom PS1-Original sind nicht belegt.
+Observation during the playtest of PR #20. Affected maps and positions have not been recorded yet; neither the cause nor the deviation from the PS1 original is proven.
 
-## Aufgabe
+## Task
 
-Betroffene Türme lokalisieren und ihre Platzierung relativ zur Geländeoberfläche an denselben Stellen mit der PS1-Version vergleichen. Nur nachgewiesene Abweichungen korrigieren.
+Localise the affected turrets and compare their placement relative to the terrain surface at the same spots with the PS1 version. Fix only proven deviations.
 
-## Akzeptanz
+## Acceptance
 
-- Betroffene Karte, Position und Turm sind dokumentiert, ebenso der Vergleich mit der PS1-Version.
-- Bei bestätigter Abweichung entspricht die Platzierung dem Original. Ein gezielter Regressionstest schlägt ohne die Korrektur fehl.
+- Affected map, position and turret are documented, together with the comparison against the PS1 version.
+- For a confirmed deviation the placement matches the original. A targeted regression test fails without the fix.
