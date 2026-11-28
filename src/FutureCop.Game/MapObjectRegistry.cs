@@ -311,7 +311,12 @@ public sealed class LiveObjectRegistry
         return delivered;
     }
 
-    /// <summary>Per-frame message-6 broadcast (800271A4.c:180, 8004CD6C.c:41-54).</summary>
+    /// <summary>
+    /// Message 6 over the live-object half of the entity storage (800271A4.c:180,
+    /// 8004CD6C.c:41-54). gBroadcastEntityMessage walks D_800A8F90, which the port splits into this
+    /// registry (map objects, Csac wrappers) and <see cref="EntityWorld"/>, so the frame broadcasts
+    /// over both.
+    /// </summary>
     public int BroadcastMessage6(int dt) => BroadcastMessage(MessageFrameTick, dt, 0);
 
     private void RemoveAt(int index)

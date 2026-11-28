@@ -140,6 +140,14 @@ public sealed class LevelScene
                     v => Walker!.Health = (short)v, 0x7F00));
         }
         EnableObjectives();
+        // gBeamPartUpdate (func_8006B23C) traces the segment against the level map every frame
+        // (:346) and delivers its callback into the entity table (:196-201). Both wirings are the
+        // level's: without them a live beam would only be drawn and never clipped or delivered.
+        Weapons!.BeamGroundMap = Map;
+        Weapons!.BeamHitWorld = _entities;
+        // cb.unk00 = self->unk14: the scene passes the player actor id ORed with 0x8000, the same
+        // source word the projectile contacts carry (ApplyBaseDamage strips it with 0x7FFF).
+        Weapons!.BeamSourceWord = unchecked((uint)Actor.Id) | 0x8000;
         BindInitialPickupsToCsacSpawner();
     }
 
@@ -424,8 +432,8 @@ public sealed class LevelScene
 
     /// <summary>
     /// The entity list (D_8009FA40) for outposts, their child parts, trigger attachments, spawned units
-    /// and projectile contacts, or null until the live level is enabled. <see cref="AdvanceWalker"/>
-    /// runs its retirement stages every frame.
+    /// and projectile contacts, or null until the live level is enabled. <see cref="AdvanceSoloFrame"/>
+    /// culls and sweeps it once per frame.
     /// </summary>
     public EntityWorld? Entities => _entities;
 
@@ -462,7 +470,7 @@ public sealed class LevelScene
 
     /// <summary>
     /// Opt-in flag to advance purchase pads, drain <see cref="CsacSpawner"/> and broadcast
-    /// message 6 over <see cref="ObjectRegistry"/> during <see cref="AdvanceSkyCaptain"/>; the drain runs
+    /// message 6 over <see cref="ObjectRegistry"/> during <see cref="AdvanceSoloFrame"/>; the drain runs
     /// before the map-zone scan of that frame.
     /// </summary>
     public bool EnableCsacSpawner { get; set; }
@@ -470,9 +478,74 @@ public sealed class LevelScene
     /// <summary>The 1P Precinct Assault Sky Captain, or null until the live level is enabled.</summary>
     public SkyCaptainSystem? SkyCaptain => _skyCaptain;
 
-    /// <summary>Message 6 of the Sky Captain (800271A4.c:180) for <paramref name="dt"/> clock ticks.</summary>
+    /// <summary>The counters of the last <see cref="AdvanceSoloFrame"/> call.</summary>
+    public SoloFrameResult LastSoloFrame { get; private set; }
+
+    /// <summary>
+    /// One solo simulation frame (<c>gRunSoloSessionFrame</c>, <c>800271A4.c:177-217</c>) in the
+    /// retail phase order: the cull (<c>:178</c>), the queued entity commands (<c>:179</c>), message 6
+    /// (<c>:180</c>), the map-zone triggers (<c>:181</c>), the deferred updates (<c>:182</c>), the
+    /// entity world tick (<c>:183</c>, whose player update runs <paramref name="steps"/> locomotion
+    /// substeps), the region-pass projectile pairs (<c>:200</c>), the registered spawners (<c>:210</c>)
+    /// and the retirement sweep (<c>:212</c>).
+    /// </summary>
+    /// <remarks>
+    /// This is the only owner of that order. Input decoding stays in the host, drawing in the
+    /// renderer, and a call covers exactly one frame: the per-frame passes run once, no matter how
+    /// many locomotion substeps the frame carries. <paramref name="dt"/> is the frame's own clock
+    /// delta (<c>gFrameDelta</c>), not the tick count of the substeps.
+    /// </remarks>
+    /// <param name="dt">The frame delta in retail clock ticks (<c>gFrameDelta</c>, <c>8002703C.c:15,71</c>).</param>
+    /// <param name="steps">Locomotion substeps of this frame (one per eight ticks, <c>func_800588D4</c>).</param>
+    /// <param name="flags">The translated pad word the player update consumes.</param>
+    /// <param name="pad">The analog pad state of the frame.</param>
+    /// <returns>The pass counters of the frame.</returns>
+    public SoloFrameResult AdvanceSoloFrame(int dt, int steps, uint flags, AnalogPad pad)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(dt);
+        ArgumentOutOfRangeException.ThrowIfNegative(steps);
+        if (steps > 0 && (_walker is null || _walkerWorld is null))
+            throw new InvalidOperationException("Attach a walker first");
+
+        // :178 gCullActiveEntitiesSolo rebuilds D_800A8F90 for this frame: the command pass, the
+        // map-zone scan (80031DE8.c:90) and the deferred updates all read that table.
+        _walkerFrameOpen = false;
+        _frameIndex++;
+        CullActiveSolo();
+        // :179 gDispatchQueuedEntityCommands: the pairs scripts queued before this frame.
+        int dispatched = DispatchQueuedCommands(dt);
+        // :180 gBroadcastEntityMessage(6, gFrameDelta, 0), including the type-37 Sky Captain tick.
+        int message6 = BroadcastMessage6(dt);
+        // :181 gUpdateMapZoneTriggers (80031DE8.c) with the pad clock of the frame.
+        RunMapZoneTriggers(dt);
+        // :182 gProcessDeferredEntityUpdates: message 4 for entities whose health went below 0.
+        RunDeferredUpdates();
+        // :183 gRunEntityWorldTick: the player update with this frame's locomotion substeps.
+        if (steps > 0) _ = RunEntityWorldTick(steps, flags, pad);
+        // :200 func_80026D5C region pass: the projectile pairs leave their shot list here.
+        DeliverShotContactsPhase();
+        // :210 gUpdateRegisteredSpawners: a due unit spawns before the sweep sees the list.
+        int spawned = RunRegisteredSpawners(dt);
+        // :212 gSweepRetiredEntities: message 5 and the unlink, once per frame.
+        int swept = SweepRetiredEntities();
+        return LastSoloFrame = new SoloFrameResult(dt, steps, dispatched, message6, spawned, swept);
+    }
+
+    /// <summary>
+    /// Message 6 of the Sky Captain (800271A4.c:180) for <paramref name="dt"/> clock ticks, with the
+    /// legacy Csac and pad stages of a scene driven without the walker update. The full retail frame
+    /// order lives in <see cref="AdvanceSoloFrame"/>; this entry point stays for previews and tests
+    /// that step the spawner and the pad clock on their own.
+    /// </summary>
+    /// <remarks>
+    /// Called right after <see cref="AdvanceWalker"/> it continues that frame, so it does not repeat
+    /// the queued-command pass the walker's retirement stage already ran; called on its own it opens
+    /// its own frame. <see cref="CommandPassCount"/> makes that ownership observable.
+    /// </remarks>
     public void AdvanceSkyCaptain(int dt)
     {
+        if (!_walkerFrameOpen) _frameIndex++;
+        _walkerFrameOpen = false;
         _skyCaptain?.Advance(dt, this);
         if (EnableCsacSpawner && _csacSpawner is not null)
         {
@@ -481,14 +554,95 @@ public sealed class LevelScene
             // list walk of func_80031DE8 (:90): a unit due this frame stands in D_800A8F90 for this
             // frame's scan, which is why the drain precedes it.
             _csacSpawner.Drain(dt);
-            AdvancePurchasePads(dt);
+            // gCullActiveEntitiesSolo (800271A4.c:178) rebuilds D_800A8F90 before the zone scan (:90)
+            // and the command pass (func_8004CECC) read it. AdvanceWalker normally ran it already for
+            // this frame; this path can also run without the walker step, so it culls on its own.
+            _entities?.CullActive(_walker?.X ?? MechWorld.X, _walker?.Z ?? MechWorld.Z);
+            AdvancePurchasePads(dt, dispatchCommands: true);
             // gRunSoloSessionFrame (800271A4.c:210-212) sweeps retired entities after spawners and
             // timers, decrementing Csac TotalSpawned via gRecordSpawnedUnitRetirement (8004D598.c:51-52).
             _entities?.SweepRetired();
         }
     }
 
-    private void AdvancePurchasePads(int dt)
+    /// <summary>gCullActiveEntitiesSolo (:178) for the entity list D_8009FA40 and the placed elevators.</summary>
+    private void CullActiveSolo()
+    {
+        int x = _walker?.X ?? MechWorld.X, z = _walker?.Z ?? MechWorld.Z;
+        _entities?.CullActive(x, z);
+        ObjectRegistry.CullActiveElevators(x, z);
+    }
+
+    /// <summary>
+    /// gDispatchQueuedEntityCommands (:179, func_8004CECC): the (kind, value) pairs a script queued
+    /// before this frame act only after the issuing script returned, so the pass never nests in the
+    /// script or in the pad trigger that ran it. gStepPendingMessages (8004DB74) retries full slot
+    /// tables first.
+    /// </summary>
+    /// <remarks>
+    /// Retail runs this pass once per frame (800271A4.c:179). The port has three drivers that can
+    /// reach it - <see cref="AdvanceSoloFrame"/>, <see cref="AdvanceWalker"/>'s retirement stage and
+    /// <see cref="AdvanceSkyCaptain"/> - and the legacy pair calls the last two in one frame, so a
+    /// frame marker makes the pass idempotent within <see cref="_frameIndex"/>: the second and third
+    /// caller of the same frame return 0 without touching the queue. Pairs queued during a pass stay
+    /// pending until the next frame's pass, which is where the retail order puts them as well.
+    /// </remarks>
+    private int DispatchQueuedCommands(int dt)
+    {
+        if (_entities is not { } world) return 0;
+        if (_lastCommandPassFrame == _frameIndex) return 0;
+        _lastCommandPassFrame = _frameIndex;
+        CommandPassCount++;
+        return PurchasePads?.RunEntityCommands(world, dt) ?? 0;
+    }
+
+    private long _frameIndex;
+    private long _lastCommandPassFrame = -1;
+    private bool _walkerFrameOpen;
+
+    /// <summary>
+    /// Number of queued-command passes the scene has executed. Retail runs at most one per frame;
+    /// the golden-order tests read this to hold the legacy <see cref="AdvanceWalker"/> +
+    /// <see cref="AdvanceSkyCaptain"/> pair to that rule.
+    /// </summary>
+    public int CommandPassCount { get; private set; }
+
+    /// <summary>
+    /// gBroadcastEntityMessage(6, dt, 0) (:180) over both halves of the port's entity storage: the
+    /// active table D_800A8F90 (<see cref="EntityWorld.BroadcastMessage"/>, func_8004CD6C) and the
+    /// live-object registry D_8009F800 that carries the map objects and Csac wrappers
+    /// (<see cref="MapObjectRegistry.BroadcastMessage6"/>). The type-37 Sky Captain tick is the
+    /// message-6 arm of func_800357C0 and runs in the same phase.
+    /// </summary>
+    private int BroadcastMessage6(int dt)
+    {
+        int delivered = _entities?.BroadcastMessage(LiveObjectRegistry.MessageFrameTick, dt) ?? 0;
+        // func_8004CD6C.c:41-54 skips entries with id <= 0; an unallocated registry reports zero.
+        delivered += ObjectRegistry.BroadcastMessage6(dt);
+        _skyCaptain?.Advance(dt, this);
+        return delivered;
+    }
+
+    /// <summary>gUpdateMapZoneTriggers (:181) with the pad clock, timer and score sync of the frame.</summary>
+    private void RunMapZoneTriggers(int dt) => AdvancePurchasePads(dt, dispatchCommands: false);
+
+    /// <summary>gProcessDeferredEntityUpdates (:182, 8004CE04.c:49-66).</summary>
+    private void RunDeferredUpdates() => _entities?.ProcessDeferredUpdates();
+
+    /// <summary>gUpdateRegisteredSpawners (:210, 800616A0.c): the Csac slot timers of the frame.</summary>
+    private int RunRegisteredSpawners(int dt) =>
+        EnableCsacSpawner && _csacSpawner is not null ? _csacSpawner.Drain(dt) : 0;
+
+    /// <summary>gSweepRetiredEntities (:212, 8004D598.c:39-71): message 5, the unlink and the free.</summary>
+    private int SweepRetiredEntities() => _entities?.SweepRetired() ?? 0;
+
+    /// <summary>The region-pass projectile pairs of the frame (<see cref="DeliverShotContacts"/>).</summary>
+    private void DeliverShotContactsPhase()
+    {
+        if (_entities is { } world) DeliverShotContacts(world);
+    }
+
+    private void AdvancePurchasePads(int dt, bool dispatchCommands)
     {
         if (_purchasePads is not { } pads || _objectives is not { } objectives) return;
         _purchaseFrameTime = unchecked(_purchaseFrameTime + dt);
@@ -529,7 +683,9 @@ public sealed class LevelScene
         // func_8004CECC: the (kind, value) pairs a script queued this frame act only after the issuing
         // script returned, so gRetireEntity (8004CECC.c:108-114) never nests in the script or in the
         // pad trigger that ran it. gStepPendingMessages (8004DB74) retries full slot tables first.
-        if (_entities is { } commandWorld) pads.RunEntityCommands(commandWorld, dt);
+        // The solo frame dispatches the queue in its own phase before message 6 (800271A4.c:179); the
+        // legacy AdvanceSkyCaptain path dispatches through the same once-per-frame marker.
+        if (dispatchCommands) DispatchQueuedCommands(dt);
         pads.SyncToMatchScore(objectives.Score);
         if (_skyCaptain is { } skyAfter) pads.SyncToEconomy(skyAfter.Economy);
     }
@@ -840,20 +996,50 @@ public sealed class LevelScene
 
     /// <summary>
     /// Retail chase-camera preset state (<c>info-&gt;state</c>, <c>src/game/800569EC.c:228-246</c>)
-    /// stepped on every <see cref="AdvanceWalker"/> call from the translated pad word and live MapZones.
+    /// stepped on every <see cref="AdvanceSoloFrame"/> call from the translated pad word and live MapZones.
     /// </summary>
     public ChaseCameraState ChaseCamera { get; } = new();
 
     /// <summary>The attached walker body, so callers can read its health for the HUD.</summary>
     public MechBody? Walker => _walker;
 
-    /// <summary>Advance the persistent walker by caller-supplied retail steps and input flags.</summary>
+    /// <summary>
+    /// Legacy locomotion driver: culls the frame's entity table, runs the player update with
+    /// <paramref name="steps"/> substeps and then the retirement stages in the order this preview
+    /// path always used. The retail frame order lives in <see cref="AdvanceSoloFrame"/>; a host that
+    /// wants the frame should call that one instead.
+    /// </summary>
     public int AdvanceWalker(int steps, uint flags, AnalogPad pad)
     {
         if (_walker is null || _walkerWorld is null) throw new InvalidOperationException("Attach a walker first");
+        // One legacy frame: the walker's retirement stage owns the queued-command pass of this frame,
+        // and a following AdvanceSkyCaptain continues the same frame (see CommandPassCount).
+        _frameIndex++;
+        _walkerFrameOpen = true;
         // D_800A8F90 membership for the map-zone scan of this frame (80031DE8.c:119-144).
-        _entities?.CullActive(_walker.X, _walker.Z);
-        ObjectRegistry.CullActiveElevators(_walker.X, _walker.Z);
+        CullActiveSolo();
+        int ticks = steps * RetailClock.LocomotionTicks;
+        int frames = ticks / RetailClock.TicksPerFrame;
+        int result = RunEntityWorldTick(steps, flags, pad);
+        if (frames > 0) AdvanceRetirement();
+        // Tick placed type-10 elevators on the walker clock when EnableCsacSpawner is off; when
+        // EnableCsacSpawner is on, the solo frame broadcasts message 6 over LiveObjects once.
+        if (!EnableCsacSpawner && ticks > 0 && ObjectRegistry.Elevators.Count > 0)
+        {
+            foreach (var lift in ObjectRegistry.Elevators.ToArray())
+                lift.OnMessage(LiveObjectRegistry.MessageFrameTick, ticks, 0);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// The entity world tick of the frame (<c>gRunEntityWorldTick</c>, <c>800271A4.c:183</c>): the
+    /// player unit update of <c>func_800588D4</c> with <paramref name="steps"/> locomotion substeps,
+    /// then the shot, beam, pickup, capture, recoil, pose and chase-camera steps that hang off it.
+    /// </summary>
+    private int RunEntityWorldTick(int steps, uint flags, AnalogPad pad)
+    {
+        if (_walker is null || _walkerWorld is null) throw new InvalidOperationException("Attach a walker first");
         _walkerWorld.Pads[0] = pad;
         // func_800588D4:259 runs the player unit update, not the bare walker: func_80055988 applies the
         // position shift, the L1+R1 form change, the control masks, and then dispatches to the walker
@@ -894,38 +1080,29 @@ public sealed class LevelScene
         // and gate states 5 and 6 on gTestCameraZoneOverlap (80031B40.c:74-89).
         ChaseCamera.Step(padWord, ActiveMapZones, _walker.X, _walker.Z, PlayerCollisionRadius,
             frozen: _walker.Frozen != 0);
-        if (frames > 0) AdvanceRetirement();
-        // Tick placed type-10 elevators on the walker clock when EnableCsacSpawner is off; when
-        // EnableCsacSpawner is on, AdvanceSkyCaptain broadcasts message 6 over LiveObjects once.
-        if (!EnableCsacSpawner && ticks > 0 && ObjectRegistry.Elevators.Count > 0)
-        {
-            foreach (var lift in ObjectRegistry.Elevators.ToArray())
-                lift.OnMessage(LiveObjectRegistry.MessageFrameTick, ticks, 0);
-        }
         return result;
     }
 
     /// <summary>
-    /// The entity stages of the solo frame (800271A4.c:177-212) that turn a lethal hit into message 5:
-    /// the cull (:178, func_8004DF28), the deferred updates that send message 4 to every entity whose
-    /// health went below 0 (:182, func_8004CE04), the pair collision of the region pass that delivers
-    /// message 11 (:191, func_80026D5C -&gt; 80062FB4 -&gt; 80062614 -&gt; 800623FC -&gt; 800620D8) and the
-    /// retirement sweep that sends message 5 (:212, func_8004D598). The walker step above stands in
-    /// for the message-6 broadcast of :180, so a shot fired this frame is tested this frame, and a
-    /// lethal hit retires on the next frame, as in retail. A call that advances several frames at once
-    /// runs the stages once, after the batched shot motion.
+    /// The retirement stages of the legacy <see cref="AdvanceWalker"/> driver, in the order that path
+    /// always used: the cull (:178, func_8004DF28), the deferred updates that send message 4 to every
+    /// entity whose health went below 0 (:182, func_8004CE04), the pair collision of the region pass
+    /// that delivers message 11 (:191, func_80026D5C -&gt; 80062FB4 -&gt; 80062614 -&gt; 800623FC -&gt;
+    /// 800620D8), the queued command pass and the retirement sweep that sends message 5 (:212,
+    /// func_8004D598). The solo frame runs the same phases in the retail order through
+    /// <see cref="AdvanceSoloFrame"/>.
     /// </summary>
     private void AdvanceRetirement()
     {
         if (_entities is not { } world || _walker is null) return;
-        world.CullActive(_walker.X, _walker.Z);
-        world.ProcessDeferredUpdates();
+        CullActiveSolo();
+        RunDeferredUpdates();
         DeliverShotContacts(world);
         // A capture script of this step can queue a 0x3D pair through OnPostCaptureScript; the entry
         // pass applies it before the sweep, as func_8004CECC does. The pending-message timers are
         // stepped by the session frame in AdvancePurchasePads, so no elapsed time is passed here.
-        PurchasePads?.RunEntityCommands(world);
-        world.SweepRetired();
+        DispatchQueuedCommands(0);
+        SweepRetiredEntities();
     }
 
     /// <summary>
@@ -1008,7 +1185,7 @@ public sealed class LevelScene
 
     /// <summary>
     /// The translated pad word gWeaponSlotInput reads (func_800576A8, stored at state + 0x30). The
-    /// caller sets this before <see cref="AdvanceWalker"/>: it is the same word
+    /// caller sets this before <see cref="AdvanceSoloFrame"/>: it is the same word
     /// <see cref="MechInput.TranslatePadButtons"/> produced for the walker, not the raw button set.
     /// </summary>
     public uint HeldPadWord
@@ -1120,6 +1297,9 @@ public sealed class LevelScene
     /// is not ported, so every entry is the neutral modulation 0x80.
     /// </summary>
     public byte[] Ramp { get; } = Enumerable.Repeat((byte)0x80, 256).ToArray();
+
+    /// <summary>Model of the loaded mission by record id (CONFT.MIS model table).</summary>
+    internal Model? ModelById(int id) => _modelsById.TryGetValue(id, out var model) ? model : null;
 
     public LevelScene(string misPath)
     {
@@ -1445,7 +1625,8 @@ public sealed class LevelScene
         // 8006125C.c:74-76 adds them through gSpawnTargetableEntityId. Retirement clears the
         // runtime id (8004D958.c:59) before the sweep unlinks the unit (8004D598.c:55-64).
         // The world holds specialized outpost entities, not their spawner wrappers; the objective
-        // pass above draws them. SpawnedCsacUnit has no heading, so its model is placed unrotated.
+        // pass above draws them. Rail units and flyers carry their heading in the mover (+0x140
+        // direction / +0x78 flight vector), so the model is placed with that basis.
         int spawnedUnits = 0;
         if (_entities is { Units.Count: > 0 } entities)
         {
@@ -1457,7 +1638,7 @@ public sealed class LevelScene
                 if (unit.EntityType == WeaponPickups.PlacementPayloadType) continue;
                 if (!_modelsById.TryGetValue(unit.ModelId, out var model)
                     || !model.Vertices.TryGetValue(1, out var verts) || verts.Count == 0) continue;
-                var matrix = PlacedMatrix(unit.X, unit.Y, unit.Z, view);
+                var matrix = UnitMatrix(unit, view);
                 spawnedUnits += QueueModel(model, verts, 0, matrix, 0xFF, ref drawOrder);
             }
         }
@@ -1606,6 +1787,14 @@ public sealed class LevelScene
         }
     }
 
+    /// <summary>
+    /// Diagnostic switch of <see cref="Tri"/>: when true the modulated texel is written without the
+    /// PS1 semi-transparency blend (the tpage ABR mode). Production never sets it; the golden
+    /// attribution test uses it to reproduce the digests of the pre-blend baseline, which proves that
+    /// the blend is the only cause of the re-recorded frame 0 / frame 120 hashes.
+    /// </summary>
+    internal bool SemiBlendDisabled { get; set; }
+
     /// <summary>Textured, colour-modulated triangle; xy = packed screen word, uv = low 16 bits (u | v &lt;&lt; 8).</summary>
     internal void Tri(uint xy0, uint uv0, uint c0, uint xy1, uint uv1, uint c1, uint xy2, uint uv2, uint c2,
         ushort tpage, ushort clut, bool semi)
@@ -1686,7 +1875,7 @@ public sealed class LevelScene
                 int vr = Math.Min(255, (int)(tr * (b0 * r0 + b1 * r1 + b2 * r2) / 128.0));
                 int vg = Math.Min(255, (int)(tg * (b0 * g0 + b1 * g1 + b2 * g2) / 128.0));
                 int vb = Math.Min(255, (int)(tb * (b0 * b0c + b1 * b1c + b2 * b2c) / 128.0));
-                if (semi && (raw & 0x8000) != 0)
+                if (!SemiBlendDisabled && semi && (raw & 0x8000) != 0)
                 {
                     int br = rgbBuf[rowBase], bg = rgbBuf[rowBase + 1], bb = rgbBuf[rowBase + 2];
                     switch (abr)
@@ -1771,6 +1960,49 @@ public sealed class LevelScene
         0, 0, 0x10000,
     };
 
+    /// <summary>Scratch rotation for <see cref="UnitMatrix"/>; filled per unit, consumed by Compose.</summary>
+    private readonly int[] _unitBasis = new int[9];
+
+    /// <summary>
+    /// Rotation basis of one Csac unit, as <see cref="UnitMatrix"/> hands it to the GTE. Exposed to
+    /// tests so the rows can be compared against the retail basis per heading instead of only
+    /// comparing rendered images.
+    /// </summary>
+    internal static int[] UnitBasisOf(SpawnedCsacUnit unit)
+    {
+        var basis = new int[9];
+        FillUnitBasis(unit, basis);
+        return basis;
+    }
+
+    /// <summary>
+    /// Fills <paramref name="basis"/> with the rotation of <paramref name="unit"/>: the hover basis
+    /// while the flyer has one, the fixed-yaw basis of a ground mover, otherwise the identity.
+    /// </summary>
+    private static void FillUnitBasis(SpawnedCsacUnit unit, int[] basis)
+    {
+        if (unit.HoverMover is { } hover && (hover.BasisRows[2][0] | hover.BasisRows[2][1] | hover.BasisRows[2][2]) != 0)
+        {
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                    basis[i * 3 + j] = hover.BasisRows[i][j];
+            return;
+        }
+        // gOrientEntityBasis's fixed-yaw branch (func_80037EB4, gOrientEntityBasis.c:75-90) needs the
+        // +0x140 path direction the mover keeps. A unit without an initialized mover has no such
+        // direction, so it keeps the identity placement of gInitObjectFromDef - testing DirX/DirZ
+        // instead would rotate a unit whose rail-mover initialization failed, because the spawner's
+        // default heading is (0x10000, 0).
+        if (unit.IsMobile)
+        {
+            basis[0] = unit.DirZ; basis[1] = 0; basis[2] = -unit.DirX;
+            basis[3] = 0; basis[4] = 0x10000; basis[5] = 0;
+            basis[6] = unit.DirX; basis[7] = 0; basis[8] = unit.DirZ;
+            return;
+        }
+        IdentityRotation.CopyTo(basis, 0);
+    }
+
     /// <summary>Unrotated placement of a model at a world position, relative to the mech origin.</summary>
     private Gte.Mat PlacedMatrix(int x, int y, int z, Gte.Mat view)
     {
@@ -1779,6 +2011,42 @@ public sealed class LevelScene
         int lz = (z - MechWorld.Z) >> 4;
         // 0x10000 is 1.0 in engine matrix units (Gte.Load shifts the rotation right by 4).
         var local = new Gte.Mat(IdentityRotation, lx << 4, ly << 4, lz << 4);
+        return ScriptRender.Compose(local, view);
+    }
+
+    /// <summary>
+    /// Model matrix of one Csac unit at its world position, rotated by the heading its locomotion
+    /// mover keeps. Retail orients such an entity through gOrientEntityBasis (func_80037EB4).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Ground movers (rail path types 5 and 28) take the fixed-yaw branch of gOrientEntityBasis
+    /// (func_80037EB4, src/game/renderer-scene/gOrientEntityBasis.c:75-90), which builds the basis
+    /// straight from the path direction vector at +0x140: row0 = (dz, 0, -dx), row1 = (0, 1, 0),
+    /// row2 = (dx, 0, dz). gStepPathMover re-runs it every step (8005027C.c:256), so a curve turns
+    /// continuously instead of snapping.
+    /// </para>
+    /// <para>
+    /// Flyers (type-9 hover mover) use the full three-axis body basis instead: gUpdateHoverEnemy
+    /// builds rows 0..2 with gBuildBasisZFromPair(dir, up) at +0x2C (800324E0.c:382, 80019310.c:44-49)
+    /// after tilting the up vector by the band error (+0x2000 at :380). Row 2 is the flight vector
+    /// including its y component, which is the nose pitch. <see cref="HoverEnemy.BasisRows"/> already
+    /// holds that basis, built by the same function in the tick, so it is handed over unchanged.
+    /// </para>
+    /// <para>
+    /// Units without a mover (static spawner output) keep the identity orientation, like
+    /// gInitObjectFromDef places them. The test is <see cref="SpawnedCsacUnit.IsMobile"/>, not the
+    /// heading words: the spawner seeds DirX/DirZ with (0x10000, 0) even when its rail-mover
+    /// initialization failed, so a heading test would turn such a unit by 90 degrees.
+    /// </para>
+    /// </remarks>
+    private Gte.Mat UnitMatrix(SpawnedCsacUnit unit, Gte.Mat view)
+    {
+        int lx = (unit.X - MechWorld.X) >> 4;
+        int ly = (unit.Y - MechWorld.Y) >> 4;
+        int lz = (unit.Z - MechWorld.Z) >> 4;
+        FillUnitBasis(unit, _unitBasis); // scratch, consumed by Compose below
+        var local = new Gte.Mat(_unitBasis, lx << 4, ly << 4, lz << 4);
         return ScriptRender.Compose(local, view);
     }
 
@@ -1842,8 +2110,15 @@ public sealed class LevelScene
         return map;
     }
 
-    /// <summary>Mech face, drawn like WireframeScene.DrawTexturedFace (3DTL record, unmodulated texels).</summary>
-    private void DrawModelFace(TexturedFace face, Model model)
+    /// <summary>
+    /// Mech face, drawn like WireframeScene.DrawTexturedFace (3DTL record, unmodulated texels).
+    /// A face whose loaded flags carry bit 1 keeps the semi-transparency bit of the retail packet
+    /// (<c>tmp = (fl &amp; 2) &lt;&lt; 24</c>, 80015F38.c:73) and is blended by the ABR mode of its
+    /// texture page (tpage bits 5..6): the Sky Captain's searchlight cone is eight such faces over the
+    /// three texture records 0x02F0/0x0300/0x0310 on the additive page 0x00BE (CLUT 0x7F58), which
+    /// painted the scene black while drawn opaque.
+    /// </summary>
+    internal void DrawModelFace(TexturedFace face, Model model)
     {
         bool hasRec = TextureLookup(model).TryGetValue(face.TextureOffset, out var rec);
         uint uvA = hasRec ? rec.Uv0 : 0, uvB = hasRec ? rec.Uv1 : 0;
@@ -1862,17 +2137,17 @@ public sealed class LevelScene
         const uint w = 0x808080;
         uint a = (uint)face.Work.Xy0, b = (uint)face.Work.Xy1, c2 = (uint)face.Work.Xy2, d = (uint)face.Work.Xy3;
         if (face.Type == 3)
-            Tri(a, UV(0), w, b, UV(1), w, c2, UV(2), w, rec.Tpage, rec.Clut, false);
+            Tri(a, UV(0), w, b, UV(1), w, c2, UV(2), w, rec.Tpage, rec.Clut, face.Semi);
         else if (face.Type == 4)
         {
             // Work holds (v0, v1, v3, v2).
-            Tri(a, UV(0), w, b, UV(1), w, c2, UV(3), w, rec.Tpage, rec.Clut, false);
-            Tri(b, UV(1), w, d, UV(2), w, c2, UV(3), w, rec.Tpage, rec.Clut, false);
+            Tri(a, UV(0), w, b, UV(1), w, c2, UV(3), w, rec.Tpage, rec.Clut, face.Semi);
+            Tri(b, UV(1), w, d, UV(2), w, c2, UV(3), w, rec.Tpage, rec.Clut, face.Semi);
         }
         else
         {
-            Tri(a, UV(0), w, b, UV(1), w, c2, UV(2), w, rec.Tpage, rec.Clut, false);
-            Tri(b, UV(1), w, d, UV(3), w, c2, UV(2), w, rec.Tpage, rec.Clut, false);
+            Tri(a, UV(0), w, b, UV(1), w, c2, UV(2), w, rec.Tpage, rec.Clut, face.Semi);
+            Tri(b, UV(1), w, d, UV(3), w, c2, UV(2), w, rec.Tpage, rec.Clut, face.Semi);
         }
     }
 

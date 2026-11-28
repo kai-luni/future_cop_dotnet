@@ -1,19 +1,19 @@
-# Typ-Handler der Armee
+# Army type handler
 
 ## Problem
 
-Gekaufte Einheiten spawnen, zeichnen, treffen und scoren — aber der allgemeine Typ-Handler-Switch fuer bewegliche und kaempfende Einheiten ist nicht angeschlossen. Sie bewegen sich nicht und greifen nicht an.
+Purchased units spawn, draw, hit and score — but the general type-handler switch for mobile and fighting units is not connected. They do not move and do not attack.
 
-## Beleg
+## Evidence
 
-- Fehlt laut `docs/pa-playable-roadmap.md:142-168`.
-- Retail: `8002AE54.c` (Typ-Dispatch), `D_8003015C` als Beispiel eines Typ-Handlers.
+- Missing according to `docs/pa-playable-roadmap.md:142-168`.
+- Retail: `8002AE54.c` (type dispatch), `D_8003015C` as an example of a type handler.
 
-## Aufgabe
+## Task
 
-Den Typ-Switch aus `8002AE54.c` anbinden und die Handler der PA-Typen implementieren, mindestens 5, 9 und 28/0x1C.
+Wire the type switch from `8002AE54.c` and implement the handlers of the PA types, at least 5, 9 and 28/0x1C.
 
-## Akzeptanz
+## Acceptance
 
-- Eine gekaufte Einheit laeuft ihre Route ab und feuert.
-- Bestehende Spawn-, Treffer- und Scoring-Tests bleiben gruen.
+- A purchased unit walks its route and fires.
+- Existing spawn, hit and scoring tests stay green.

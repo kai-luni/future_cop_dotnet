@@ -1,22 +1,22 @@
-# Karte: zwei Item-Modelle an einer Position, nur eins einsammelbar
+# Map: two item models at one position, only one collectable
 
 ## Problem
 
-Auf der Karte liegen Items doppelt uebereinander: der Spieler sieht zwei Modelle, bekommt beim Drueberfahren aber nur ein Payload. Beobachtet im laufenden Spiel auf der Precinct-Assault-Karte.
+Items lie doubled on top of each other on the map: the player sees two models but receives only one payload when driving over them. Observed in the running game on the Precinct Assault map.
 
-## Beleg
+## Evidence
 
-- Platzierungsdaten sind es nicht: `PA/CONFT.MIS` enthaelt genau **11** Records mit Payload-Typ `0x10`, und alle 11 haben **verschiedene** x/z-Koordinaten. Keine zwei Records teilen sich eine Position (Nachzaehlung ueber die tACT-Records der Disc).
-- Das Modell kommt aus einem zweiten Feld: `src/FutureCop.Game/WeaponPickups.cs:582` setzt `modelId = 0` vorab, `:583-596` sucht im angehaengten `aRSL`-Chunk nach einem `Cobj`-Eintrag und liest daraus die Modell-Id (`:593`). Fehlt dieser Chunk oder der Eintrag, bleibt es bei **`ModelId = 0`** (`:617`).
-- `src/FutureCop.View/LevelScene.cs:935-949` zeichnet jedes nicht gesammelte Item ueber `_file.Models.FirstOrDefault(m => m.Id == item.ModelId)`. Bei `ModelId = 0` liefert das Suchen ein beliebiges Modell mit Id 0 — es ist nicht ausgeschlossen, dass dort ein gueltiges Modell liegt und an derselben Weltposition ein zweites, falsches Modell gezeichnet wird.
-- Die Auszahlung haengt dagegen allein an der Position (`WeaponPickups.Update`, `src/FutureCop.Game/WeaponPickups.cs:504-524`): `Overlaps(item, x, y, z)` pro Item, `item.Collected` erst danach. Ein doppelt gezeichnetes Modell zahlt deshalb nur einmal.
+- It is not the placement data: `PA/CONFT.MIS` contains exactly **11** records with payload type `0x10`, and all 11 have **different** x/z coordinates. No two records share a position (counted over the disc's tACT records).
+- The model comes from a second field: `src/FutureCop.Game/WeaponPickups.cs:582` presets `modelId = 0`, `:583-596` searches the attached `aRSL` chunk for a `Cobj` entry and reads the model id from it (`:593`). If that chunk or entry is missing it stays at **`ModelId = 0`** (`:617`).
+- `src/FutureCop.View/LevelScene.cs:935-949` draws every uncollected item via `_file.Models.FirstOrDefault(m => m.Id == item.ModelId)`. With `ModelId = 0` that lookup returns an arbitrary model with id 0 — a valid model may sit there and be drawn as a second, wrong model at the same world position.
+- The payout on the other hand depends on the position only (`WeaponPickups.Update`, `src/FutureCop.Game/WeaponPickups.cs:504-524`): `Overlaps(item, x, y, z)` per item, `item.Collected` only afterwards. A doubly drawn model therefore pays out only once.
 
-## Aufgabe
+## Task
 
-Ursache eingrenzen, ob das zweite Modell aus `ModelId = 0` (Fallback auf ein fremdes Modell) oder aus einem zweiten Zeichenweg derselben Platzierung stammt. Danach nur den fehlerhaften Zweig korrigieren: ein Item darf genau ein Modell an genau einer Weltposition zeichnen.
+Narrow down whether the second model comes from `ModelId = 0` (fallback to a foreign model) or from a second draw path of the same placement. Then fix only the faulty branch: one item must draw exactly one model at exactly one world position.
 
-## Akzeptanz
+## Acceptance
 
-- Fuer die 11 `0x10`-Records von `CONFT.MIS` wird genau ein Modell je Record gezeichnet; ein Test zaehlt die gezeichneten Pickup-Modelle gegen `Pickups.Items.Count(i => !i.Collected)`.
-- Ein Record ohne `aRSL`-`Cobj`-Eintrag zeichnet nichts, statt ein fremdes Modell zu borgen, oder wird beim Laden uebersprungen.
-- Der Einsammel-Pfad bleibt unveraendert: pro Item genau eine Auszahlung.
+- For the 11 `0x10` records of `CONFT.MIS` exactly one model is drawn per record; a test counts the drawn pickup models against `Pickups.Items.Count(i => !i.Collected)`.
+- A record without an `aRSL` `Cobj` entry draws nothing instead of borrowing a foreign model, or is skipped on load.
+- The collection path stays unchanged: exactly one payout per item.

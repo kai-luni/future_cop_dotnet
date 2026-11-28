@@ -1,19 +1,19 @@
-# Match-Ende
+# Match end
 
 ## Problem
 
-Ein Match endet nie. Nach dem Sieg oder der Niederlage laeuft das Level weiter.
+A match never ends. After a win or a loss the level keeps running.
 
-## Beleg
+## Evidence
 
-- Fehlt laut `docs/pa-playable-roadmap.md:142-168`.
-- Haengt an `03-gegnerfeuer-und-spielertod.md` (Niederlage) und an `01-csac-zielsuche.md` (Sieg ueber Scoring).
+- Missing according to `docs/pa-playable-roadmap.md:142-168`.
+- Depends on `03-gegnerfeuer-und-spielertod.md` (defeat) and on `01-csac-zielsuche.md` (victory through scoring).
 
-## Aufgabe
+## Task
 
-Die Abschlussbedingung des Matches auswerten und einen Endzustand herstellen: Auswertung, Anzeige, Rueckkehr ins Menue.
+Evaluate the match's completion condition and produce an end state: evaluation, display, return to the menu.
 
-## Akzeptanz
+## Acceptance
 
-- Erreichtes Sieg- oder Niederlageziel beendet das Level erkennbar.
-- Kein Haenger, keine Exception beim Uebergang.
+- A reached victory or defeat condition visibly ends the level.
+- No hang and no exception during the transition.

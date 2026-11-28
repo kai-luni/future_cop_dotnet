@@ -10,7 +10,16 @@ public readonly record struct Work(int Xy0, int Xy1, int Xy2, int Xy3, int Z);
 public readonly record struct WireFace(int Type, int Group, Work Work);
 
 /// <summary>One accepted face of the polygon walk with its 3DTL byte offset for textured drawing.</summary>
-public readonly record struct TexturedFace(int Type, int Group, Work Work, ushort TextureOffset);
+/// <param name="Type">Part type from the loaded flags word (3 triangle, 4 quad, 5/6 billboard).</param>
+/// <param name="Group">Part group from the flags word bits 12..14 (draw mask bit).</param>
+/// <param name="Work">Projected corners and sort depth.</param>
+/// <param name="TextureOffset">Byte offset of the face's 3DTL texture record.</param>
+/// <param name="Semi">
+/// Loaded flags bit 1, i.e. on-disc byte0 bit 3 through func_800131A0:140-152. The
+/// emitter turns it into the packet's semi-transparency bit (<c>tmp = (fl &amp; 2) &lt;&lt; 24</c>,
+/// 80015F38.c:73), so the face blends with the ABR mode of its texture page.
+/// </param>
+public readonly record struct TexturedFace(int Type, int Group, Work Work, ushort TextureOffset, bool Semi = false);
 
 /// <summary>
 /// Derived render path, ported from the decomp C:
@@ -143,7 +152,8 @@ public static class ModelRender
             int bit = 1 << ((flags >> 12) & 7);
             if ((mask & bit) == 0) continue;
             if (PartPrep(flags, p.V0, p.V1, p.V2, p.V3, vtx, widths, bias, out var work))
-                destination.Add(new TexturedFace((flags >> 8) & 0xF, (flags >> 12) & 7, work, p.TextureOffset));
+                destination.Add(new TexturedFace((flags >> 8) & 0xF, (flags >> 12) & 7, work,
+                    p.TextureOffset, (flags & 2) != 0));
         }
     }
 

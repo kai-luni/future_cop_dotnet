@@ -4,19 +4,19 @@
 
 The managed environment suite uses shared PS1 inputs, but does not exercise all operations in the C harness directly. A passing model projection or bone composition is not a standalone test of those operations.
 
-## Beleg
+## Evidence
 
 At PS1 commit `0a82cd1`, `tests/host/env_harness.c:316-348,349-367` checks `TRANSPOSE` (`80019470`), `MULMV` (`8001A81C`), `VIEW` (`80018860`), `LOADROT` (`80010820`), `XF6C` (`8001006C`) and `XF1D4` (`800101D4`). Compare with `tests/FutureCop.Assets.Tests/EnvironmentVectorTests.cs`. The similarly named `XF10C` and `XF234` exercise different output formats or translation modes.
 
-## Aufgabe
+## Task
 
 Trace each operation to its managed gameplay or rendering caller, or identify the missing port. Reuse the corresponding rows from `tests/host/vectors/env.vectors` for that path; do not add an implementation used only by tests. Keep the two rotation conventions separate.
 
-## Akzeptanz
+## Acceptance
 
 For each of the six tags, document the managed caller and run its shared vectors on both implementations, or identify the concrete missing caller that blocks the test. Check untouched outputs or register state where the managed API exposes them; distinguish per-vertex from batch coverage.
 
-## Umsetzung
+## Implementation
 
 The six remaining tags were traced to their managed call sites; only two have one. The rows are now part of
 `tests/golden/env.vectors` (copied unchanged from `tests/host/vectors/env.vectors` at `0a82cd1`), and the two
@@ -50,7 +50,7 @@ Why the four have no caller:
 Their rows stay in the shared vector file so the C harness and any future caller keep a single source. No
 test-only implementation was added.
 
-## Zusatzfälle
+## Additional cases
 
 - `func_80015AF4` (`ModelRender.WindingCulled`): the four `triangle-output` steps missing from
   `tests/portable/a1-a2.v1.json` are now `w_collinear_diag`, `w_neg_ccw`, `w_neg_cw` and `w_wide_ccw` in
@@ -59,7 +59,7 @@ test-only implementation was added.
 - `func_800187C8` (`MechMath.IntegerRoot`): all 15 `sqrt-q8` cases (0 … `0xFFFFFFFF`, including the `0xFFFFFF`
   saturation) are in `FixedPointLeafParityTests.IntegerRootMatchesThePortableQ8Cases`.
 
-## Offen
+## Open
 
 - `TRANSPOSE`, `MULMV`, `VIEW` and `XF1D4` stay vector-only. Wiring them would need a retail caller first: the
   mesh/scene path (`func_80031238`, `func_80061CAC`) is not ported, and the camera is deliberately viewer-only.

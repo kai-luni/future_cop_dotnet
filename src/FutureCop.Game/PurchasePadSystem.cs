@@ -1137,12 +1137,20 @@ public sealed class PurchasePadSystem
     /// <summary>
     /// The entry pass of func_8004CECC (<c>8004CECC.c:67-241</c>) for the kinds this port routes, and
     /// the retry walk of gStepPendingMessages (func_8004DB74, <c>8004DB74.c</c>) that precedes it.
-    /// Every linked entity with a positive runtime id consumes up to four queued pairs: a 0x3D sets
-    /// the reset bit, the no-retire bit for the value 1 and runs gRetireEntity (func_8004D958,
-    /// <c>8004CECC.c:108-114</c>). Compaction follows func_8002A5B4 (<c>:232</c>); a kind without a
-    /// handler here is skipped but stays queued.
+    /// It walks the frame's active table D_800A8F90 (<see cref="EntityWorld.Active"/>, the same set
+    /// gApplyRadialContactDamage reads): every active entity with a positive runtime id consumes up to
+    /// four queued pairs. An entity the frame's cull dropped keeps its pairs queued, so a command
+    /// never runs earlier than in retail. <see cref="TargetCandidates"/> is not the set to walk here:
+    /// it is the map-zone scan's projection of the table (only the entities that expose the Csac node
+    /// fields, with a null slot for every other active entity), so an entity without them would lose
+    /// its commands. A 0x3D sets the reset bit, the no-retire bit for the value 1
+    /// and runs gRetireEntity (func_8004D958, <c>8004CECC.c:108-114</c>). Compaction follows
+    /// func_8002A5B4 (<c>:232</c>); a kind without a handler here is skipped but stays queued.
     /// </summary>
-    /// <param name="world">The entity list D_8009FA40 the pass walks.</param>
+    /// <param name="world">
+    /// The entity world whose active table D_800A8F90 the pass walks (<see cref="EntityWorld.Active"/>,
+    /// built by the frame's <see cref="EntityWorld.CullActive"/> from D_8009FA40).
+    /// </param>
     /// <param name="elapsedTicks">Ticks subtracted from each pending-message timer this call.</param>
     /// <returns>Number of entry pairs applied.</returns>
     public int RunEntityCommands(EntityWorld world, int elapsedTicks = 0)
@@ -1150,8 +1158,9 @@ public sealed class PurchasePadSystem
         ArgumentNullException.ThrowIfNull(world);
         StepPendingCommands(elapsedTicks);
         int applied = 0;
-        // A snapshot keeps the walk stable when a retire script spawns or links an entity.
-        foreach (var entity in world.Units.ToArray())
+        // A snapshot keeps the walk stable when a retire script spawns or links an entity; D_800A8F90
+        // is the frame's membership, not the linked list D_8009FA40.
+        foreach (var entity in world.Active.ToArray())
         {
             if (entity.RuntimeId == 0) continue;                                  // :69-71
             if (!_commandQueues.TryGetValue(entity, out var queue)) continue;

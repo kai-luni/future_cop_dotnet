@@ -579,6 +579,27 @@ public sealed class EntityWorld
     }
 
     /// <summary>
+    /// gBroadcastEntityMessage (func_8004CD6C, <c>gBroadcastEntityMessage.c:41-54</c>): every entry of
+    /// the frame's active table D_800A8F90 with a positive runtime id receives
+    /// <paramref name="message"/> with <paramref name="arg2"/> as the payload. D_800A8F90 is the cull
+    /// snapshot, so an entity the frame's <see cref="CullActive"/> dropped is not reached. Returns the
+    /// number of deliveries.
+    /// </summary>
+    public int BroadcastMessage(int message, int arg2)
+    {
+        int delivered = 0;
+        // A snapshot keeps the walk stable when a handler retires or spawns; retail walks the same
+        // table with a fixed count (:47-49).
+        foreach (var entity in _active.ToArray())
+        {
+            if (entity.RuntimeId <= 0) continue;                              // :50
+            entity.HandleMessage(message, this, arg2);
+            delivered++;
+        }
+        return delivered;
+    }
+
+    /// <summary>
     /// gSweepRetiredEntities (8004D598.c:39-71): every entity whose runtime id is 0 gets message 5 and
     /// leaves the list. Returns the number of entities freed.
     /// </summary>
