@@ -31,14 +31,6 @@ public enum ArmyTypeHandlerKind
 /// (800382B4.c:292-293, type 28 delegates to the same class-5 tick at 800398EC.c) and type 9 from
 /// the end of func_800324E0 (800324E0.c:372-373) - with <c>fireFlag</c> 1.
 /// </para>
-/// <para>
-/// Retail assigns unit targets through command 1 of the entity command dispatcher
-/// (gDispatchType26Command.c:129-153 writes the slot's +0x18), which the port does not have yet
-/// (docs/todo/05). Until that path exists the handler runs the retail acquisition routine
-/// func_800600E8 with the descriptor's own search fields - the same function the scheduler calls
-/// for descriptors with flag 0x4000 - so a purchased unit engages on the production path.
-/// TODO(todo/05): drop the Acquire call once the command queue feeds slot.Target18.
-/// </para>
 /// </remarks>
 public sealed class ArmyTypeHandler
 {
@@ -94,7 +86,7 @@ public sealed class ArmyTypeHandler
     }
 
     /// <summary>
-    /// Message 6 half: func_800600E8 (acquisition) and func_80060238 (scheduler step), with the
+    /// Message 6 half: func_80060238 (scheduler step), with the
     /// fireFlag the army handlers pass (800382B4.c:292-293).
     /// </summary>
     public int Step(int frameDelta, EnemyEntity owner, EnemyWorld env)
@@ -102,8 +94,9 @@ public sealed class ArmyTypeHandler
         ArgumentNullException.ThrowIfNull(owner);
         ArgumentNullException.ThrowIfNull(env);
         if (Slot.Definition is null) return 0;
-        if (Slot.TargetClass06 != 0)
-            EnemyAttackScheduler.Acquire(Slot, frameDelta, owner, env);
+        // The scheduler owns acquisition. Calling it here would clear a cached target
+        // without 0x4000 whenever the acquisition timer has not expired (800600E8:71-86).
+        // The pending shot would then never reach the weapon's +0x22 clear (8005F6E8:426,457).
         return EnemyAttackScheduler.Step(Slot, frameDelta, owner, null, 1, env);
     }
 

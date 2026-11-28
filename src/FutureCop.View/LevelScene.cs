@@ -99,15 +99,16 @@ public sealed partial class LevelScene
     public PlayerUnit? PlayerUnit => _playerUnit;
 
     /// <summary>
-    /// The hostile fire path, or null until <see cref="EnableEnemyFire"/>. Created lazily so a static
-    /// preview does not scan the mission for attack definitions.
+    /// The hostile fire path. <see cref="EnableObjectives"/> builds it for the running level, so the
+    /// playable entry (MenuFlow calls EnableFiring, which calls EnableObjectives) arms enemy fire
+    /// without an explicit <see cref="EnableEnemyFire"/>.
     /// </summary>
     public LevelEnemyFire? EnemyFire
     {
         get
         {
             if (_enemyFire is null && _enemyFireEnabled)
-                _enemyFire = new LevelEnemyFire(_file.Bytes, Map, ArmyAttackWorld?.Table);
+                _enemyFire = new LevelEnemyFire(_file.Bytes, Map, ArmyAttackWorld?.Table, () => ArmyAttackWorld);
             return _enemyFire;
         }
     }
@@ -167,14 +168,15 @@ public sealed partial class LevelScene
         _fireEnabled = true;
         _ = Weapons;
         // func_8002FC90:188-199 refills the control block the fire path spends from, and the gauge
-        // bits at +0x1C/+0x1E raise the same health word the walker carries.
+        // bits raise the entity's +0x1C health word (8002FC90.c:164-169 writes the same word the
+        // damage path subtracts from, 80058210.c:101-102), not the +0x1E weapon-limit scale.
         if (_pickups is null)
         {
             _pickupField = WeaponPickups.FromMission(_file.Bytes, WeaponCatalog.LoadRegistry(_file), Map);
             _pickupField.OnRetired = RetirePickupEntity;
             _pickups = new PickupItems(_pickupField,
-                PlayerResupplyState.ForWalker(Weapons!.Slots, () => Walker!.Health,
-                    v => Walker!.Health = (short)v, 0x7F00));
+                PlayerResupplyState.ForWalker(Weapons!.Slots, () => PlayerUnit?.Health ?? 0,
+                    v => { if (PlayerUnit is { } unit) unit.Health = (short)v; }, 0x7F00));
         }
         EnableObjectives();
         // gBeamPartUpdate (func_8006B23C) traces the segment against the level map every frame
@@ -229,7 +231,8 @@ public sealed partial class LevelScene
     {
         if (_objectives is not null) return;
         // Enemy fire is part of the running level (message 6 steps the attack scheduler of every
-        // unit), not of a static preview; the table is built on first use in RunEntityWorldTick.
+        // unit), not of a static preview. The path itself is built at the end of this method, once
+        // the army world it steps the units against exists.
         _enemyFireEnabled = true;
         var records = MissionEntities.Load(_file);
         _playerTeam = records.FirstOrDefault(r => r.Type == 1 && r.Id == Actor.Id)?.Team ?? 0;
@@ -379,6 +382,10 @@ public sealed partial class LevelScene
         ObjectRegistry.FinishLevelLoad();
         ObjectRegistry.ScreenState = MapObjectRegistry.ScreenStateImmediatePlay;
         ObjectRegistry.CullActiveElevators(MechWorld.X, MechWorld.Z);
+        // Build the fire path here, after the army world exists: the playable entry (MenuFlow calls
+        // EnableFiring, which calls this method) must not need an explicit EnableEnemyFire, and
+        // RunEntityWorldTick gates the tick on the field being non-null.
+        _ = EnemyFire;
     }
 
     private void BindInitialPickupsToCsacSpawner()
@@ -579,7 +586,13 @@ public sealed partial class LevelScene
         int dispatched = DispatchQueuedCommands(dt);
         // D_8009FA58 holds the player positions of the previous frame's player update (:183 runs after
         // :180), which is what the army handlers see in func_8004E80C during this message 6.
-        if (_walker is { }) UpdatePlayerTargets();
+        if (_walker is { } walker)
+        {
+            UpdatePlayerTargets();
+            // Publish the player target before the army handlers step their shared slots.
+            _enemyFire?.Sync(_csacSpawner?.SpawnedUnits ?? Array.Empty<SpawnedCsacUnit>(),
+                walker.X, walker.Y, walker.Z, _playerTeam);
+        }
         // :180 gBroadcastEntityMessage(6, gFrameDelta, 0), including the type-37 Sky Captain tick.
         int message6 = BroadcastMessage6(dt);
         // :181 gUpdateMapZoneTriggers (80031DE8.c) with the pad clock of the frame.
@@ -1058,11 +1071,19 @@ public sealed partial class LevelScene
             GroundObjects = ObjectRegistry.ProbeGroundObjects,
         };
         MechWorld = (body.X, body.Y, body.Z);
-        // func_8005908C: one player unit per session; its checkpoint (+0xC4) is the position
-        // func_80058714:138 restores after the death countdown.
-        _playerUnit = new PlayerUnit(Actor.Id, body.X, body.Y, body.Z, body.Health)
+        // func_8005908C: one player unit per session; its checkpoint (+0xC4) is the full position
+        // func_80058714:138 copies back after the death countdown, and :169-171 refills the three
+        // weapon slots to their scaled maximum before the animation reset.
+        _playerUnit = new PlayerUnit(Actor.Id, body.X, body.Y, body.Z, body.Health, new PlayerUnitHooks
         {
-            Checkpoint = (body.X, body.Z),
+            Respawned = _ =>
+            {
+                if (_pickupField is null || !_fireEnabled) return;
+                for (int slot = 0; slot < 3; slot++) _pickupField.RefillAmmo(Weapons!.Slots, slot, -1);
+            },
+        })
+        {
+            Checkpoint = (body.X, body.Y, body.Z),
         };
         UpdatePlayerTarget(Actor.Id, body);
         if (_purchasePads is { } pads) pads.TargetCandidatesStale = true;
@@ -1131,9 +1152,8 @@ public sealed partial class LevelScene
         bool wasDead = playerUnit?.Dead == true;
         if (playerUnit is not null && !wasDead)
         {
-            // The pickup/resupply path writes walker.Health; the entity's +0x1C is the word the
-            // retail hit path subtracts from, so the frame starts from the live armour value.
-            playerUnit.Health = _walker.Health;
+            // The entity's +0x1C health word is the authority (80058210.c:101-102 subtracts the
+            // damage there); the walker's +0x1E stays the fall-damage scale MechWalker:886 reads.
             playerUnit.WorldX = _walker.X;
             playerUnit.WorldY = _walker.Y;
             playerUnit.WorldZ = _walker.Z;
@@ -1164,21 +1184,21 @@ public sealed partial class LevelScene
             playerUnit.Tick(ticks);
             if (wasDead && !playerUnit.Dead)
             {
-                // func_80058714:138-166 restores the checkpoint position and the full health.
+                // func_80058714:138 copies the whole checkpoint Vec3 back into the model coordinate.
                 _walker.X = playerUnit.WorldX;
+                _walker.Y = playerUnit.WorldY;
                 _walker.Z = playerUnit.WorldZ;
                 MechWorld = (_walker.X, _walker.Y, _walker.Z);
             }
-            // The HUD reads the walker's +0x1E; a dead player shows an empty gauge, not a negative one.
-            _walker.Health = playerUnit.Dead ? (short)0 : playerUnit.Health;
         }
-        if (_enemyFire is not null && playerUnit is not null && _entities is not null && !playerUnit.Dead)
+        // Shots still move and expire during the respawn countdown; the contact gate
+        // rejects a dead player. Pausing the shot queue would dump it at the checkpoint.
+        if (_enemyFire is not null && playerUnit is not null && _entities is not null)
         {
             var fireTarget = CoordOf(_parts[0].Model.Id, _walker.X, _walker.Y, _walker.Z);
             _enemyFire.Sync(_csacSpawner?.SpawnedUnits ?? Array.Empty<SpawnedCsacUnit>(),
                 _walker.X, _walker.Y, _walker.Z, _playerTeam);
             _enemyFire.Tick(ticks, playerUnit, fireTarget, _entities);
-            _walker.Health = playerUnit.Dead ? (short)0 : playerUnit.Health;
         }
         _weapons?.AdvanceShots(frames);
         // Beams live on the 60 Hz frame, like the trigger that spawns them.

@@ -62,15 +62,6 @@ public class EntityScriptScoringTests
         Assert.Equal(0, score.Score[0]);
         // A native score change between scripts must survive the VM round trip.
         score.Total[1] = 3;
-        // The P2 score word is not part of the retire script, so it can only be checked against its
-        // value at the moment the script runs: the Cfun timers keep running through the tumble.
-        int p2ScoreAtRetire = -1;
-        var runScript = world.OnScript!;
-        world.OnScript = (entity, offset, arg1, arg2) =>
-        {
-            if (offset == record.Scripts[1]) p2ScoreAtRetire = score.Score[1];
-            runScript(entity, offset, arg1, arg2);
-        };
 
         // gHandleTumblingFlyer message 4 (80032F3C.c:74-101): the 10/16 roll of :84 decides whether a
         // shot type-9 flyer breaks off into the tumble (state 3, dive, retire at the ground impact) or
@@ -84,10 +75,10 @@ public class EntityScriptScoringTests
         Assert.DoesNotContain(unit, world.Units);
         Assert.DoesNotContain(bought, scene.ObjectRegistry.LiveObjects.Entries);
         // The swept body stops counting against its slot: gRecordSpawnedUnitRetirement (80061020,
-        // 8004D598.c:51-52) drops the live counter of every slot with a matching record id. The burst
-        // slot may already have spawned a replacement while the body was tumbling, so the counter has
-        // to match the bodies still in the world rather than zero.
-        Assert.Equal(world.Units.Count(u => u.RecordId == record.Id), bought.SourceSlot.TotalSpawned);
+        // 8004D598.c:51-52) drops the live counter of every slot with a matching record id. The same
+        // frame's spawner tick then spawns the replacement, so the slot counts exactly one live body.
+        Assert.Equal(1, bought.SourceSlot.TotalSpawned);
+        Assert.Equal(1, world.Units.Count(u => u.RecordId == record.Id));
 
         // CONFT pool 0x4A2: 99 15 9F 15 9E 19 00 (80069D68.c:178-186,243-257) - session[25]++,
         // session[31]++, session[30]--. The P2 score word (+0x68) is not touched by it.
@@ -96,7 +87,14 @@ public class EntityScriptScoringTests
         Assert.Equal(1, session[RpnsVmState.SessionScoreP1]);
         Assert.Equal(1, session[31]);
         Assert.Equal(0, session[RpnsVmState.SessionHelisP2]);
-        Assert.True(p2ScoreAtRetire >= 0, "the retire script has to run");
-        Assert.Equal(p2ScoreAtRetire, score.Score[1]);
+        // Fixed expectation: +0x68 is the second score word the in-game HUD draws
+        // (gDrawInGameHud.c:138-139, D_8009FA94 +0x64 is a two-word score array) and the strategic
+        // drone reads the same word as its credit balance (gUpdateDroneStrategy.c:257). Killing a
+        // linked prop feeds it (gHandleLinkedPropEntity.c:192) and the mode-2 expansion payment
+        // spends it: n is clamped to f68 and reduced by (2 - (s4C >> 2)) * 2 before f68 -= n
+        // (gUpdateDroneStrategy.c:702-712). With s4C = 4 and f68 = 4 that pays exactly 2, so the
+        // P2 word ends at 2 in retail as well - the four points are 5 - 1 for the pad plus the
+        // 2-credit purchase, not a lost kill credit.
+        Assert.Equal(2, score.Score[1]);
     }
 }

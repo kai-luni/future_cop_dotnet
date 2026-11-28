@@ -60,7 +60,7 @@ public sealed class PlayerUnit : LiveEntity
 
     private readonly int _recordId;
     private readonly PlayerUnitHooks _hooks;
-    private int _checkpointX, _checkpointZ;
+    private int _checkpointX, _checkpointY, _checkpointZ;
 
     public PlayerUnit(int recordId, int x, int y, int z, short maxHealth, PlayerUnitHooks? hooks = null)
     {
@@ -70,6 +70,7 @@ public sealed class PlayerUnit : LiveEntity
         WorldY = y;
         WorldZ = z;
         _checkpointX = x;
+        _checkpointY = y;
         _checkpointZ = z;
         Health = MaxHealth = maxHealth;
         // gInitEntityBase sets the always-active bit from the record flags and the pair gate keeps
@@ -109,11 +110,14 @@ public sealed class PlayerUnit : LiveEntity
     /// <summary>info+0xC1: the player slot the gauge table D_8009FA8C is indexed with.</summary>
     public byte SlotC1 { get; init; }
 
-    /// <summary>The checkpoint info+0xC4 the respawn restores (func_80058714:138).</summary>
-    public (int X, int Z) Checkpoint
+    /// <summary>
+    /// The checkpoint info+0xC4 the respawn restores. gRespawnPlayerEntity copies the full
+    /// <c>Vec3s32</c> into the model coordinate (80058714.c:138), so all three axes are kept.
+    /// </summary>
+    public (int X, int Y, int Z) Checkpoint
     {
-        get => (_checkpointX, _checkpointZ);
-        set { _checkpointX = value.X; _checkpointZ = value.Z; }
+        get => (_checkpointX, _checkpointY, _checkpointZ);
+        set { _checkpointX = value.X; _checkpointY = value.Y; _checkpointZ = value.Z; }
     }
 
     /// <summary>
@@ -200,7 +204,9 @@ public sealed class PlayerUnit : LiveEntity
     {
         Flags &= 0xFF7FFFFFu;                                                                    // :130-132 (pair gate)
         Flags19 &= 0x0F;                                                                         // :135
+        // :138 copies the controller's full checkpoint Vec3 (info+0xC4) into the model coordinate.
         WorldX = _checkpointX;
+        WorldY = _checkpointY;
         WorldZ = _checkpointZ;
         Flags &= 0xFCFFFFEFu;                                                                    // :162 (retire/damaged/0x10)
         Health = MaxHealth;                                                                      // :166

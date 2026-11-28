@@ -6,8 +6,8 @@ namespace FutureCop.View;
 
 /// <summary>
 /// The hostile side of the level's fire path: one <see cref="EnemyWorld"/> holding a view of every
-/// spawned Csac unit plus the player, the per-unit attack slots built from the record descriptor at
-/// +0x24 (<c>gInitAttackSchedulerSlot</c>, 80060668.c:77-107), the scheduler step
+/// spawned Csac unit plus the player, the per-unit attack slot installed by the army handler at
+/// +0xA0 (<c>gInitAttackSchedulerSlot</c>, 80060668.c:77-107; 8002AE54), the scheduler step
 /// (<c>func_80060238</c>) and the direct shots it fires (func_8005E47C) flown until they reach the
 /// player, where they are delivered as message 11 of the player handler (800584BC.c:117-119).
 /// </summary>
@@ -16,7 +16,9 @@ namespace FutureCop.View;
 /// Retail keeps these entities in the global table D_800A8F90 and steps each attack slot through
 /// message 6 of its owner. The port keeps the same table shape in <see cref="World"/> and builds the
 /// per-unit views from the spawned units of <see cref="CsacUnitSpawner"/>; the scene owns the frame
-/// and calls <see cref="Tick"/> from <c>LevelScene.RunEntityWorldTick</c>.
+/// and calls <see cref="Tick"/> from <c>LevelScene.RunEntityWorldTick</c>. The slot itself is the
+/// unit's own +0xA0 word, not a second copy: the hover tail (800324E0.c:372-373) and the rail handler
+/// (800382B4.c:292) already step it, and <see cref="Tick"/> only delivers their shot requests.
 /// </para>
 /// <para>
 /// Only the type-2 direct shot of the shipped Precinct Assault data is flown here. The lob, static,
@@ -40,7 +42,6 @@ public sealed class LevelEnemyFire
     {
         public SpawnedCsacUnit Unit = null!;
         public EnemyEntity View = null!;
-        public AttackSlot Slot = null!;
     }
 
     private sealed class Shot
@@ -57,14 +58,17 @@ public sealed class LevelEnemyFire
     }
 
     private readonly LevelMap _map;
+    private readonly Func<EnemyWorld?>? _armyWorld;
     private readonly List<UnitBinding> _units = new();
     private readonly List<Shot> _shots = new();
     private readonly EnemyEntity _playerView = new();
 
-    public LevelEnemyFire(ReadOnlySpan<byte> mission, LevelMap map, AttackDefinitionTable? table = null)
+    public LevelEnemyFire(ReadOnlySpan<byte> mission, LevelMap map, AttackDefinitionTable? table = null,
+        Func<EnemyWorld?>? armyWorld = null)
     {
         ArgumentNullException.ThrowIfNull(map);
         _map = map;
+        _armyWorld = armyWorld;
         World = new EnemyWorld(0, 64)
         {
             // D_800A2300 is one table per mission: the scene hands its instance over when it has one,
@@ -131,11 +135,10 @@ public sealed class LevelEnemyFire
             var binding = _units.Find(b => b.Unit.Id == unit.Id);
             if (binding is null)
             {
-                var record = unit.SourceSlot.Record;
-                short key = unchecked((short)record.U16(0x24));
-                if (key < 0) continue;
-                int index = EnemyAttackScheduler.FindEffectKeyIndex(World.Table, key);
-                if (index < 0) continue;   // no definition: the port skips instead of D_800A2300[-1]
+                // The unit's own +0xA0 slot is the single scheduler slot: the army handler installed
+                // it at spawn (8002AE54, CsacUnitSpawner.cs:200) and the hover/rail step drives it.
+                // A record without a slot has no attack definition to arm, so it stays unbound.
+                if (unit.AttackSlot is null) continue;
                 var view = new EnemyEntity
                 {
                     Id = unit.Id,
@@ -152,20 +155,7 @@ public sealed class LevelEnemyFire
                         new Vec3(target.Vec5CX, target.Vec5CY, target.Vec5CZ),
                         floors: false,
                         callerS1: 0).Result == 0;
-                var slot = new AttackSlot();
-                EnemyAttackScheduler.InitSlot(slot, new AttackDescriptorConfig
-                {
-                    Key = key,
-                    FlagsF02 = (ushort)record.U16(0x26),
-                    SearchF04 = (ushort)record.U8(0x28),
-                    TargetClassF05 = (byte)record.U8(0x29),
-                    RangeF06 = (ushort)record.U16(0x2A),
-                    AngleF08 = (ushort)record.U16(0x2C),
-                    AngleF0A = (ushort)record.U16(0x2E),
-                    Field0C = (ushort)record.U16(0x30),
-                    RateF0E = unchecked((short)record.U16(0x32)),
-                }, World.Table);
-                binding = new UnitBinding { Unit = unit, View = view, Slot = slot };
+                binding = new UnitBinding { Unit = unit, View = view };
                 _units.Add(binding);
             }
 
@@ -194,34 +184,45 @@ public sealed class LevelEnemyFire
 
         World.Entities.Clear();
         World.Entities.Add(_playerView);
-        foreach (var b in _units) World.Entities.Add(b.View);
+        foreach (var b in _units)
+        {
+            World.Entities.Add(b.View);
+            if (b.Unit.AttackSlot is not { } slot) continue;
+            // Keep the scene's existing player-target bridge ahead of the mover-owned step.
+            // A valid cached target without 0x4000 fires directly (80060238.c:265-271).
+            if (slot.Target18 is null && PlayerMatchesClass(slot))
+            {
+                slot.Target18 = _playerView;
+                slot.Target18Value = PlayerViewId;
+            }
+        }
     }
 
     /// <summary>
-    /// Steps every armed unit's attack slot for <paramref name="delta"/> ticks, spawns the direct
-    /// shots into <see cref="World"/> and flies them until they reach the player.
+    /// Steps the armed units' attack slots that no mover drives, flies the direct shots the army
+    /// world recorded into the player, and advances the shots already in the air.
     /// </summary>
     public void Tick(int delta, PlayerUnit player, CollisionCoord playerCoord, EntityWorld world)
     {
         ArgumentNullException.ThrowIfNull(player);
         _playerView.Timer324 = player.HitFlash31A;   // 8005F6E8.c:245-249: aim direct while it is set
+        // The army world is the shot queue the units already write to: the hover tail steps the unit's
+        // +0xA0 slot (800324E0.c:372-373) and the rail handler does the same (800382B4.c:292), both
+        // with the scene's OnSpawnDirectShot stub. Delivering those requests here keeps one slot and
+        // one queue per unit; the local world is only the fallback for a caller without an army.
+        var environment = _armyWorld?.Invoke() ?? World;
         foreach (var b in _units)
         {
             if ((b.Unit.Flags & LiveEntity.RetiredFlag) != 0) continue;
-            // The mission scripts assign targets with gSetAttackTarget (0x1F..0x23); without the RPNS
-            // VM the bridge hands the slot the player whenever the descriptor's class filter admits
-            // him. A slot without the auto-acquire bit then fires straight through 80060238.c:265-271.
-            if (b.Slot.Target18 is null && PlayerMatchesClass(b.Slot))
-            {
-                b.Slot.Target18 = _playerView;
-                b.Slot.Target18Value = PlayerViewId;
-            }
-            EnemyAttackScheduler.Step(b.Slot, delta, b.View, null, 1, World);
+            if (b.Unit.AttackSlot is not { } slot) continue;
+            // The mover-driven types step their own slot once per message 6; only a unit without a
+            // mover is left for the scene, and its request lands in the same army queue.
+            if (!b.Unit.IsMobile) EnemyAttackScheduler.Step(slot, delta, b.View, null, 1, environment);
         }
-        if (World.DirectShots.Count > 0)
+        if (environment.DirectShots.Count > 0)
         {
-            foreach (var args in World.DirectShots) SpawnShot(args);
-            World.DirectShots.Clear();
+            foreach (var args in environment.DirectShots) SpawnShot(args);
+            environment.DirectShots.Clear();
         }
         AdvanceShots(delta, player, playerCoord, world);
     }
@@ -251,7 +252,7 @@ public sealed class LevelEnemyFire
             DirZ = args.AimZ,
             Scale = speed,
             Damage = args.Def.W0C,                                  // weapon obj+0x00, 8005F6E8.c:414
-            ShooterRecordId = _units.Find(b => ReferenceEquals(b.Slot, args.Slot))?.Unit.RecordId ?? 0,
+            ShooterRecordId = _units.Find(b => ReferenceEquals(b.Unit.AttackSlot, args.Slot))?.Unit.RecordId ?? 0,
             SlotIndex = (byte)args.Def.W1A,
             HomeX = args.MuzzleX, HomeY = args.MuzzleY, HomeZ = args.MuzzleZ,
             Leash = leash > 0 ? leash & ~0xFF : int.MaxValue,

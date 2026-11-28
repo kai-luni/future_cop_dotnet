@@ -141,12 +141,13 @@ public class WeaponPickupRespawnTests
         var healthItem = Assert.Single(pickups.Items, i => i.SectionId == 103);
         var reserveItem = Assert.Single(pickups.Items, i => i.SectionId == 284);
 
-        // Collect health pickup 103 and reserve pickup 284.
+        // Collect health pickup 103 and reserve pickup 284. The gauge drives the entity's +0x1C
+        // health word (8002FC90.c:164-169), which AttachWalker seeds from the body.
         walker.Health = 1234;
         (walker.X, walker.Y, walker.Z) = (healthItem.X, healthItem.Y, healthItem.Z);
         scene.AttachWalker(walker);
         scene.AdvanceWalker(1, 0, AnalogPad.Digital);
-        Assert.Equal(0x7F00, walker.Health);
+        Assert.Equal(0x7F00, scene.PlayerUnit!.Health);
         Assert.Equal(0, slot103.TotalSpawned);
 
         slots.Reserve[1] = 0;
@@ -161,6 +162,7 @@ public class WeaponPickupRespawnTests
         (walker.X, walker.Y, walker.Z) = (healthItem.X, healthItem.Y, healthItem.Z);
         scene.AttachWalker(walker);
         walker.Health = 1000;
+        scene.PlayerUnit!.Health = 1000;
         int wait103 = slot103.Timer;
         int step = 3000;
         int elapsed = 0;
@@ -170,7 +172,7 @@ public class WeaponPickupRespawnTests
             elapsed += step;
             scene.AdvanceWalker(1, 0, AnalogPad.Digital);
             scene.Render(camera);
-            Assert.Equal(1000, walker.Health);
+            Assert.Equal(1000, scene.PlayerUnit!.Health);
             Assert.Equal(9, pickups.RemainingCount);
             Assert.Equal(9, scene.DrawnPickupPlacements.Count);
             Assert.Equal(0, scene.SpawnedUnitPrimitives);
@@ -199,7 +201,7 @@ public class WeaponPickupRespawnTests
         scene.AttachWalker(walker);
         walker.Health = 2000;
         scene.AdvanceWalker(1, 0, AnalogPad.Digital);
-        Assert.Equal(0x7F00, walker.Health);
+        Assert.Equal(0x7F00, scene.PlayerUnit!.Health);
         Assert.Equal(0, slot103.TotalSpawned);
         Assert.Equal(9, pickups.RemainingCount);
 
