@@ -67,6 +67,14 @@ public sealed class Beam
     /// <summary>Far end of the beam, world position units (<c>v38</c>).</summary>
     public (int X, int Y, int Z) End { get; private set; }
 
+    /// <summary>
+    /// True once <see cref="ClipToGround"/> pulled the far end onto the level surface. This is the
+    /// port's <c>s5 &amp; 0xFF</c> of func_8006B23C:346-350, the map-hit word the radial spread of
+    /// :356 tests; it stays set for the rest of the beam's life, because the segment it describes
+    /// does not move between the frames the beam is drawn.
+    /// </summary>
+    public bool ClippedToGround { get; private set; }
+
     /// <summary>Frames this beam has been on screen.</summary>
     public int Age { get; private set; }
 
@@ -81,7 +89,9 @@ public sealed class Beam
 
     /// <summary>
     /// func_8006B23C:346-349: the far end is pulled back to the level surface when the beam hits it.
-    /// The port samples the floor along the segment and keeps the first point that is not above it.
+    /// The port samples the floor along the segment and keeps the first point that is not above it;
+    /// <see cref="ClippedToGround"/> records that the clip fired, which is the trace result the
+    /// radial spread of :356 needs.
     /// </summary>
     /// <param name="map">The mission map.</param>
     public void ClipToGround(LevelMap map)
@@ -100,6 +110,7 @@ public sealed class Beam
             if (y <= ground)
             {
                 End = (x, ground, z);
+                ClippedToGround = true;
                 return;
             }
         }

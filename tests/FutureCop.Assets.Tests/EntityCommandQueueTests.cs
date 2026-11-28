@@ -50,6 +50,8 @@ public sealed class EntityCommandQueueTests
         var world = new EntityWorld();
         var pads = new PurchasePadSystem(pool, world: world);
         var entity = world.Spawn(new ProbeEntity(recordId: 3, type: 14, retireScript: 1));
+        // The entry pass walks the frame's active table D_800A8F90, so the entity has to be in it.
+        world.CullActive(0, 0);
 
         bool inScript = false;
         int retireCalls = 0;
@@ -94,6 +96,7 @@ public sealed class EntityCommandQueueTests
         var world = new EntityWorld();
         var pads = NewSystem(world);
         var entity = world.Spawn(new ProbeEntity(recordId: 4, type: 14, retireScript: 1));
+        world.CullActive(0, 0);
         int retireCalls = 0;
         world.OnScript = (_, _, _, _) => retireCalls++;
 
@@ -146,6 +149,7 @@ public sealed class EntityCommandQueueTests
         var world = new EntityWorld();
         var pads = NewSystem(world);
         var entity = world.Spawn(new ProbeEntity(recordId: 6, type: type));
+        world.CullActive(0, 0);
 
         Assert.True(pads.SendEntityCommand(entity, 0x50, 0));
         Assert.Equal(0, pads.QueuedCommandCount(entity));

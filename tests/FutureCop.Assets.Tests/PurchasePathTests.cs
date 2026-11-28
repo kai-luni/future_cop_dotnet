@@ -655,8 +655,10 @@ public sealed class PurchasePathTests
         vm.OnCommandByTag!(152, 0x3D, 1);
 
         // The command only fills the entity's entry slot (8004DA84.c:57-63); the retire runs on the
-        // entry pass of 8004CECC.c:108-114, after the script that issued it returned.
+        // entry pass of 8004CECC.c:108-114, after the script that issued it returned. That pass walks
+        // the frame's active table D_800A8F90, so the entity has to survive this frame's cull.
         Assert.NotEqual(0, entity.RuntimeId);
+        world.CullActive(entity.GroundPosition.X, entity.GroundPosition.Z);
         Assert.Equal(1, pads.RunEntityCommands(world));
         Assert.Equal(0, entity.RuntimeId);
         const uint mask = LiveEntity.ResetFlag | LiveEntity.NoRetireScriptFlag;
@@ -664,7 +666,9 @@ public sealed class PurchasePathTests
         Assert.Equal(0, vm.SessionPointerBank[3]);
 
         // The same slot-1 script runs if 0x3D does not set the skip flag.
+        var other = Assert.Single(world.Units.Where(e => e.RecordId == 151));
         vm.OnCommandByTag!(151, 0x3D, 0);
+        world.CullActive(other.GroundPosition.X, other.GroundPosition.Z);
         Assert.Equal(1, pads.RunEntityCommands(world));
         Assert.Equal(63, vm.SessionPointerBank[3]);
     }

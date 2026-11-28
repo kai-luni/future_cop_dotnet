@@ -439,17 +439,26 @@ public sealed class LevelWeapons
     /// <para>
     /// The C fires the callback on its locked target handle only; the port has no lock-on, so the
     /// segment test against the active entities takes that place - the same approximation the shot
-    /// pass makes with its projectile pairs. A map hit keeps the C from firing
-    /// (<c>s5 &amp; 0xFF</c>); the port's ground clip only shortens the segment (<see cref="Beam.ClipToGround"/>),
-    /// so a beam blocked by terrain stops short of the entities behind it as well.
+    /// pass makes with its projectile pairs. A map hit makes the C skip the callback as well
+    /// (<c>s5 &amp; 0xFF</c>, gBeamPartUpdate.c:366-378); the port keeps the callback and only
+    /// shortens the segment (<see cref="Beam.ClipToGround"/>), so a beam blocked by terrain stops
+    /// short of the entities behind it. Only the radial spread follows the retail map-hit gate.
     /// </para>
     /// <para>
     /// The radial spread of the second half runs before the callback, per beam and frame: a half-1
     /// beam whose <c>s3-&gt;unk0E</c> is positive calls gApplyRadialContactDamage at the far end with
-    /// <c>s3-&gt;unk0C</c> as the strength and <c>unk0E &lt;&lt; 4</c> as the radius. The C skips the
-    /// spread when the map trace hit (<c>s5 &amp; 0xFF</c>); the port's ground clip stands in for that
-    /// trace with a sixteen-step sampler, which fires on terrain the retail ray passes through, so
-    /// the port spreads there as well.
+    /// <c>s3-&gt;unk0C</c> as the strength and <c>unk0E &lt;&lt; 4</c> as the radius - but only when the
+    /// map trace missed. The C tests <c>(s5 &amp; 0xFF) == 0</c> (gBeamPartUpdate.c:356) and takes
+    /// <c>skip_callback</c> otherwise, so a beam pulled back to the terrain spreads nothing. The port's
+    /// stand-in for that trace is <see cref="Beam.ClipToGround"/>: it records the hit in
+    /// <see cref="Beam.ClippedToGround"/>, and a beam with that flag set skips the spread.
+    /// </para>
+    /// <para>
+    /// The C traces at :346 and spreads at :356 inside one call, once per frame the trigger is held,
+    /// and this method is that call - <see cref="AdvanceBeams"/> runs it once per beam per frame. The
+    /// clip result belongs to the beam rather than to a frame: the segment is fixed at spawn, so the
+    /// next frame re-traces the same points and would hit the same ground. The flag therefore gates
+    /// every frame of the beam's <see cref="Beam.LifeFrames"/> life, which is what retail does too.
     /// </para>
     /// </remarks>
     /// <param name="world">The entity world the beams deliver into (see <see cref="BeamHitWorld"/>).</param>
@@ -464,8 +473,10 @@ public sealed class LevelWeapons
             // whose type is not 0x0E and whose s3->unk0E is positive spreads gApplyRadialContactDamage
             // around its far end, with s3->unk0C as the strength and unk0E << 4 as the radius. Without
             // a locked target the C takes the c == 0 branch and uses the beam end v38, which is the
-            // branch the port always takes.
-            if (definition.Half == 1 && definition.Action != 0x0E && definition.DamageWord > 0)
+            // branch the port always takes. :356 gates the whole thing on the map trace missing:
+            // (s5 & 0xFF) == 0, i.e. the beam did not hit the terrain.
+            if (definition.Half == 1 && definition.Action != 0x0E && definition.DamageWord > 0
+                && !beam.ClippedToGround)
             {
                 RadialContactDamage.Apply(world, new[] { beam.End.X, beam.End.Y, beam.End.Z },
                     unchecked((short)definition.ObjWord00), definition.DamageWord << 4,
