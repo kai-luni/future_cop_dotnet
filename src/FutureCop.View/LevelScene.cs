@@ -216,6 +216,7 @@ public sealed class LevelScene
         ObjectRegistry.InitMissionSpawnState();
         ObjectRegistry.ScreenState = MapObjectRegistry.ScreenStateLoading;
         ObjectRegistry.GroundHeight = pos => LevelGround.Height(Map, pos.X, pos.Y, pos.Z, out _);
+        ObjectRegistry.PlacementHeight = (x, z, rank) => LevelGround.PlacementHeight(Map, x, z, rank) ?? 0;
         ObjectRegistry.ResolveModel = id => _modelsById.TryGetValue(id, out var m) ? m : null;
         ObjectRegistry.ReadElevatorRider = ReadPlayerElevatorRider;
         ObjectRegistry.LoadFromMission(_file.Bytes);
@@ -247,6 +248,11 @@ public sealed class LevelScene
         // (func_80017668), animation/attack-scheduler callbacks (func_80044B34 / func_80060238 /
         // func_8005F6E8), and a dedicated carrier+child render pass.
         ObjectRegistry.PlaceMissionObjects(records);
+
+        // Cact type 0x60: static scene nodes, dispatched before entity creation
+        // (gLoadActorChunk.c:109-110 -> func_80084110 -> gSpawnSceneNode). CONFT.MIS carries 89,
+        // among them the five Cobj-62 props of the P1 base pad cells (8,12)..(9,13).
+        ObjectRegistry.PlaceDeferredSceneAssets(records);
 
         _csacSpawner = new CsacUnitSpawner(ObjectRegistry, world: _entities)
         {
@@ -942,6 +948,26 @@ public sealed class LevelScene
     public int PadMarkerLines { get; private set; }
 
     /// <summary>
+    /// Outline lines the last <see cref="Render"/> drew for the home-base purchase pads that are
+    /// drawn in every frame (CONFT ids 47 and 51, <see cref="HomeBasePurchasePadIds"/>), independent
+    /// of <see cref="ShowPadMarkers"/>.
+    /// </summary>
+    public int BasePadLines { get; private set; }
+
+    /// <summary>
+    /// Faces the last <see cref="Render"/> drew for the static scene nodes of the Cact type-0x60
+    /// branch in <see cref="ObjectRegistry.SceneProps"/>.
+    /// </summary>
+    public int ScenePropPrimitives { get; private set; }
+
+    /// <summary>
+    /// Scene props that fell inside the frame's 5x5 cell window with a non-zero cell mask, whether
+    /// or not their model could be drawn. The retail drawer culls on exactly that
+    /// (<c>gDrawCellWindowModels.c:91-100</c>); the subcell band test is not modelled.
+    /// </summary>
+    public int VisibleSceneProps { get; private set; }
+
+    /// <summary>
     /// The HUD session with the live score words (D_8009FA94 + 0x64). +0x5C is 1 in a Precinct Assault
     /// match: the match end branches on it (80027D9C.c:78, 80060A0C.c:114). The unit counters
     /// +0x6C..+0x78 (gGameSession[27..30]) and the cumulative helipad-claim totals +0x84/+0x88
@@ -1490,6 +1516,36 @@ public sealed class LevelScene
         DrawnSections = drawn;
         TilePackets = packetsTotal;
 
+        // Static scene nodes of the deferred-scene branch (Cact type 0x60): the node lives in the
+        // (x >> 17, z >> 17) bucket of gSpawnSceneNode.c:429 and gDrawCellWindowModels.c:91-146 only
+        // draws buckets inside the current 5x5 cell window whose mask is non-zero. The per-node
+        // subcell band test (mask & node->unk4E, :96-100) and the spin/animation clock (:149-238)
+        // are not modelled.
+        int scenePropPrims = 0;
+        int visibleProps = 0;
+        if (ObjectRegistry.SceneProps.Count > 0)
+        {
+            var propBasis = new int[9];
+            foreach (var prop in ObjectRegistry.SceneProps)
+            {
+                int row = prop.Row - originX, column = prop.Column - originZ;
+                if ((uint)row >= 5 || (uint)column >= 5) continue;
+                if (window[row * 5 + column].Mask == 0) continue;
+                visibleProps++;
+                if (!_modelsById.TryGetValue(prop.ModelId, out var propModel)
+                    || !propModel.Vertices.TryGetValue(1, out var propVerts) || propVerts.Count == 0) continue;
+                prop.Basis(propBasis);
+                var local = new Gte.Mat(propBasis,
+                    ((prop.X - MechWorld.X) >> 4) << 4,
+                    ((prop.Y - MechWorld.Y) >> 4) << 4,
+                    ((prop.Z - MechWorld.Z) >> 4) << 4);
+                var matrix = ScriptRender.Compose(local, view);
+                scenePropPrims += QueueModel(propModel, propVerts, 0, matrix, 0xFF, ref drawOrder);
+            }
+        }
+        ScenePropPrimitives = scenePropPrims;
+        VisibleSceneProps = visibleProps;
+
         // The walker: mech-local parts composed with the view, the same path as WireframeScene.
         int mechFaces = 0;
         var bodyView = view;
@@ -1669,6 +1725,9 @@ public sealed class LevelScene
             skyCaptain++;
         }
         SkyCaptainPrimitives = skyCaptain;
+        // The home-base purchase pad volumes are part of the normal frame (see PadMarkers); the rest
+        // of the walker pads stay an explicit debug overlay.
+        BasePadLines = PadMarkers(view, basePurchaseOnly: true);
         PadMarkerLines = ShowPadMarkers ? PadMarkers(view) : 0;
         return _drawQueue.Count;
     }
@@ -1693,7 +1752,13 @@ public sealed class LevelScene
     /// lines off distant rooftops. The cutoff borrows the initial range of the retail active-entity
     /// list (8004DF28.c:101,142), not its octagonal distance, overflow adjustment, or drawing rules.
     /// </remarks>
-    private int PadMarkers(Gte.Mat view)
+    /// <param name="view">View matrix of the frame.</param>
+    /// <param name="basePurchaseOnly">
+    /// Draw only <see cref="HomeBasePurchasePadIds"/>, the two home-base pads that are part of the
+    /// normal frame, instead of every walker pad of the debug overlay. The two sets are disjoint,
+    /// so no pad is outlined twice when the overlay is on.
+    /// </param>
+    private int PadMarkers(Gte.Mat view, bool basePurchaseOnly = false)
     {
         if (_purchasePads is not { Pads.Count: > 0 } pads) return 0;
         const int maxPadDist = 0x38000;
@@ -1702,6 +1767,9 @@ public sealed class LevelScene
         {
             if (!pad.RequiresWalkerMode) continue;
             if (pad.IsRetired) continue;
+            bool homeBase = pad.Kind == PurchasePadKind.TriggerAttachment
+                && HomeBasePurchasePadIds.Contains(pad.RecordId);
+            if (homeBase != basePurchaseOnly) continue;
             bool mapZone = pad.Kind == PurchasePadKind.MapZone;
             if (mapZone && (pad.Flags & 2) == 0 && pad.Released) continue;
             if (Math.Abs(pad.WorldX - MechWorld.X) >= maxPadDist || Math.Abs(pad.WorldZ - MechWorld.Z) >= maxPadDist)
@@ -1720,6 +1788,15 @@ public sealed class LevelScene
         }
         return lines;
     }
+
+    /// <summary>
+    /// Type-14 purchase-pad record ids of the home base in every Precinct Assault map: 47 is the
+    /// vehicle pad (RPNS script 0x63x) and 51 the aircraft pad (0x65x) in CONFT, HK and OVMP; JOKE
+    /// and SLIM carry no type-14 record with either id. Retail draws nothing for a pad volume
+    /// (<c>80031C74.c</c>, <c>8002F8B8.c</c> test only), so the port has to show these two boxes to
+    /// make the buy pads visible at all.
+    /// </summary>
+    public static readonly IReadOnlyList<int> HomeBasePurchasePadIds = new[] { 47, 51 };
 
     private static readonly byte[] PadZoneColour = { 0x40, 0xFF, 0x40 };
     private static readonly byte[] PadAttachmentColour = { 0xFF, 0xD0, 0x20 };
